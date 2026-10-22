@@ -29,7 +29,9 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
         source={{ uri: asset.uri }}
         style={styles.image}
         contentFit="cover"
-        transition={200}
+        recyclingKey={asset.id}
+        priority="normal"
+        transition={100}
         cachePolicy="memory-disk"
       />
 
@@ -56,7 +58,7 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
 const styles = StyleSheet.create({
   container: {
     margin: 1,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.surfaceHover,
     position: 'relative',
     overflow: 'hidden',
   },

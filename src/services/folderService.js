@@ -40,7 +40,7 @@ export const folderService = {
   },
 
   /**
-   * Lee la carpeta actual entregando lotes parciales para carga progresiva inmediata.
+   * Lee la carpeta actual de forma instantánea sin hacer llamadas pesadas a disco por cada archivo.
    */
   async readDirectory(uri, onBatch) {
     try {
@@ -61,16 +61,12 @@ export const folderService = {
         } else {
           const mediaType = getMediaType(item);
           if (!mediaType) continue;
-          let modified = 0;
-          try {
-            modified = item.modificationTime || 0;
-          } catch (e) {}
           assets.push({
             id: item.uri,
             uri: item.uri,
             filename: item.name,
             mediaType,
-            creationTime: modified,
+            creationTime: 0,
             width: null,
             height: null,
             fromFolder: true,
@@ -78,18 +74,20 @@ export const folderService = {
         }
         processed++;
 
-        // Si la carpeta es muy pesada, emitir primer lote temprano (24 fotos)
+        // Emisión temprana del primer lote (~24 fotos) en milisegundos
         if (onBatch && processed === 24 && assets.length > 0) {
           onBatch({
             subfolders: [...subfolders].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
-            assets: [...assets].sort((a, b) => b.creationTime - a.creationTime),
+            assets: [...assets].sort((a, b) => b.filename.localeCompare(a.filename, undefined, { numeric: true, sensitivity: 'base' })),
             isPartial: true,
           });
         }
       }
 
+      // Ordenar subcarpetas alfabéticamente
       subfolders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-      assets.sort((a, b) => b.creationTime - a.creationTime);
+      // Ordenar fotos por nombre descendente (los nombres de fotos como IMG_2026... ya tienen fecha)
+      assets.sort((a, b) => b.filename.localeCompare(a.filename, undefined, { numeric: true, sensitivity: 'base' }));
 
       if (onBatch) {
         onBatch({ subfolders, assets, isPartial: false });
@@ -103,7 +101,7 @@ export const folderService = {
   },
 
   /**
-   * Carga recursiva con emisión progresiva lote por lote conforme se recorren subcarpetas.
+   * Carga recursiva rápida para "Todo junto".
    */
   async loadFolderAssets(uri, onBatch) {
     const out = [];
@@ -121,16 +119,12 @@ export const folderService = {
         } else {
           const mediaType = getMediaType(item);
           if (!mediaType) continue;
-          let modified = 0;
-          try {
-            modified = item.modificationTime || 0;
-          } catch (e) {}
           const assetObj = {
             id: item.uri,
             uri: item.uri,
             filename: item.name,
             mediaType,
-            creationTime: modified,
+            creationTime: 0,
             width: null,
             height: null,
             fromFolder: true,
@@ -146,7 +140,7 @@ export const folderService = {
     };
 
     collect(new Directory(uri), 0);
-    out.sort((a, b) => b.creationTime - a.creationTime);
+    out.sort((a, b) => b.filename.localeCompare(a.filename, undefined, { numeric: true, sensitivity: 'base' }));
     return out;
   },
 

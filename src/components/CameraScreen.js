@@ -9,13 +9,16 @@ import {
   ActivityIndicator,
   StatusBar,
   SafeAreaView,
+  Dimensions,
 } from 'react-native';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 
 const MAX_DURATION_SECONDS = 600; // 10 minutos exactos
+const ALBUM_NAME = 'Grabaciones';
 
 function formatTimer(seconds) {
   const m = Math.floor(seconds / 60);
@@ -32,9 +35,13 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [saving, setSaving] = useState(false);
-  const [stealthMode, setStealthMode] = useState(false); // Modo pantalla oculta (grabar sin ver)
+
+  // Modo pantalla bloqueada / oculta total (pantalla 100% negra simulando estar apagada)
+  const [stealthLocked, setStealthLocked] = useState(false);
+  const [stealthHintVisible, setStealthHintVisible] = useState(false);
 
   const timerRef = useRef(null);
+  const lastTapRef = useRef(0);
 
   // Solicitar permisos al abrir si no están concedidos
   useEffect(() => {
@@ -68,11 +75,22 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     };
   }, [isRecording]);
 
+  // Manejar KeepAwake cuando entra a pantalla bloqueada
+  useEffect(() => {
+    if (stealthLocked) {
+      activateKeepAwakeAsync('stealth-recording').catch(() => {});
+    } else {
+      deactivateKeepAwake('stealth-recording').catch(() => {});
+    }
+    return () => {
+      deactivateKeepAwake('stealth-recording').catch(() => {});
+    };
+  }, [stealthLocked]);
+
   const handleStartRecording = async () => {
     if (!cameraRef.current || isRecording) return;
     try {
       setIsRecording(true);
-      // recordAsync inicia y se queda pendiente hasta stopRecording() o maxDuration
       const videoPromise = cameraRef.current.recordAsync({
         maxDuration: MAX_DURATION_SECONDS,
       });
@@ -81,24 +99,39 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
       if (video?.uri) {
         setSaving(true);
         try {
-          await MediaLibrary.saveToLibraryAsync(video.uri);
+          // Guardar directamente en el álbum "Grabaciones"
+          const asset = await MediaLibrary.createAssetAsync(video.uri);
+          let album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+          if (!album) {
+            await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
+          } else {
+            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+          }
+
           Alert.alert(
-            'Grabación completada',
-            'El video se guardó automáticamente en tu galería.',
+            'Grabación guardada',
+            `El video se guardó en la carpeta "${ALBUM_NAME}". Puedes encontrarlo en la pestaña Álbumes de esta app o en tu galería.`,
             [{ text: 'Entendido' }]
           );
           if (onVideoSaved) onVideoSaved();
         } catch (saveErr) {
-          Alert.alert('Aviso', 'El video se grabó pero hubo un problema al guardarlo en el álbum.');
+          // Fallback a galería general si falla el álbum
+          try {
+            await MediaLibrary.saveToLibraryAsync(video.uri);
+            Alert.alert('Grabación guardada', 'El video se guardó en la galería.');
+            if (onVideoSaved) onVideoSaved();
+          } catch (e2) {
+            Alert.alert('Aviso', 'No se pudo guardar el archivo de video.');
+          }
         }
         setSaving(false);
       }
     } catch (e) {
       console.error('Error al grabar video:', e);
-      Alert.alert('Error', 'No se pudo iniciar o procesar la grabación.');
+      Alert.alert('Error', 'No se pudo procesar la grabación.');
     } finally {
       setIsRecording(false);
-      setStealthMode(false);
+      setStealthLocked(false);
     }
   };
 
@@ -110,7 +143,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
         console.error('Error al detener grabación:', err);
       }
       setIsRecording(false);
-      setStealthMode(false);
+      setStealthLocked(false);
     }
   };
 
@@ -118,6 +151,21 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     if (!isRecording) {
       setFacing((prev) => (prev === 'back' ? 'front' : 'back'));
     }
+  };
+
+  // Doble toque para salir de la pantalla bloqueada / oculta
+  const handleStealthScreenTap = () => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 400) {
+      // Doble toque detectado: desbloquear pantalla
+      setStealthLocked(false);
+      setStealthHintVisible(false);
+    } else {
+      // Primer toque: mostrar recordatorio sutil
+      setStealthHintVisible(true);
+      setTimeout(() => setStealthHintVisible(false), 2500);
+    }
+    lastTapRef.current = now;
   };
 
   const handleClose = () => {
@@ -128,7 +176,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
         [
           { text: 'Continuar grabando', style: 'cancel' },
           {
-            text: 'Detener y salir',
+            text: 'Detener y guardar',
             style: 'destructive',
             onPress: () => {
               handleStopRecording();
@@ -144,12 +192,15 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
 
   if (!visible) return null;
 
-  // Si no hay permisos concedidos
   const permissionsGranted = cameraPermission?.granted && micPermission?.granted;
 
   return (
     <Modal visible={visible} animationType="fade" onRequestClose={handleClose} statusBarTranslucent>
-      <StatusBar barStyle="light-content" backgroundColor="#000000" />
+      <StatusBar
+        barStyle="light-content"
+        backgroundColor="#000000"
+        hidden={stealthLocked}
+      />
       <SafeAreaView style={styles.container}>
         {!permissionsGranted ? (
           <View style={styles.permissionBox}>
@@ -182,25 +233,29 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
               mode="video"
             />
 
-            {/* Capa de Modo Oculto / Pantalla Negra Discreta ("sin estar viendo") */}
-            {stealthMode && (
+            {/* PANTALLA BLOQUEADA TOTAL (100% NEGRA, SIMULA TELÉFONO APAGADO) */}
+            {stealthLocked && (
               <TouchableOpacity
-                style={styles.stealthOverlay}
+                style={styles.fullBlackScreen}
                 activeOpacity={1}
-                onPress={() => setStealthMode(false)}
+                onPress={handleStealthScreenTap}
               >
-                <View style={styles.stealthIndicator}>
-                  <View style={styles.recDot} />
-                  <Text style={styles.stealthText}>
-                    Grabando discretamente… {formatTimer(elapsed)} / 10:00
-                  </Text>
-                  <Text style={styles.stealthHint}>Toca en cualquier parte para ver los controles</Text>
-                </View>
+                {stealthHintVisible && (
+                  <View style={styles.stealthHintBox}>
+                    <Ionicons name="lock-closed" size={24} color="#666666" />
+                    <Text style={styles.stealthHintText}>
+                      Grabando en segundo plano ({formatTimer(elapsed)} / 10:00)
+                    </Text>
+                    <Text style={styles.stealthHintSub}>
+                      Toca 2 veces rápido para desbloquear y detener
+                    </Text>
+                  </View>
+                )}
               </TouchableOpacity>
             )}
 
-            {/* Controles de la cámara (cuando no está en modo pantalla negra) */}
-            {!stealthMode && (
+            {/* Controles de la cámara */}
+            {!stealthLocked && (
               <View style={styles.overlayControls} pointerEvents="box-none">
                 {/* Barra Superior */}
                 <View style={styles.topRow}>
@@ -222,8 +277,8 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                     </View>
                   ) : (
                     <View style={styles.limitBadge}>
-                      <Ionicons name="time-outline" size={14} color="#ffffff" />
-                      <Text style={styles.limitText}>Máx. 10 min</Text>
+                      <Ionicons name="folder-outline" size={13} color="#ffffff" />
+                      <Text style={styles.limitText}>Guarda en "{ALBUM_NAME}"</Text>
                     </View>
                   )}
 
@@ -237,17 +292,22 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                   </TouchableOpacity>
                 </View>
 
-                {/* Botón para entrar a Modo Pantalla Oculta durante la grabación */}
+                {/* Botón para entrar al Modo Pantalla Bloqueada / Oculta durante la grabación */}
                 {isRecording && (
                   <View style={styles.stealthBtnContainer}>
                     <TouchableOpacity
                       style={styles.stealthToggleBtn}
-                      onPress={() => setStealthMode(true)}
+                      onPress={() => setStealthLocked(true)}
                       activeOpacity={0.8}
                     >
-                      <Ionicons name="eye-off-outline" size={18} color="#ffffff" />
-                      <Text style={styles.stealthToggleText}>Ocultar pantalla (grabar discreto)</Text>
+                      <Ionicons name="phone-portrait-outline" size={18} color="#ffffff" />
+                      <Text style={styles.stealthToggleText}>
+                        Bloquear pantalla (grabar sin que se vea nada)
+                      </Text>
                     </TouchableOpacity>
+                    <Text style={styles.stealthInfoText}>
+                      La pantalla se pondrá 100% negra como si estuviera apagada.
+                    </Text>
                   </View>
                 )}
 
@@ -348,7 +408,7 @@ const styles = StyleSheet.create({
   recTimerBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(239, 68, 68, 0.85)',
+    backgroundColor: 'rgba(239, 68, 68, 0.9)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
@@ -368,11 +428,11 @@ const styles = StyleSheet.create({
   limitBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 16,
-    gap: 5,
+    gap: 6,
   },
   limitText: {
     color: '#ffffff',
@@ -381,22 +441,28 @@ const styles = StyleSheet.create({
   },
   stealthBtnContainer: {
     alignItems: 'center',
+    gap: 6,
   },
   stealthToggleBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 22,
     gap: 8,
   },
   stealthToggleText: {
     color: '#ffffff',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
+  },
+  stealthInfoText: {
+    color: 'rgba(255, 255, 255, 0.65)',
+    fontSize: 11,
+    textAlign: 'center',
   },
   bottomRow: {
     flexDirection: 'row',
@@ -428,25 +494,28 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     backgroundColor: '#ef4444',
   },
-  stealthOverlay: {
+  // Pantalla 100% negra (OLED apagado total)
+  fullBlackScreen: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: '#000000',
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 99,
+    zIndex: 999,
   },
-  stealthIndicator: {
+  stealthHintBox: {
     alignItems: 'center',
-    gap: 10,
-    padding: 24,
+    gap: 8,
+    padding: 20,
+    backgroundColor: 'rgba(20, 20, 20, 0.9)',
+    borderRadius: 16,
   },
-  stealthText: {
-    color: '#666666',
-    fontSize: 14,
+  stealthHintText: {
+    color: '#888888',
+    fontSize: 13,
     fontWeight: '600',
   },
-  stealthHint: {
-    color: '#444444',
-    fontSize: 12,
+  stealthHintSub: {
+    color: '#555555',
+    fontSize: 11,
   },
 });
