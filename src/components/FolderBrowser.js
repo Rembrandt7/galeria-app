@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Dimensions,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
@@ -295,10 +296,11 @@ export default function FolderBrowser({
           keyExtractor={(item) => item.id}
           numColumns={NUM_PHOTO_COLUMNS}
           contentContainerStyle={styles.photoListContent}
-          initialNumToRender={18}
-          maxToRenderPerBatch={18}
-          windowSize={7}
-          removeClippedSubviews={true}
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS === 'android'}
+          updateCellsBatchingPeriod={50}
           onEndReached={handleLoadMorePhotos}
           onEndReachedThreshold={0.5}
           refreshControl={

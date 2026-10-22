@@ -30,8 +30,8 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
         style={styles.image}
         contentFit="cover"
         recyclingKey={asset.id}
-        priority="normal"
-        transition={100}
+        priority="low"
+        transition={0}
         cachePolicy="memory-disk"
       />
 

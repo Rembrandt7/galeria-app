@@ -29,16 +29,34 @@ export default function SettingsModal({ visible, onClose }) {
     try {
       const result = await updateService.checkForUpdates();
       setUpdateInfo(result);
-      if (!result.hasUpdate && !result.latestRunUrl) {
-        Alert.alert('Al día', result.message || 'Tu aplicación tiene la última versión disponible.');
+
+      // Si existe un APK listo para descargar, actualizar automáticamente de inmediato
+      if (result.hasUpdate && result.apkUrl) {
+        setChecking(false);
+        setDownloading(true);
+        try {
+          await updateService.downloadAndInstallApk(result.apkUrl, (pct) => {
+            setProgress(pct);
+          });
+        } catch (downloadErr) {
+          Alert.alert(
+            'Aviso de descarga',
+            'No se pudo completar la instalación automática: ' + (downloadErr?.message || String(downloadErr))
+          );
+        } finally {
+          setDownloading(false);
+        }
+      } else if (!result.hasUpdate && !result.latestRunUrl) {
+        Alert.alert('Al día', result.message || `Tu aplicación tiene la última versión disponible (${CURRENT_VERSION}).`);
       }
     } catch (e) {
       Alert.alert(
         'Error de conexión',
         'No se pudo conectar con GitHub. Comprueba tu conexión a Internet e inténtalo de nuevo.'
       );
+    } finally {
+      setChecking(false);
     }
-    setChecking(false);
   };
 
   const handleDownloadAndInstall = async () => {
@@ -54,8 +72,9 @@ export default function SettingsModal({ visible, onClose }) {
         'Error en la actualización',
         'No se pudo completar la descarga o instalación: ' + (e?.message || String(e))
       );
+    } finally {
+      setDownloading(false);
     }
-    setDownloading(false);
   };
 
   const handleOpenGitHub = (url) => {

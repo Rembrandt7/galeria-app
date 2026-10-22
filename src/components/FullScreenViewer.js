@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -11,6 +11,7 @@ import {
   StatusBar,
   SafeAreaView,
   Animated,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -31,6 +32,62 @@ function formatDate(timestamp) {
     minute: '2-digit',
   });
 }
+
+// Diapositiva individual ultra-optimizada con descarte de memoria fuera de pantalla
+const SlideItem = React.memo(function SlideItem({
+  item,
+  isCurrent,
+  isNear,
+  zoomScale,
+  onPlayVideo,
+  onToggleZoom,
+}) {
+  const lastTapRef = useRef(0);
+
+  const handleDoubleTap = () => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 300) {
+      if (onToggleZoom) onToggleZoom();
+    }
+    lastTapRef.current = now;
+  };
+
+  // Solo renderizar el componente pesado Image si está visible o adyacente inmediato (±1)
+  // Fuera de eso liberamos la memoria del hilo de renderizado para cero lag
+  if (!isNear) {
+    return <View style={styles.slide} />;
+  }
+
+  return (
+    <TouchableOpacity
+      activeOpacity={1}
+      style={styles.slide}
+      onPress={handleDoubleTap}
+    >
+      <Image
+        source={{ uri: item.uri }}
+        style={[
+          styles.fullImage,
+          isCurrent && zoomScale > 1 ? { transform: [{ scale: zoomScale }] } : null,
+        ]}
+        contentFit="contain"
+        priority={isCurrent ? 'high' : 'low'}
+        transition={0}
+        cachePolicy="memory-disk"
+        recyclingKey={item.id}
+      />
+      {item.mediaType === 'video' && (
+        <TouchableOpacity
+          style={styles.centerVideoOverlay}
+          activeOpacity={0.8}
+          onPress={() => onPlayVideo(item)}
+        >
+          <Ionicons name="play-circle" size={68} color="rgba(255,255,255,0.85)" />
+        </TouchableOpacity>
+      )}
+    </TouchableOpacity>
+  );
+});
 
 export default function FullScreenViewer({
   visible,
@@ -55,18 +112,8 @@ export default function FullScreenViewer({
       setCurrentIndex(initialIndex);
       setZoomScale(1);
       setShowInfo(false);
-      // Ensure the flatlist jumps to the requested index
-      setTimeout(() => {
-        if (flatListRef.current && initialIndex >= 0 && initialIndex < assets.length) {
-          try {
-            flatListRef.current.scrollToIndex({ index: initialIndex, animated: false });
-          } catch (e) {
-            // fallback
-          }
-        }
-      }, 50);
     }
-  }, [visible, initialIndex, assets.length]);
+  }, [visible, initialIndex]);
 
   if (!visible || assets.length === 0) return null;
 
@@ -88,9 +135,9 @@ export default function FullScreenViewer({
     }
   };
 
-  const handleToggleZoom = () => {
+  const handleToggleZoom = useCallback(() => {
     setZoomScale((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 1));
-  };
+  }, []);
 
   const handleDeletePrompt = () => {
     Alert.alert(
@@ -122,6 +169,24 @@ export default function FullScreenViewer({
   const viewabilityConfig = useRef({
     itemVisiblePercentThreshold: 60,
   }).current;
+
+  const renderItem = useCallback(
+    ({ item, index }) => {
+      const isCurrent = index === currentIndex;
+      const isNear = Math.abs(index - currentIndex) <= 1;
+      return (
+        <SlideItem
+          item={item}
+          isCurrent={isCurrent}
+          isNear={isNear}
+          zoomScale={zoomScale}
+          onPlayVideo={setPlayerAsset}
+          onToggleZoom={handleToggleZoom}
+        />
+      );
+    },
+    [currentIndex, zoomScale, handleToggleZoom]
+  );
 
   return (
     <Modal
@@ -192,34 +257,19 @@ export default function FullScreenViewer({
               index,
             })}
             initialScrollIndex={initialIndex < assets.length ? initialIndex : 0}
+            onScrollToIndexFailed={(info) => {
+              setTimeout(() => {
+                flatListRef.current?.scrollToIndex({ index: info.index, animated: false });
+              }, 100);
+            }}
+            windowSize={3}
+            initialNumToRender={1}
+            maxToRenderPerBatch={2}
+            removeClippedSubviews={Platform.OS === 'android'}
+            scrollEnabled={zoomScale === 1}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}
-            renderItem={({ item, index }) => {
-              const isCurrent = index === currentIndex;
-              return (
-                <View style={styles.slide}>
-                  <Image
-                    source={{ uri: item.uri }}
-                    style={[
-                      styles.fullImage,
-                      isCurrent && { transform: [{ scale: zoomScale }] },
-                    ]}
-                    contentFit="contain"
-                    transition={200}
-                    cachePolicy="memory-disk"
-                  />
-                  {item.mediaType === 'video' && (
-                    <TouchableOpacity
-                      style={styles.centerVideoOverlay}
-                      activeOpacity={0.8}
-                      onPress={() => setPlayerAsset(item)}
-                    >
-                      <Ionicons name="play-circle" size={68} color="rgba(255,255,255,0.85)" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-              );
-            }}
+            renderItem={renderItem}
           />
 
           {/* Flechas de Navegación Lateral */}
