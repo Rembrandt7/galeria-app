@@ -289,7 +289,7 @@ export default function App() {
     if (activeTab === 'folder') {
       return {
         title: folderUri ? folderService.folderName(folderUri) : 'Mi carpeta',
-        subtitle: folderUri ? ${displayedAssets.length} fotos y videos : 'Elige una carpeta',
+        subtitle: folderUri ? `${displayedAssets.length} fotos y videos` : 'Elige una carpeta',
         showBack: false,
       };
     }
