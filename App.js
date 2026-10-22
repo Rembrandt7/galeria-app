@@ -25,6 +25,7 @@ import FullScreenViewer from './src/components/FullScreenViewer';
 import PermissionScreen from './src/components/PermissionScreen';
 import DuplicatesScreen from './src/components/DuplicatesScreen';
 import SettingsModal from './src/components/SettingsModal';
+import CameraScreen from './src/components/CameraScreen';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
@@ -54,6 +55,7 @@ export default function App() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const [dupVisible, setDupVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [cameraVisible, setCameraVisible] = useState(false);
 
   // Inicializar permisos y datos de arranque (ultra rápido)
   useEffect(() => {
@@ -367,6 +369,7 @@ export default function App() {
               ? () => setDupVisible(true)
               : null
           }
+          onOpenCamera={() => setCameraVisible(true)}
           onOpenSettings={() => setSettingsVisible(true)}
         />
 
@@ -441,6 +444,13 @@ export default function App() {
         <SettingsModal
           visible={settingsVisible}
           onClose={() => setSettingsVisible(false)}
+        />
+
+        {/* Modal de Cámara y Grabación Discreta */}
+        <CameraScreen
+          visible={cameraVisible}
+          onClose={() => setCameraVisible(false)}
+          onVideoSaved={() => handleRefresh()}
         />
       </SafeAreaView>
     </SafeAreaProvider>

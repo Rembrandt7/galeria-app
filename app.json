@@ -28,7 +28,9 @@
         "READ_MEDIA_IMAGES",
         "READ_MEDIA_VIDEO",
         "ACCESS_MEDIA_LOCATION",
-        "REQUEST_INSTALL_PACKAGES"
+        "REQUEST_INSTALL_PACKAGES",
+        "CAMERA",
+        "RECORD_AUDIO"
       ]
     },
     "web": {
@@ -37,6 +39,14 @@
     "plugins": [
       "expo-image",
       "expo-sharing",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Permite grabar video desde la aplicación.",
+          "microphonePermission": "Permite grabar audio en los videos.",
+          "recordAudioAndroid": true
+        }
+      ],
       [
         "expo-media-library",
         {

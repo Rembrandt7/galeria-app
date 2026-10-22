@@ -15,6 +15,7 @@ export default function Header({
   onPickFolder,
   onFindDuplicates,
   onOpenSettings,
+  onOpenCamera,
 }) {
   return (
     <View style={styles.headerContainer}>
@@ -98,6 +99,16 @@ export default function Header({
                 size={22}
                 color={isRefreshing ? theme.colors.primary : theme.colors.textPrimary}
               />
+            </TouchableOpacity>
+          )}
+
+          {onOpenCamera && (
+            <TouchableOpacity
+              onPress={onOpenCamera}
+              style={styles.actionButton}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="videocam-outline" size={22} color={theme.colors.textPrimary} />
             </TouchableOpacity>
           )}
 
