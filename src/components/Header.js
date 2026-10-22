@@ -13,6 +13,7 @@ export default function Header({
   filterType,
   onToggleFilter,
   onPickFolder,
+  onFindDuplicates,
 }) {
   return (
     <View style={styles.headerContainer}>
@@ -41,6 +42,16 @@ export default function Header({
         </View>
 
         <View style={styles.actionsSection}>
+          {onFindDuplicates && (
+            <TouchableOpacity
+              onPress={onFindDuplicates}
+              style={styles.actionButton}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="copy-outline" size={21} color={theme.colors.textPrimary} />
+            </TouchableOpacity>
+          )}
+
           {onPickFolder && (
             <TouchableOpacity
               onPress={onPickFolder}

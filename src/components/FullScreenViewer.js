@@ -15,6 +15,8 @@ import {
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
+import VideoPlayerScreen from './VideoPlayerScreen';
+import ImageCropper from './ImageCropper';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -39,8 +41,11 @@ export default function FullScreenViewer({
   onToggleFavorite,
   onShare,
   onDelete,
+  onMediaSaved,
 }) {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const [playerAsset, setPlayerAsset] = useState(null);
+  const [cropAsset, setCropAsset] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
   const [zoomScale, setZoomScale] = useState(1);
   const flatListRef = useRef(null);
@@ -204,9 +209,13 @@ export default function FullScreenViewer({
                     cachePolicy="memory-disk"
                   />
                   {item.mediaType === 'video' && (
-                    <View style={styles.centerVideoOverlay}>
+                    <TouchableOpacity
+                      style={styles.centerVideoOverlay}
+                      activeOpacity={0.8}
+                      onPress={() => setPlayerAsset(item)}
+                    >
                       <Ionicons name="play-circle" size={68} color="rgba(255,255,255,0.85)" />
-                    </View>
+                    </TouchableOpacity>
                   )}
                 </View>
               );
@@ -307,6 +316,26 @@ export default function FullScreenViewer({
             </Text>
           </TouchableOpacity>
 
+          {/* Recortar / Reproducir */}
+          <TouchableOpacity
+            style={styles.actionItem}
+            onPress={() =>
+              currentAsset.mediaType === 'video'
+                ? setPlayerAsset(currentAsset)
+                : setCropAsset(currentAsset)
+            }
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={currentAsset.mediaType === 'video' ? 'play-circle-outline' : 'crop'}
+              size={24}
+              color="#ffffff"
+            />
+            <Text style={styles.actionLabel}>
+              {currentAsset.mediaType === 'video' ? 'Reproducir' : 'Recortar'}
+            </Text>
+          </TouchableOpacity>
+
           {/* Eliminar */}
           <TouchableOpacity
             style={styles.actionItem}
@@ -317,6 +346,21 @@ export default function FullScreenViewer({
             <Text style={[styles.actionLabel, { color: theme.colors.danger }]}>Eliminar</Text>
           </TouchableOpacity>
         </View>
+
+        {playerAsset && (
+          <VideoPlayerScreen
+            asset={playerAsset}
+            onClose={() => setPlayerAsset(null)}
+            onSaved={onMediaSaved}
+          />
+        )}
+        {cropAsset && (
+          <ImageCropper
+            asset={cropAsset}
+            onClose={() => setCropAsset(null)}
+            onSaved={onMediaSaved}
+          />
+        )}
       </SafeAreaView>
     </Modal>
   );

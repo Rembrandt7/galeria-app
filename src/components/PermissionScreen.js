@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 
-export default function PermissionScreen({ onRequestPermission }) {
+export default function PermissionScreen({ onRequestPermission, onOpenSettings }) {
   return (
     <View style={styles.container}>
       <View style={styles.card}>
@@ -24,6 +24,17 @@ export default function PermissionScreen({ onRequestPermission }) {
           <Ionicons name="shield-checkmark-outline" size={20} color="#ffffff" style={styles.buttonIcon} />
           <Text style={styles.buttonText}>Permitir acceso</Text>
         </TouchableOpacity>
+
+        {onOpenSettings && (
+          <TouchableOpacity
+            style={[styles.button, { marginTop: 12, backgroundColor: theme.colors.surfaceHover }]}
+            onPress={onOpenSettings}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="settings-outline" size={20} color="#ffffff" style={styles.buttonIcon} />
+            <Text style={styles.buttonText}>Abrir ajustes de permisos</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </View>
   );

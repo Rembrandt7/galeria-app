@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
   Text,
   TouchableOpacity,
+  Linking,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
@@ -23,6 +25,7 @@ import PhotoGrid from './src/components/PhotoGrid';
 import AlbumList from './src/components/AlbumList';
 import FullScreenViewer from './src/components/FullScreenViewer';
 import PermissionScreen from './src/components/PermissionScreen';
+import DuplicatesScreen from './src/components/DuplicatesScreen';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
@@ -50,6 +53,7 @@ export default function App() {
   // Visor Pantalla Completa
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  const [dupVisible, setDupVisible] = useState(false);
 
   // Inicializar permisos y favoritos
   useEffect(() => {
@@ -69,6 +73,9 @@ export default function App() {
       if (granted) {
         await loadAssets({ reset: true });
         await loadAlbums();
+      } else if (!(await mediaService.canAskAgain())) {
+        // Permiso denegado de forma permanente: abrir ajustes automáticamente
+        Linking.openSettings();
       }
       setInitialLoading(false);
     })();
@@ -111,8 +118,27 @@ export default function App() {
       await loadAssets({ reset: true });
       await loadAlbums();
       setInitialLoading(false);
+    } else if (!(await mediaService.canAskAgain())) {
+      // Android ya no muestra el diálogo: llevar directo a los ajustes de permisos
+      Linking.openSettings();
     }
   };
+
+  // Al volver desde los ajustes del sistema, revisar si ya se concedió el permiso
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', async (state) => {
+      if (state !== 'active' || hasPermission !== false) return;
+      const { status } = await MediaLibrary.getPermissionsAsync();
+      if (status === 'granted') {
+        setHasPermission(true);
+        setInitialLoading(true);
+        await loadAssets({ reset: true });
+        await loadAlbums();
+        setInitialLoading(false);
+      }
+    });
+    return () => sub.remove();
+  }, [hasPermission]);
 
   // Determinar los media types según el filtro activo
   const getMediaTypes = (filter) => {
@@ -320,7 +346,12 @@ export default function App() {
 
   // Si no se han concedido permisos
   if (!hasPermission) {
-    return <PermissionScreen onRequestPermission={handleRequestPermission} />;
+    return (
+      <PermissionScreen
+        onRequestPermission={handleRequestPermission}
+        onOpenSettings={() => Linking.openSettings()}
+      />
+    );
   }
 
   const headerProps = getHeaderProps();
@@ -340,6 +371,11 @@ export default function App() {
           filterType={filterType}
           onToggleFilter={activeTab !== 'albums' || selectedAlbum ? handleToggleFilter : null}
           onPickFolder={activeTab === 'folder' ? handlePickFolder : null}
+          onFindDuplicates={
+            (activeTab === 'photos' || activeTab === 'folder') && !selectedAlbum
+              ? () => setDupVisible(true)
+              : null
+          }
         />
 
         {/* Contenido Principal */}
@@ -409,6 +445,15 @@ export default function App() {
           onToggleFavorite={handleToggleFavorite}
           onShare={handleShare}
           onDelete={handleDelete}
+          onMediaSaved={() => handleRefresh()}
+        />
+
+        {/* Buscador de fotos duplicadas */}
+        <DuplicatesScreen
+          visible={dupVisible}
+          sourceAssets={activeTab === 'folder' ? folderAssets : null}
+          onClose={() => setDupVisible(false)}
+          onChanged={() => handleRefresh()}
         />
       </SafeAreaView>
     </SafeAreaProvider>

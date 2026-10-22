@@ -112,6 +112,23 @@ export const mediaService = {
     }
   },
 
+  // Eliminar varios archivos multimedia (una sola confirmación del sistema)
+  async deleteAssets(assetIds) {
+    if (!assetIds || assetIds.length === 0) return true;
+    try {
+      return await MediaLibrary.deleteAssetsAsync(assetIds);
+    } catch (error) {
+      console.error('Error al eliminar archivos:', error);
+      throw error;
+    }
+  },
+
+  // Indica si Android todavía permite mostrar el diálogo de permisos
+  async canAskAgain() {
+    const { status, canAskAgain } = await MediaLibrary.getPermissionsAsync();
+    return status !== 'granted' && canAskAgain;
+  },
+
   // Obtener información detallada del archivo
   async getAssetInfo(assetId) {
     try {
