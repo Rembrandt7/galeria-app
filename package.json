@@ -1,0 +1,26 @@
+{
+  "name": "galeria-app",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.2",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "expo": "~58.0.17",
+    "expo-file-system": "~58.0.10",
+    "expo-image": "~58.0.16",
+    "expo-media-library": "~58.0.11",
+    "expo-sharing": "~58.0.20",
+    "expo-status-bar": "~58.0.4",
+    "react": "19.3.0",
+    "react-native": "0.88.0",
+    "react-native-safe-area-context": "~5.10.1"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "build:apk": "eas build -p android --profile preview"
+  },
+  "private": true
+}

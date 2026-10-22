@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "Mi Galería",
+    "slug": "galeria-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0d0f12",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Esta aplicación necesita acceso a tus fotos para mostrarlas en la galería.",
+        "NSPhotoLibraryAddUsageDescription": "Esta aplicación necesita guardar fotos en tu galería."
+      }
+    },
+    "android": {
+      "package": "com.rembrant.galeriaapp",
+      "adaptiveIcon": {
+        "backgroundColor": "#121826",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO",
+        "ACCESS_MEDIA_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-image",
+      "expo-sharing",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Permite acceder a tus fotos y videos para organizarlos en tu galería.",
+          "savePhotosPermission": "Permite guardar imágenes en tu galería.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ]
+    ]
+  }
+}
