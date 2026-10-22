@@ -18,7 +18,7 @@ const getMediaType = (file) => {
 };
 
 export const folderService = {
-  /** Abre el selector de carpetas del sistema (cualquier carpeta de almacenamiento o SD). */
+  /** Abre el selector de carpetas del sistema. */
   async pickFolder() {
     try {
       const dir = await Directory.pickDirectoryAsync();
@@ -40,16 +40,16 @@ export const folderService = {
   },
 
   /**
-   * Lee ÚNICAMENTE el nivel actual de la carpeta (no recursivo, ultra rápido).
-   * Devuelve las subcarpetas y las fotos/videos sueltos de este nivel.
+   * Lee la carpeta actual entregando lotes parciales para carga progresiva inmediata.
    */
-  async readDirectory(uri) {
+  async readDirectory(uri, onBatch) {
     try {
       const dir = new Directory(uri);
       const items = dir.list();
       const subfolders = [];
       const assets = [];
 
+      let processed = 0;
       for (const item of items) {
         if (item instanceof Directory) {
           subfolders.push({
@@ -76,12 +76,24 @@ export const folderService = {
             fromFolder: true,
           });
         }
+        processed++;
+
+        // Si la carpeta es muy pesada, emitir primer lote temprano (24 fotos)
+        if (onBatch && processed === 24 && assets.length > 0) {
+          onBatch({
+            subfolders: [...subfolders].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })),
+            assets: [...assets].sort((a, b) => b.creationTime - a.creationTime),
+            isPartial: true,
+          });
+        }
       }
 
-      // Subcarpetas alfabéticamente
       subfolders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-      // Fotos más recientes primero
       assets.sort((a, b) => b.creationTime - a.creationTime);
+
+      if (onBatch) {
+        onBatch({ subfolders, assets, isPartial: false });
+      }
 
       return { subfolders, assets };
     } catch (e) {
@@ -91,10 +103,9 @@ export const folderService = {
   },
 
   /**
-   * Carga todas las fotos y videos de esta carpeta y todas sus subcarpetas (recursivo).
-   * Se usa para el apartado "Ver todo junto".
+   * Carga recursiva con emisión progresiva lote por lote conforme se recorren subcarpetas.
    */
-  async loadFolderAssets(uri) {
+  async loadFolderAssets(uri, onBatch) {
     const out = [];
     const collect = (dir, depth) => {
       let items = [];
@@ -103,6 +114,7 @@ export const folderService = {
       } catch (e) {
         return;
       }
+      const batch = [];
       for (const item of items) {
         if (item instanceof Directory) {
           if (depth < MAX_DEPTH) collect(item, depth + 1);
@@ -113,7 +125,7 @@ export const folderService = {
           try {
             modified = item.modificationTime || 0;
           } catch (e) {}
-          out.push({
+          const assetObj = {
             id: item.uri,
             uri: item.uri,
             filename: item.name,
@@ -122,8 +134,14 @@ export const folderService = {
             width: null,
             height: null,
             fromFolder: true,
-          });
+          };
+          out.push(assetObj);
+          batch.push(assetObj);
         }
+      }
+
+      if (onBatch && batch.length > 0) {
+        onBatch(batch);
       }
     };
 

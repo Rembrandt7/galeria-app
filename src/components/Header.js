@@ -14,6 +14,7 @@ export default function Header({
   onToggleFilter,
   onPickFolder,
   onFindDuplicates,
+  onOpenSettings,
 }) {
   return (
     <View style={styles.headerContainer}>
@@ -97,6 +98,16 @@ export default function Header({
                 size={22}
                 color={isRefreshing ? theme.colors.primary : theme.colors.textPrimary}
               />
+            </TouchableOpacity>
+          )}
+
+          {onOpenSettings && (
+            <TouchableOpacity
+              onPress={onOpenSettings}
+              style={styles.actionButton}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="settings-outline" size={21} color={theme.colors.textPrimary} />
             </TouchableOpacity>
           )}
         </View>

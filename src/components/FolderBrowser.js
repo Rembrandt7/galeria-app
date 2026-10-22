@@ -23,6 +23,8 @@ const FOLDER_GAP = 12;
 const NUM_FOLDER_COLUMNS = 2;
 const FOLDER_CARD_WIDTH = (SCREEN_WIDTH - theme.spacing.lg * 2 - FOLDER_GAP) / NUM_FOLDER_COLUMNS;
 
+const BATCH_SIZE = 30; // Tamaño de carga parcial progresiva
+
 export default function FolderBrowser({
   rootUri,
   onPickNewFolder,
@@ -36,7 +38,7 @@ export default function FolderBrowser({
     return rootUri ? [{ uri: rootUri, name: folderService.folderName(rootUri) }] : [];
   });
 
-  // Modo de visualización: 'folders' (por carpetas - por defecto) | 'all' (todo junto)
+  // Modo de visualización: 'folders' (por carpetas) | 'all' (todo junto)
   const [viewMode, setViewMode] = useState('folders');
 
   // Contenido de la carpeta actual
@@ -44,35 +46,51 @@ export default function FolderBrowser({
   const [currentFolderAssets, setCurrentFolderAssets] = useState([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
 
-  // Contenido cuando se elige "Ver todo junto" (recursivo)
+  // Contenido cuando se elige "Ver todo junto" (recursivo progresivo)
   const [allAssets, setAllAssets] = useState([]);
   const [loadingAll, setLoadingAll] = useState(false);
 
+  // Límite de fotos visibles para renderizado parcial fluido
+  const [visibleLimit, setVisibleLimit] = useState(BATCH_SIZE);
+
   const currentFolder = history[history.length - 1] || null;
 
-  // Cargar nivel actual (ultra rápido, no recursivo)
+  // Cargar nivel actual con emisión parcial temprana
   const loadCurrentLevel = useCallback(async (uri) => {
     if (!uri) return;
     setLoading(true);
+    setIsStreaming(true);
+    setVisibleLimit(BATCH_SIZE);
     try {
-      const { subfolders: subs, assets: arts } = await folderService.readDirectory(uri);
-      setSubfolders(subs);
-      setCurrentFolderAssets(arts);
+      await folderService.readDirectory(uri, ({ subfolders: subs, assets: arts, isPartial }) => {
+        setSubfolders(subs);
+        setCurrentFolderAssets(arts);
+        if (isPartial) {
+          // El primer lote llegó: quitar el spinner para que el usuario ya vea fotos
+          setLoading(false);
+        }
+      });
     } catch (e) {
       setSubfolders([]);
       setCurrentFolderAssets([]);
     }
     setLoading(false);
+    setIsStreaming(false);
   }, []);
 
-  // Cargar todo junto recursivamente (solo cuando el usuario lo pide)
+  // Cargar todo junto recursivamente de manera progresiva
   const loadAllRecursive = useCallback(async (uri) => {
     if (!uri) return;
     setLoadingAll(true);
+    setAllAssets([]);
+    setVisibleLimit(BATCH_SIZE);
     try {
-      const items = await folderService.loadFolderAssets(uri);
-      setAllAssets(items);
+      await folderService.loadFolderAssets(uri, (chunk) => {
+        setAllAssets((prev) => [...prev, ...chunk]);
+        setLoadingAll(false); // Quitar bloqueo tan pronto llegue el primer lote
+      });
     } catch (e) {
       setAllAssets([]);
     }
@@ -127,20 +145,32 @@ export default function FolderBrowser({
     setRefreshing(false);
   };
 
-  // Filtrar fotos/videos según el filtro activo (all | photos | videos)
-  const displayedAssets = useMemo(() => {
+  // Lista total filtrada (photos | videos | all)
+  const totalFilteredAssets = useMemo(() => {
     const list = viewMode === 'folders' ? currentFolderAssets : allAssets;
     if (filterType === 'photos') return list.filter((a) => a.mediaType === 'photo');
     if (filterType === 'videos') return list.filter((a) => a.mediaType === 'video');
     return list;
   }, [viewMode, currentFolderAssets, allAssets, filterType]);
 
-  // Notificar al componente padre los assets visibles (para el detector de duplicados)
+  // Porción visible para no sobrecargar el renderizado
+  const paginatedAssets = useMemo(() => {
+    return totalFilteredAssets.slice(0, visibleLimit);
+  }, [totalFilteredAssets, visibleLimit]);
+
+  // Cargar más fotos al hacer scroll hacia abajo
+  const handleLoadMorePhotos = () => {
+    if (visibleLimit < totalFilteredAssets.length) {
+      setVisibleLimit((prev) => Math.min(prev + BATCH_SIZE, totalFilteredAssets.length));
+    }
+  };
+
+  // Notificar al componente padre los assets totales visibles (para análisis de duplicados)
   useEffect(() => {
     if (onAssetsChange) {
-      onAssetsChange(displayedAssets);
+      onAssetsChange(totalFilteredAssets);
     }
-  }, [displayedAssets, onAssetsChange]);
+  }, [totalFilteredAssets, onAssetsChange]);
 
   if (!rootUri) {
     return (
@@ -148,7 +178,7 @@ export default function FolderBrowser({
         <Ionicons name="folder-open-outline" size={72} color={theme.colors.primary} />
         <Text style={styles.title}>Elige una carpeta</Text>
         <Text style={styles.subtitle}>
-          Selecciona cualquier carpeta de tu dispositivo para explorar sus subcarpetas y fotos.
+          Selecciona cualquier carpeta de tu dispositivo o memoria externa para verla aquí.
         </Text>
         <TouchableOpacity style={styles.primaryButton} onPress={onPickNewFolder} activeOpacity={0.8}>
           <Text style={styles.primaryButtonText}>Seleccionar carpeta</Text>
@@ -177,14 +207,16 @@ export default function FolderBrowser({
     </TouchableOpacity>
   );
 
+  const hasMorePhotos = visibleLimit < totalFilteredAssets.length;
+
   return (
     <View style={styles.container}>
-      {/* Barra de Navegación y Breadcrumbs */}
+      {/* Barra de Navegación y Controles */}
       <View style={styles.navBar}>
         <View style={styles.pathRow}>
           {history.length > 1 && (
             <TouchableOpacity style={styles.backBtn} onPress={handleGoBack} activeOpacity={0.7}>
-              <Ionicons name="arrow-back" size={20} color="#fff" />
+              <Ionicons name="arrow-back" size={18} color="#fff" />
               <Text style={styles.backBtnText}>Subir nivel</Text>
             </TouchableOpacity>
           )}
@@ -220,7 +252,7 @@ export default function FolderBrowser({
             >
               <Ionicons
                 name="folder-outline"
-                size={16}
+                size={15}
                 color={viewMode === 'folders' ? '#fff' : theme.colors.textMuted}
               />
               <Text style={[styles.modeTabText, viewMode === 'folders' && styles.modeTabTextActive]}>
@@ -235,7 +267,7 @@ export default function FolderBrowser({
             >
               <Ionicons
                 name="grid-outline"
-                size={16}
+                size={15}
                 color={viewMode === 'all' ? '#fff' : theme.colors.textMuted}
               />
               <Text style={[styles.modeTabText, viewMode === 'all' && styles.modeTabTextActive]}>
@@ -245,65 +277,30 @@ export default function FolderBrowser({
           </View>
 
           <TouchableOpacity style={styles.pickFolderBtn} onPress={onPickNewFolder} activeOpacity={0.7}>
-            <Ionicons name="folder-open-outline" size={16} color={theme.colors.primaryLight} />
+            <Ionicons name="folder-open-outline" size={15} color={theme.colors.primaryLight} />
             <Text style={styles.pickFolderBtnText}>Cambiar</Text>
           </TouchableOpacity>
         </View>
       </View>
 
-      {/* Contenido */}
-      {loading || loadingAll ? (
+      {/* Contenido Principal */}
+      {loading && paginatedAssets.length === 0 && subfolders.length === 0 ? (
         <View style={styles.loadingBox}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={styles.loadingText}>
-            {viewMode === 'all' ? 'Cargando todo el contenido…' : 'Leyendo carpeta…'}
-          </Text>
+          <Text style={styles.loadingText}>Leyendo contenido de la carpeta…</Text>
         </View>
-      ) : viewMode === 'all' ? (
-        /* Modo "Todo junto" (recursivo) */
-        <FlatList
-          data={displayedAssets}
-          keyExtractor={(item) => item.id}
-          numColumns={NUM_PHOTO_COLUMNS}
-          contentContainerStyle={styles.photoListContent}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={theme.colors.primary}
-              colors={[theme.colors.primary]}
-            />
-          }
-          ListHeaderComponent={
-            <View style={styles.allBanner}>
-              <Ionicons name="information-circle-outline" size={18} color={theme.colors.primaryLight} />
-              <Text style={styles.allBannerText}>
-                Mostrando {displayedAssets.length} archivos de esta carpeta y todas sus subcarpetas.
-              </Text>
-            </View>
-          }
-          ListEmptyComponent={
-            <View style={styles.emptyBox}>
-              <Ionicons name="images-outline" size={56} color={theme.colors.textMuted} />
-              <Text style={styles.emptyText}>No se encontraron fotos ni videos en esta carpeta.</Text>
-            </View>
-          }
-          renderItem={({ item }) => (
-            <PhotoThumbnail
-              asset={item}
-              size={PHOTO_SIZE}
-              onPress={onSelectPhoto}
-              isFavorite={Boolean(favorites[item.id])}
-            />
-          )}
-        />
       ) : (
-        /* Modo "Por carpetas" (jerárquico - por defecto) */
         <FlatList
-          data={displayedAssets}
+          data={paginatedAssets}
           keyExtractor={(item) => item.id}
           numColumns={NUM_PHOTO_COLUMNS}
           contentContainerStyle={styles.photoListContent}
+          initialNumToRender={18}
+          maxToRenderPerBatch={18}
+          windowSize={7}
+          removeClippedSubviews={true}
+          onEndReached={handleLoadMorePhotos}
+          onEndReachedThreshold={0.5}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -314,32 +311,60 @@ export default function FolderBrowser({
           }
           ListHeaderComponent={
             <View>
-              {/* Sección de Subcarpetas */}
-              {subfolders.length > 0 && (
-                <View style={styles.subfolderSection}>
-                  <View style={styles.sectionHeader}>
-                    <Ionicons name="folder-outline" size={18} color={theme.colors.primary} />
-                    <Text style={styles.sectionTitle}>Carpetas ({subfolders.length})</Text>
-                  </View>
-                  <View style={styles.subfolderGrid}>
-                    {subfolders.map((item) => renderSubfolderItem(item))}
-                  </View>
-                </View>
-              )}
-
-              {/* Título de Fotos Sueltas de esta carpeta */}
-              {displayedAssets.length > 0 && (
-                <View style={styles.sectionHeader}>
-                  <Ionicons name="images-outline" size={18} color={theme.colors.primary} />
-                  <Text style={styles.sectionTitle}>
-                    Fotos y videos aquí ({displayedAssets.length})
+              {viewMode === 'all' ? (
+                <View style={styles.allBanner}>
+                  <Ionicons name="information-circle-outline" size={18} color={theme.colors.primaryLight} />
+                  <Text style={styles.allBannerText}>
+                    {loadingAll
+                      ? `Cargando fotos progresivamente… (${totalFilteredAssets.length} encontradas)`
+                      : `Mostrando ${totalFilteredAssets.length} archivos de esta carpeta y sus subcarpetas.`}
                   </Text>
                 </View>
+              ) : (
+                <>
+                  {/* Sección de Subcarpetas */}
+                  {subfolders.length > 0 && (
+                    <View style={styles.subfolderSection}>
+                      <View style={styles.sectionHeader}>
+                        <Ionicons name="folder-outline" size={18} color={theme.colors.primary} />
+                        <Text style={styles.sectionTitle}>Carpetas ({subfolders.length})</Text>
+                      </View>
+                      <View style={styles.subfolderGrid}>
+                        {subfolders.map((item) => renderSubfolderItem(item))}
+                      </View>
+                    </View>
+                  )}
+
+                  {/* Título de Fotos y Videos en este nivel */}
+                  {totalFilteredAssets.length > 0 && (
+                    <View style={styles.sectionHeader}>
+                      <Ionicons name="images-outline" size={18} color={theme.colors.primary} />
+                      <Text style={styles.sectionTitle}>
+                        Fotos y videos aquí ({totalFilteredAssets.length})
+                      </Text>
+                    </View>
+                  )}
+                </>
               )}
             </View>
           }
+          ListFooterComponent={
+            hasMorePhotos ? (
+              <View style={styles.footerLoader}>
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+                <Text style={styles.footerText}>
+                  Cargando más fotos… ({paginatedAssets.length} de {totalFilteredAssets.length})
+                </Text>
+              </View>
+            ) : isStreaming ? (
+              <View style={styles.footerLoader}>
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+                <Text style={styles.footerText}>Analizando archivos restantes…</Text>
+              </View>
+            ) : null
+          }
           ListEmptyComponent={
-            subfolders.length === 0 ? (
+            !loading && subfolders.length === 0 ? (
               <View style={styles.emptyBox}>
                 <Ionicons name="folder-open-outline" size={56} color={theme.colors.textMuted} />
                 <Text style={styles.emptyText}>Esta carpeta está vacía.</Text>
@@ -572,6 +597,16 @@ const styles = StyleSheet.create({
   },
   photoListContent: {
     paddingBottom: 40,
+  },
+  footerLoader: {
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  footerText: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
   },
   emptyBox: {
     padding: 40,

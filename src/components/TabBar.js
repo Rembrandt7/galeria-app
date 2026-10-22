@@ -1,107 +1,105 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 
 export default function TabBar({ activeTab, onSelectTab, favoritesCount = 0 }) {
+  // Orden requerido: Mi carpeta -> Álbumes -> Fotos -> Favoritos
   const tabs = [
-    { key: 'photos', label: 'Fotos', icon: 'images', iconActive: 'images' },
-    { key: 'albums', label: 'Álbumes', icon: 'folder-outline', iconActive: 'folder' },
     { key: 'folder', label: 'Mi carpeta', icon: 'folder-open-outline', iconActive: 'folder-open' },
+    { key: 'albums', label: 'Álbumes', icon: 'albums-outline', iconActive: 'albums' },
+    { key: 'photos', label: 'Fotos', icon: 'images-outline', iconActive: 'images' },
     { key: 'favorites', label: 'Favoritos', icon: 'heart-outline', iconActive: 'heart', badge: favoritesCount },
   ];
 
   return (
     <View style={styles.container}>
-      {tabs.map((tab) => {
-        const isActive = activeTab === tab.key;
-        return (
-          <TouchableOpacity
-            key={tab.key}
-            style={styles.tabItem}
-            onPress={() => onSelectTab(tab.key)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.iconWrapper}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+      >
+        {tabs.map((tab) => {
+          const isActive = activeTab === tab.key;
+          return (
+            <TouchableOpacity
+              key={tab.key}
+              style={[styles.tabPill, isActive && styles.tabPillActive]}
+              onPress={() => onSelectTab(tab.key)}
+              activeOpacity={0.75}
+            >
               <Ionicons
                 name={isActive ? tab.iconActive : tab.icon}
-                size={22}
-                color={isActive ? theme.colors.primary : theme.colors.textMuted}
+                size={16}
+                color={isActive ? '#ffffff' : theme.colors.textSecondary}
               />
+              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
+                {tab.label}
+              </Text>
               {tab.badge && tab.badge > 0 ? (
-                <View style={styles.badge}>
+                <View style={[styles.badge, isActive && styles.badgeActive]}>
                   <Text style={styles.badgeText}>
                     {tab.badge > 99 ? '99+' : tab.badge}
                   </Text>
                 </View>
               ) : null}
-            </View>
-            <Text
-              style={[
-                styles.tabLabel,
-                isActive ? styles.tabLabelActive : styles.tabLabelInactive,
-              ]}
-            >
-              {tab.label}
-            </Text>
-          </TouchableOpacity>
-        );
-      })}
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    flexDirection: 'row',
     backgroundColor: theme.colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.surfaceBorder,
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.md,
-    justifyContent: 'space-around',
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.surfaceBorder,
+    paddingVertical: 8,
+  },
+  scrollContent: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    gap: 8,
     alignItems: 'center',
   },
-  tabItem: {
+  tabPill: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingVertical: 2,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 20,
+    backgroundColor: theme.colors.surfaceHover,
+    gap: 6,
   },
-  iconWrapper: {
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-    width: 32,
-    height: 28,
-  },
-  badge: {
-    position: 'absolute',
-    top: -4,
-    right: -8,
-    backgroundColor: theme.colors.favorite,
-    borderRadius: 9,
-    minWidth: 18,
-    height: 18,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 4,
-  },
-  badgeText: {
-    color: '#fff',
-    fontSize: 10,
-    fontWeight: '700',
+  tabPillActive: {
+    backgroundColor: theme.colors.primary,
   },
   tabLabel: {
-    fontSize: 12,
-    marginTop: 4,
-    fontWeight: '500',
+    fontSize: 13,
+    fontWeight: '600',
+    color: theme.colors.textSecondary,
   },
   tabLabelActive: {
-    color: theme.colors.primary,
+    color: '#ffffff',
     fontWeight: '700',
   },
-  tabLabelInactive: {
-    color: theme.colors.textMuted,
+  badge: {
+    backgroundColor: theme.colors.favorite,
+    borderRadius: 10,
+    minWidth: 18,
+    height: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+  },
+  badgeActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  },
+  badgeText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
   },
 });

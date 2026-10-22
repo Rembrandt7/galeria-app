@@ -24,10 +24,12 @@ import FolderBrowser from './src/components/FolderBrowser';
 import FullScreenViewer from './src/components/FullScreenViewer';
 import PermissionScreen from './src/components/PermissionScreen';
 import DuplicatesScreen from './src/components/DuplicatesScreen';
+import SettingsModal from './src/components/SettingsModal';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
-  const [activeTab, setActiveTab] = useState('photos'); // 'photos' | 'albums' | 'folder' | 'favorites'
+  // Por defecto: 'folder' (Mi carpeta primero)
+  const [activeTab, setActiveTab] = useState('folder'); // 'folder' | 'albums' | 'photos' | 'favorites'
   const [filterType, setFilterType] = useState('all'); // 'all' | 'photos' | 'videos'
 
   // Datos
@@ -47,10 +49,11 @@ export default function App() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [initialLoading, setInitialLoading] = useState(true);
 
-  // Visor Pantalla Completa
+  // Modales
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [dupVisible, setDupVisible] = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   // Inicializar permisos y datos de arranque (ultra rápido)
   useEffect(() => {
@@ -68,10 +71,9 @@ export default function App() {
       setHasPermission(granted);
 
       if (granted) {
-        // Cargar únicamente el primer bloque de fotos para arrancar al instante
+        // Cargar únicamente el primer bloque de fotos
         await loadAssets({ reset: true });
       } else if (!(await mediaService.canAskAgain())) {
-        // Permiso denegado permanentemente: abrir ajustes automáticamente
         Linking.openSettings();
       }
 
@@ -153,7 +155,7 @@ export default function App() {
     }
   };
 
-  // Cargar lista de álbumes (se ejecuta bajo demanda al entrar a la pestaña Álbumes)
+  // Cargar lista de álbumes bajo demanda
   const loadAlbums = async () => {
     try {
       const albumList = await mediaService.getAlbums();
@@ -286,15 +288,6 @@ export default function App() {
       };
     }
 
-    if (activeTab === 'favorites') {
-      const count = Object.keys(favorites).length;
-      return {
-        title: 'Favoritos',
-        subtitle: `${count} ${count === 1 ? 'elemento guardado' : 'elementos guardados'}`,
-        showBack: false,
-      };
-    }
-
     if (activeTab === 'folder') {
       return {
         title: folderUri ? folderService.folderName(folderUri) : 'Mi carpeta',
@@ -307,6 +300,23 @@ export default function App() {
       return {
         title: 'Álbumes',
         subtitle: `${albums.length} carpetas`,
+        showBack: false,
+      };
+    }
+
+    if (activeTab === 'photos') {
+      return {
+        title: 'Todas las fotos',
+        subtitle: `${displayedAssets.length} fotos y videos`,
+        showBack: false,
+      };
+    }
+
+    if (activeTab === 'favorites') {
+      const count = Object.keys(favorites).length;
+      return {
+        title: 'Favoritos',
+        subtitle: `${count} ${count === 1 ? 'elemento guardado' : 'elementos guardados'}`,
         showBack: false,
       };
     }
@@ -357,18 +367,19 @@ export default function App() {
               ? () => setDupVisible(true)
               : null
           }
+          onOpenSettings={() => setSettingsVisible(true)}
+        />
+
+        {/* Barra de pestañas en la parte de arriba (debajo del Header) */}
+        <TabBar
+          activeTab={activeTab}
+          onSelectTab={handleSelectTab}
+          favoritesCount={Object.keys(favorites).length}
         />
 
         {/* Contenido Principal */}
         <View style={styles.content}>
-          {activeTab === 'albums' && !selectedAlbum ? (
-            <AlbumList
-              albums={albums}
-              onSelectAlbum={handleSelectAlbum}
-              onRefresh={handleRefresh}
-              isRefreshing={isRefreshing}
-            />
-          ) : activeTab === 'folder' ? (
+          {activeTab === 'folder' ? (
             <FolderBrowser
               rootUri={folderUri}
               onPickNewFolder={handlePickFolder}
@@ -376,6 +387,13 @@ export default function App() {
               favorites={favorites}
               filterType={filterType}
               onAssetsChange={(items) => setFolderAssets(items)}
+            />
+          ) : activeTab === 'albums' && !selectedAlbum ? (
+            <AlbumList
+              albums={albums}
+              onSelectAlbum={handleSelectAlbum}
+              onRefresh={handleRefresh}
+              isRefreshing={isRefreshing}
             />
           ) : (
             <PhotoGrid
@@ -398,13 +416,6 @@ export default function App() {
           )}
         </View>
 
-        {/* Barra de pestañas inferior */}
-        <TabBar
-          activeTab={activeTab}
-          onSelectTab={handleSelectTab}
-          favoritesCount={Object.keys(favorites).length}
-        />
-
         {/* Visor de Pantalla Completa */}
         <FullScreenViewer
           visible={viewerVisible}
@@ -424,6 +435,12 @@ export default function App() {
           sourceAssets={activeTab === 'folder' ? folderAssets : null}
           onClose={() => setDupVisible(false)}
           onChanged={() => handleRefresh()}
+        />
+
+        {/* Modal de Configuración y Actualizaciones */}
+        <SettingsModal
+          visible={settingsVisible}
+          onClose={() => setSettingsVisible(false)}
         />
       </SafeAreaView>
     </SafeAreaProvider>
