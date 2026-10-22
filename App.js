@@ -5,12 +5,9 @@ import {
   StatusBar,
   Alert,
   ActivityIndicator,
-  Text,
-  TouchableOpacity,
   Linking,
   AppState,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as MediaLibrary from 'expo-media-library';
 
@@ -23,13 +20,14 @@ import Header from './src/components/Header';
 import TabBar from './src/components/TabBar';
 import PhotoGrid from './src/components/PhotoGrid';
 import AlbumList from './src/components/AlbumList';
+import FolderBrowser from './src/components/FolderBrowser';
 import FullScreenViewer from './src/components/FullScreenViewer';
 import PermissionScreen from './src/components/PermissionScreen';
 import DuplicatesScreen from './src/components/DuplicatesScreen';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
-  const [activeTab, setActiveTab] = useState('photos'); // 'photos' | 'albums' | 'favorites'
+  const [activeTab, setActiveTab] = useState('photos'); // 'photos' | 'albums' | 'folder' | 'favorites'
   const [filterType, setFilterType] = useState('all'); // 'all' | 'photos' | 'videos'
 
   // Datos
@@ -38,10 +36,9 @@ export default function App() {
   const [favorites, setFavorites] = useState({});
   const [selectedAlbum, setSelectedAlbum] = useState(null);
 
-  // Carpeta elegida por el usuario (cualquier carpeta del sistema)
+  // Carpeta elegida por el usuario
   const [folderUri, setFolderUri] = useState(null);
   const [folderAssets, setFolderAssets] = useState([]);
-  const [folderLoading, setFolderLoading] = useState(false);
 
   // Paginación y Carga
   const [endCursor, setEndCursor] = useState(null);
@@ -55,44 +52,33 @@ export default function App() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const [dupVisible, setDupVisible] = useState(false);
 
-  // Inicializar permisos y favoritos
+  // Inicializar permisos y datos de arranque (ultra rápido)
   useEffect(() => {
     (async () => {
-      const favs = await storageService.getFavorites();
-      setFavorites(favs);
+      // 1. Cargar favoritos en segundo plano
+      storageService.getFavorites().then(setFavorites);
 
-      const savedFolder = await folderService.getSavedFolder();
-      if (savedFolder) {
-        setFolderUri(savedFolder);
-        loadFolder(savedFolder);
-      }
+      // 2. Cargar carpeta guardada en segundo plano
+      folderService.getSavedFolder().then((saved) => {
+        if (saved) setFolderUri(saved);
+      });
 
+      // 3. Revisar permisos
       const granted = await mediaService.checkAndRequestPermissions();
       setHasPermission(granted);
 
       if (granted) {
+        // Cargar únicamente el primer bloque de fotos para arrancar al instante
         await loadAssets({ reset: true });
-        await loadAlbums();
       } else if (!(await mediaService.canAskAgain())) {
-        // Permiso denegado de forma permanente: abrir ajustes automáticamente
+        // Permiso denegado permanentemente: abrir ajustes automáticamente
         Linking.openSettings();
       }
+
+      // Quitar pantalla de carga INMEDIATAMENTE (< 1 segundo)
       setInitialLoading(false);
     })();
   }, []);
-
-  // Cargar contenido de la carpeta elegida
-  const loadFolder = async (uri) => {
-    setFolderLoading(true);
-    try {
-      const list = await folderService.loadFolderAssets(uri);
-      setFolderAssets(list);
-    } catch (e) {
-      setFolderAssets([]);
-      Alert.alert('No se pudo abrir la carpeta', 'Vuelve a elegirla con el botón de carpeta.');
-    }
-    setFolderLoading(false);
-  };
 
   // Elegir cualquier carpeta del sistema
   const handlePickFolder = async () => {
@@ -102,7 +88,6 @@ export default function App() {
         setFolderUri(uri);
         setActiveTab('folder');
         setSelectedAlbum(null);
-        await loadFolder(uri);
       }
     } catch (e) {
       Alert.alert('Error', 'No se pudo seleccionar la carpeta.');
@@ -116,10 +101,8 @@ export default function App() {
     if (granted) {
       setInitialLoading(true);
       await loadAssets({ reset: true });
-      await loadAlbums();
       setInitialLoading(false);
     } else if (!(await mediaService.canAskAgain())) {
-      // Android ya no muestra el diálogo: llevar directo a los ajustes de permisos
       Linking.openSettings();
     }
   };
@@ -133,7 +116,6 @@ export default function App() {
         setHasPermission(true);
         setInitialLoading(true);
         await loadAssets({ reset: true });
-        await loadAlbums();
         setInitialLoading(false);
       }
     });
@@ -147,12 +129,12 @@ export default function App() {
     return [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video];
   };
 
-  // Cargar fotos/videos
+  // Cargar fotos/videos de la galería principal
   const loadAssets = async ({ reset = false, album = selectedAlbum, filter = filterType } = {}) => {
     try {
       const cursor = reset ? null : endCursor;
       const result = await mediaService.getAssets({
-        first: 50,
+        first: 36,
         after: cursor,
         albumId: album ? album.id : null,
         mediaTypes: getMediaTypes(filter),
@@ -171,7 +153,7 @@ export default function App() {
     }
   };
 
-  // Cargar lista de álbumes
+  // Cargar lista de álbumes (se ejecuta bajo demanda al entrar a la pestaña Álbumes)
   const loadAlbums = async () => {
     try {
       const albumList = await mediaService.getAlbums();
@@ -181,14 +163,21 @@ export default function App() {
     }
   };
 
+  // Cambio de pestaña con carga perezosa de álbumes
+  const handleSelectTab = (tab) => {
+    setSelectedAlbum(null);
+    setActiveTab(tab);
+    if (tab === 'albums' && albums.length === 0) {
+      loadAlbums();
+    }
+  };
+
   // Refrescar contenido actual
   const handleRefresh = async () => {
     setIsRefreshing(true);
-    if (activeTab === 'folder') {
-      if (folderUri) await loadFolder(folderUri);
-    } else if (activeTab === 'albums' && !selectedAlbum) {
+    if (activeTab === 'albums' && !selectedAlbum) {
       await loadAlbums();
-    } else {
+    } else if (activeTab !== 'folder') {
       await loadAssets({ reset: true, album: selectedAlbum, filter: filterType });
     }
     const updatedFavs = await storageService.getFavorites();
@@ -198,7 +187,7 @@ export default function App() {
 
   // Cargar más fotos (scroll infinito)
   const handleLoadMore = async () => {
-    if (!hasNextPage || isLoadingMore || activeTab === 'favorites') return;
+    if (!hasNextPage || isLoadingMore || activeTab === 'favorites' || activeTab === 'folder') return;
     setIsLoadingMore(true);
     await loadAssets({ reset: false, album: selectedAlbum, filter: filterType });
     setIsLoadingMore(false);
@@ -208,7 +197,9 @@ export default function App() {
   const handleToggleFilter = () => {
     const nextFilter = filterType === 'all' ? 'photos' : filterType === 'photos' ? 'videos' : 'all';
     setFilterType(nextFilter);
-    loadAssets({ reset: true, album: selectedAlbum, filter: nextFilter });
+    if (activeTab !== 'folder') {
+      loadAssets({ reset: true, album: selectedAlbum, filter: nextFilter });
+    }
   };
 
   // Seleccionar un álbum
@@ -250,13 +241,10 @@ export default function App() {
         ? await folderService.deleteFile(asset.uri)
         : await mediaService.deleteAsset(asset.id);
       if (deleted) {
-        // Remover de la lista activa
         setAssets((prev) => prev.filter((a) => a.id !== asset.id));
         setFolderAssets((prev) => prev.filter((a) => a.id !== asset.id));
-        // Remover de favoritos si estaba
         const updatedFavs = await storageService.removeFavorite(asset.id);
         setFavorites(updatedFavs);
-        // Cerrar o ajustar visor si era el último
         setViewerVisible(false);
       }
     } catch (error) {
@@ -268,7 +256,6 @@ export default function App() {
   const displayedAssets = useMemo(() => {
     if (activeTab === 'favorites') {
       const favList = Object.values(favorites);
-      // Filtrar según filtro si aplica
       return favList.filter((a) => {
         if (filterType === 'photos') return a.mediaType === 'photo';
         if (filterType === 'videos') return a.mediaType === 'video';
@@ -276,11 +263,7 @@ export default function App() {
       });
     }
     if (activeTab === 'folder') {
-      return folderAssets.filter((a) => {
-        if (filterType === 'photos') return a.mediaType === 'photo';
-        if (filterType === 'videos') return a.mediaType === 'video';
-        return true;
-      });
+      return folderAssets;
     }
     return assets;
   }, [activeTab, favorites, assets, folderAssets, filterType]);
@@ -315,7 +298,7 @@ export default function App() {
     if (activeTab === 'folder') {
       return {
         title: folderUri ? folderService.folderName(folderUri) : 'Mi carpeta',
-        subtitle: folderUri ? `${displayedAssets.length} fotos y videos` : 'Elige una carpeta',
+        subtitle: folderUri ? `${folderAssets.length} fotos y videos aquí` : 'Elige una carpeta',
         showBack: false,
       };
     }
@@ -335,7 +318,6 @@ export default function App() {
     };
   };
 
-  // Si aún está revisando permisos en el arranque
   if (hasPermission === null || initialLoading) {
     return (
       <View style={styles.loadingContainer}>
@@ -344,7 +326,6 @@ export default function App() {
     );
   }
 
-  // Si no se han concedido permisos
   if (!hasPermission) {
     return (
       <PermissionScreen
@@ -366,7 +347,7 @@ export default function App() {
         {/* Encabezado */}
         <Header
           {...headerProps}
-          onRefresh={handleRefresh}
+          onRefresh={activeTab !== 'folder' ? handleRefresh : null}
           isRefreshing={isRefreshing}
           filterType={filterType}
           onToggleFilter={activeTab !== 'albums' || selectedAlbum ? handleToggleFilter : null}
@@ -387,21 +368,15 @@ export default function App() {
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
             />
-          ) : activeTab === 'folder' && !folderUri ? (
-            <View style={styles.pickFolderBox}>
-              <Ionicons name="folder-open-outline" size={72} color={theme.colors.primary} />
-              <Text style={styles.pickFolderTitle}>Elige una carpeta</Text>
-              <Text style={styles.pickFolderText}>
-                Selecciona cualquier carpeta de tu teléfono o tarjeta SD para ver sus fotos y videos.
-              </Text>
-              <TouchableOpacity style={styles.pickFolderButton} onPress={handlePickFolder} activeOpacity={0.8}>
-                <Text style={styles.pickFolderButtonText}>Seleccionar carpeta</Text>
-              </TouchableOpacity>
-            </View>
-          ) : folderLoading && activeTab === 'folder' ? (
-            <View style={styles.loadingContainer}>
-              <ActivityIndicator size="large" color={theme.colors.primary} />
-            </View>
+          ) : activeTab === 'folder' ? (
+            <FolderBrowser
+              rootUri={folderUri}
+              onPickNewFolder={handlePickFolder}
+              onSelectPhoto={handleOpenViewer}
+              favorites={favorites}
+              filterType={filterType}
+              onAssetsChange={(items) => setFolderAssets(items)}
+            />
           ) : (
             <PhotoGrid
               assets={displayedAssets}
@@ -409,14 +384,12 @@ export default function App() {
               onSelectPhoto={handleOpenViewer}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
-              onLoadMore={activeTab === 'folder' ? undefined : handleLoadMore}
-              hasMore={activeTab !== 'favorites' && activeTab !== 'folder' && hasNextPage}
+              onLoadMore={handleLoadMore}
+              hasMore={activeTab !== 'favorites' && hasNextPage}
               isLoadingMore={isLoadingMore}
               emptyMessage={
                 activeTab === 'favorites'
                   ? 'Aún no has agregado fotos a favoritos.\nToca el corazón en cualquier foto para guardarla aquí.'
-                  : activeTab === 'folder'
-                  ? 'No hay fotos ni videos en esta carpeta.'
                   : selectedAlbum
                   ? 'No hay fotos en este álbum.'
                   : 'No se encontraron fotos en el dispositivo.'
@@ -428,10 +401,7 @@ export default function App() {
         {/* Barra de pestañas inferior */}
         <TabBar
           activeTab={activeTab}
-          onSelectTab={(tab) => {
-            setSelectedAlbum(null);
-            setActiveTab(tab);
-          }}
+          onSelectTab={handleSelectTab}
           favoritesCount={Object.keys(favorites).length}
         />
 
@@ -473,34 +443,5 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-  },
-  pickFolderBox: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-  },
-  pickFolderTitle: {
-    color: theme.colors.textPrimary,
-    fontSize: 22,
-    fontWeight: '700',
-    marginTop: 16,
-  },
-  pickFolderText: {
-    color: theme.colors.textSecondary,
-    textAlign: 'center',
-    marginTop: 8,
-    lineHeight: 20,
-  },
-  pickFolderButton: {
-    backgroundColor: theme.colors.primary,
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 24,
-    marginTop: 24,
-  },
-  pickFolderButtonText: {
-    color: '#fff',
-    fontWeight: '700',
   },
 });

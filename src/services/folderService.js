@@ -17,44 +17,18 @@ const getMediaType = (file) => {
   return null;
 };
 
-const collect = (dir, depth, out) => {
-  let items = [];
-  try {
-    items = dir.list();
-  } catch (e) {
-    return;
-  }
-  for (const item of items) {
-    if (item instanceof Directory) {
-      if (depth < MAX_DEPTH) collect(item, depth + 1, out);
-    } else {
-      const mediaType = getMediaType(item);
-      if (!mediaType) continue;
-      let modified = 0;
-      try {
-        modified = item.modificationTime || 0;
-      } catch (e) {}
-      out.push({
-        id: item.uri,
-        uri: item.uri,
-        filename: item.name,
-        mediaType,
-        creationTime: modified,
-        width: null,
-        height: null,
-        fromFolder: true,
-      });
-    }
-  }
-};
-
 export const folderService = {
-  /** Abre el selector de carpetas del sistema (cualquier carpeta). */
+  /** Abre el selector de carpetas del sistema (cualquier carpeta de almacenamiento o SD). */
   async pickFolder() {
-    const dir = await Directory.pickDirectoryAsync();
-    if (!dir) return null;
-    await AsyncStorage.setItem(FOLDER_KEY, dir.uri);
-    return dir.uri;
+    try {
+      const dir = await Directory.pickDirectoryAsync();
+      if (!dir) return null;
+      await AsyncStorage.setItem(FOLDER_KEY, dir.uri);
+      return dir.uri;
+    } catch (e) {
+      console.error('Error al seleccionar carpeta:', e);
+      return null;
+    }
   },
 
   async getSavedFolder() {
@@ -65,10 +39,95 @@ export const folderService = {
     await AsyncStorage.removeItem(FOLDER_KEY);
   },
 
-  /** Lista fotos y videos de la carpeta (incluye subcarpetas), más recientes primero. */
+  /**
+   * Lee ÚNICAMENTE el nivel actual de la carpeta (no recursivo, ultra rápido).
+   * Devuelve las subcarpetas y las fotos/videos sueltos de este nivel.
+   */
+  async readDirectory(uri) {
+    try {
+      const dir = new Directory(uri);
+      const items = dir.list();
+      const subfolders = [];
+      const assets = [];
+
+      for (const item of items) {
+        if (item instanceof Directory) {
+          subfolders.push({
+            id: item.uri,
+            uri: item.uri,
+            name: item.name || folderService.folderName(item.uri),
+            isDirectory: true,
+          });
+        } else {
+          const mediaType = getMediaType(item);
+          if (!mediaType) continue;
+          let modified = 0;
+          try {
+            modified = item.modificationTime || 0;
+          } catch (e) {}
+          assets.push({
+            id: item.uri,
+            uri: item.uri,
+            filename: item.name,
+            mediaType,
+            creationTime: modified,
+            width: null,
+            height: null,
+            fromFolder: true,
+          });
+        }
+      }
+
+      // Subcarpetas alfabéticamente
+      subfolders.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+      // Fotos más recientes primero
+      assets.sort((a, b) => b.creationTime - a.creationTime);
+
+      return { subfolders, assets };
+    } catch (e) {
+      console.warn('Error al leer carpeta:', e);
+      return { subfolders: [], assets: [] };
+    }
+  },
+
+  /**
+   * Carga todas las fotos y videos de esta carpeta y todas sus subcarpetas (recursivo).
+   * Se usa para el apartado "Ver todo junto".
+   */
   async loadFolderAssets(uri) {
     const out = [];
-    collect(new Directory(uri), 0, out);
+    const collect = (dir, depth) => {
+      let items = [];
+      try {
+        items = dir.list();
+      } catch (e) {
+        return;
+      }
+      for (const item of items) {
+        if (item instanceof Directory) {
+          if (depth < MAX_DEPTH) collect(item, depth + 1);
+        } else {
+          const mediaType = getMediaType(item);
+          if (!mediaType) continue;
+          let modified = 0;
+          try {
+            modified = item.modificationTime || 0;
+          } catch (e) {}
+          out.push({
+            id: item.uri,
+            uri: item.uri,
+            filename: item.name,
+            mediaType,
+            creationTime: modified,
+            width: null,
+            height: null,
+            fromFolder: true,
+          });
+        }
+      }
+    };
+
+    collect(new Directory(uri), 0);
     out.sort((a, b) => b.creationTime - a.creationTime);
     return out;
   },
@@ -76,14 +135,20 @@ export const folderService = {
   folderName(uri) {
     try {
       const decoded = decodeURIComponent(uri);
-      return decoded.split(/[:/]/).filter(Boolean).pop() || 'Carpeta';
+      const parts = decoded.split(/[:/]/).filter(Boolean);
+      return parts[parts.length - 1] || 'Carpeta';
     } catch (e) {
       return 'Carpeta';
     }
   },
 
   async deleteFile(uri) {
-    new File(uri).delete();
-    return true;
+    try {
+      new File(uri).delete();
+      return true;
+    } catch (e) {
+      console.error('Error al eliminar archivo de carpeta:', e);
+      return false;
+    }
   },
 };
