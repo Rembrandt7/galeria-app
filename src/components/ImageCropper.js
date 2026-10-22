@@ -31,8 +31,6 @@ const RATIOS = [
 ];
 
 export default function ImageCropper({ asset, onClose, onSaved }) {
-  if (!asset?.uri) return null;
-
   const [area, setArea] = useState({ w: 0, h: 0 });
   const [natural, setNatural] = useState(null); // { w, h } de la imagen original
   const [rect, setRectState] = useState(null); // relativo a la imagen mostrada
@@ -175,6 +173,8 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
   const box = rect
     ? { left: disp.x + rect.x, top: disp.y + rect.y, width: rect.w, height: rect.h }
     : null;
+
+  if (!asset?.uri) return null;
 
   return (
     <Modal visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>

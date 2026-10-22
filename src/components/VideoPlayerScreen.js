@@ -32,9 +32,9 @@ function formatTime(sec) {
 }
 
 export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
-  if (!asset?.uri) return null;
+  const videoSource = asset?.uri ? { uri: asset.uri } : null;
 
-  const player = useVideoPlayer({ uri: asset.uri }, (p) => {
+  const player = useVideoPlayer(videoSource, (p) => {
     p.timeUpdateEventInterval = 0.1;
     p.loop = false;
     p.play();
@@ -168,6 +168,8 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
   const pct = (t) => (duration ? `${clamp((t / duration) * 100, 0, 100)}%` : '0%');
   const progress = pct(time);
   const hasRange = trimStart !== null || trimEnd !== null;
+
+  if (!asset?.uri) return null;
 
   return (
     <Modal visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>

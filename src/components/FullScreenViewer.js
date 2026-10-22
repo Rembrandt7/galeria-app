@@ -7,20 +7,16 @@ import {
   Dimensions,
   TouchableOpacity,
   Alert,
-  FlatList,
   StatusBar,
   SafeAreaView,
   Animated,
-  Platform,
+  PanResponder,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 import VideoPlayerScreen from './VideoPlayerScreen';
 import ImageCropper from './ImageCropper';
-
-const SCREEN_WIDTH = Math.round(Dimensions.get('window').width);
-const SCREEN_HEIGHT = Math.round(Dimensions.get('window').height);
 
 function formatDate(timestamp) {
   if (!timestamp) return 'Fecha desconocida';
@@ -33,66 +29,6 @@ function formatDate(timestamp) {
     minute: '2-digit',
   });
 }
-
-// Diapositiva individual ultra-optimizada y a prueba de fallos
-const SlideItem = React.memo(function SlideItem({
-  item,
-  isCurrent,
-  isNear,
-  zoomScale,
-  onPlayVideo,
-  onToggleZoom,
-}) {
-  const lastTapRef = useRef(0);
-
-  const handleDoubleTap = () => {
-    const now = Date.now();
-    if (now - lastTapRef.current < 300) {
-      if (onToggleZoom) onToggleZoom();
-    }
-    lastTapRef.current = now;
-  };
-
-  // Validar que el item y su URI existan para evitar cierres inesperados
-  if (!item || !item.uri) {
-    return <View style={styles.slide} />;
-  }
-
-  // Si está muy lejos de la pantalla actual, descardar renderizado pesado para liberar memoria
-  if (!isNear) {
-    return <View style={styles.slide} />;
-  }
-
-  return (
-    <TouchableOpacity
-      activeOpacity={1}
-      style={styles.slide}
-      onPress={handleDoubleTap}
-    >
-      <Image
-        source={{ uri: item.uri }}
-        style={[
-          styles.fullImage,
-          isCurrent && zoomScale > 1 ? { transform: [{ scale: zoomScale }] } : null,
-        ]}
-        contentFit="contain"
-        priority={isCurrent ? 'high' : 'normal'}
-        transition={0}
-        cachePolicy="memory-disk"
-        recyclingKey={item.id}
-      />
-      {item.mediaType === 'video' && (
-        <TouchableOpacity
-          style={styles.centerVideoOverlay}
-          activeOpacity={0.8}
-          onPress={() => onPlayVideo(item)}
-        >
-          <Ionicons name="play-circle" size={68} color="rgba(255,255,255,0.85)" />
-        </TouchableOpacity>
-      )}
-    </TouchableOpacity>
-  );
-});
 
 export default function FullScreenViewer({
   visible,
@@ -109,42 +45,148 @@ export default function FullScreenViewer({
   const [playerAsset, setPlayerAsset] = useState(null);
   const [cropAsset, setCropAsset] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
+  const [showControls, setShowControls] = useState(true);
   const [zoomScale, setZoomScale] = useState(1);
-  const flatListRef = useRef(null);
 
+  const screenWidth = Math.round(Dimensions.get('window').width);
+  const translateX = useRef(new Animated.Value(0)).current;
+  const lastTapRef = useRef(0);
+
+  // Sincronizar índice inicial al abrirse
   useEffect(() => {
     if (visible) {
-      setCurrentIndex(initialIndex);
+      const validIndex = initialIndex >= 0 && initialIndex < assets.length ? initialIndex : 0;
+      setCurrentIndex(validIndex);
       setZoomScale(1);
       setShowInfo(false);
+      setShowControls(true);
+      translateX.setValue(0);
     }
-  }, [visible, initialIndex]);
+  }, [visible, initialIndex, assets.length]);
 
+  // Si no está visible o no hay archivos, no renderizar
   if (!visible || !assets || assets.length === 0) return null;
 
-  const currentAsset = (assets && assets[currentIndex]) || (assets && assets[0]) || null;
+  const currentAsset = assets[currentIndex] || assets[0] || null;
   if (!currentAsset) return null;
 
+  // Cambiar a la siguiente imagen con animación fluida
   const handleNext = () => {
     if (currentIndex < assets.length - 1) {
-      flatListRef.current?.scrollToIndex({ index: currentIndex + 1, animated: true });
-      setCurrentIndex(currentIndex + 1);
-      setZoomScale(1);
+      Animated.timing(translateX, {
+        toValue: -screenWidth,
+        duration: 120,
+        useNativeDriver: true,
+      }).start(() => {
+        setCurrentIndex((idx) => idx + 1);
+        setZoomScale(1);
+        translateX.setValue(screenWidth);
+        Animated.timing(translateX, {
+          toValue: 0,
+          duration: 120,
+          useNativeDriver: true,
+        }).start();
+      });
     }
   };
 
+  // Cambiar a la imagen anterior con animación fluida
   const handlePrev = () => {
     if (currentIndex > 0) {
-      flatListRef.current?.scrollToIndex({ index: currentIndex - 1, animated: true });
-      setCurrentIndex(currentIndex - 1);
-      setZoomScale(1);
+      Animated.timing(translateX, {
+        toValue: screenWidth,
+        duration: 120,
+        useNativeDriver: true,
+      }).start(() => {
+        setCurrentIndex((idx) => idx - 1);
+        setZoomScale(1);
+        translateX.setValue(-screenWidth);
+        Animated.timing(translateX, {
+          toValue: 0,
+          duration: 120,
+          useNativeDriver: true,
+        }).start();
+      });
     }
   };
 
-  const handleToggleZoom = useCallback(() => {
+  // Alternar zoom
+  const handleToggleZoom = () => {
     setZoomScale((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 1));
-  }, []);
+  };
 
+  // Toque simple (ocultar/mostrar barras) o doble toque (zoom)
+  const handleScreenTouch = () => {
+    const now = Date.now();
+    if (now - lastTapRef.current < 280) {
+      handleToggleZoom();
+    } else {
+      setShowControls((prev) => !prev);
+    }
+    lastTapRef.current = now;
+  };
+
+  // PanResponder táctil para deslizar fotos a los lados
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gesture) => {
+        // Solo deslizar si no hay zoom y el movimiento es predominantemente horizontal
+        return (
+          zoomScale === 1 &&
+          Math.abs(gesture.dx) > 12 &&
+          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
+        );
+      },
+      onPanResponderMove: (_, gesture) => {
+        translateX.setValue(gesture.dx);
+      },
+      onPanResponderRelease: (_, gesture) => {
+        if (gesture.dx < -60 && currentIndex < assets.length - 1) {
+          // Deslizó hacia la izquierda -> Siguiente
+          Animated.timing(translateX, {
+            toValue: -screenWidth,
+            duration: 130,
+            useNativeDriver: true,
+          }).start(() => {
+            setCurrentIndex((idx) => Math.min(idx + 1, assets.length - 1));
+            setZoomScale(1);
+            translateX.setValue(screenWidth);
+            Animated.timing(translateX, {
+              toValue: 0,
+              duration: 130,
+              useNativeDriver: true,
+            }).start();
+          });
+        } else if (gesture.dx > 60 && currentIndex > 0) {
+          // Deslizó hacia la derecha -> Anterior
+          Animated.timing(translateX, {
+            toValue: screenWidth,
+            duration: 130,
+            useNativeDriver: true,
+          }).start(() => {
+            setCurrentIndex((idx) => Math.max(idx - 1, 0));
+            setZoomScale(1);
+            translateX.setValue(-screenWidth);
+            Animated.timing(translateX, {
+              toValue: 0,
+              duration: 130,
+              useNativeDriver: true,
+            }).start();
+          });
+        } else {
+          // Regresar al centro si el arrastre fue corto
+          Animated.spring(translateX, {
+            toValue: 0,
+            friction: 7,
+            useNativeDriver: true,
+          }).start();
+        }
+      },
+    })
+  ).current;
+
+  // Confirmar eliminación
   const handleDeletePrompt = () => {
     Alert.alert(
       '¿Eliminar archivo?',
@@ -162,37 +204,7 @@ export default function FullScreenViewer({
     );
   };
 
-  const onViewableItemsChanged = useRef(({ viewableItems }) => {
-    if (viewableItems && viewableItems.length > 0) {
-      const newIndex = viewableItems[0].index;
-      if (newIndex !== null && newIndex !== undefined) {
-        setCurrentIndex(newIndex);
-        setZoomScale(1);
-      }
-    }
-  }).current;
-
-  const viewabilityConfig = useRef({
-    itemVisiblePercentThreshold: 60,
-  }).current;
-
-  const renderItem = useCallback(
-    ({ item, index }) => {
-      const isCurrent = index === currentIndex;
-      const isNear = Math.abs(index - currentIndex) <= 1;
-      return (
-        <SlideItem
-          item={item}
-          isCurrent={isCurrent}
-          isNear={isNear}
-          zoomScale={zoomScale}
-          onPlayVideo={setPlayerAsset}
-          onToggleZoom={handleToggleZoom}
-        />
-      );
-    },
-    [currentIndex, zoomScale, handleToggleZoom]
-  );
+  const isVideo = currentAsset.mediaType === 'video';
 
   return (
     <Modal
@@ -202,100 +214,110 @@ export default function FullScreenViewer({
       onRequestClose={onClose}
       statusBarTranslucent={true}
     >
-      <StatusBar hidden={false} barStyle="light-content" backgroundColor="#000000" />
+      <StatusBar hidden={!showControls} barStyle="light-content" backgroundColor="#000000" />
       <SafeAreaView style={styles.container}>
         {/* Barra Superior */}
-        <View style={styles.topBar}>
-          <TouchableOpacity
-            style={styles.iconButton}
-            onPress={onClose}
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-          >
-            <Ionicons name="close" size={26} color="#ffffff" />
+        {showControls && (
+          <View style={styles.topBar}>
+            <TouchableOpacity
+              style={styles.iconButton}
+              onPress={onClose}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <Ionicons name="close" size={26} color="#ffffff" />
+            </TouchableOpacity>
+
+            <Text style={styles.counterText}>
+              {currentIndex + 1} / {assets.length}
+            </Text>
+
+            <View style={styles.topRightActions}>
+              <TouchableOpacity
+                style={styles.iconButton}
+                onPress={handleToggleZoom}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <View style={styles.zoomPill}>
+                  <Ionicons
+                    name={zoomScale > 1 ? 'contract' : 'scan-outline'}
+                    size={16}
+                    color="#ffffff"
+                  />
+                  <Text style={styles.zoomText}>{zoomScale}x</Text>
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.iconButton}
+                onPress={() => setShowInfo(!showInfo)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons
+                  name={showInfo ? 'information-circle' : 'information-circle-outline'}
+                  size={26}
+                  color={showInfo ? theme.colors.primaryLight : '#ffffff'}
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Visor Central Táctil con soporte de deslizamiento */}
+        <View style={styles.carouselContainer} {...panResponder.panHandlers}>
+          <TouchableOpacity activeOpacity={1} style={styles.slideTouchable} onPress={handleScreenTouch}>
+            <Animated.View
+              style={[
+                styles.imageWrapper,
+                {
+                  transform: [
+                    { translateX },
+                    { scale: zoomScale },
+                  ],
+                },
+              ]}
+            >
+              {currentAsset.uri ? (
+                <Image
+                  source={{ uri: currentAsset.uri }}
+                  style={styles.fullImage}
+                  contentFit="contain"
+                  priority="high"
+                  transition={0}
+                  cachePolicy="memory-disk"
+                />
+              ) : null}
+
+              {/* Botón de reproducción si es un video */}
+              {isVideo && (
+                <TouchableOpacity
+                  style={styles.centerVideoOverlay}
+                  activeOpacity={0.8}
+                  onPress={() => setPlayerAsset(currentAsset)}
+                >
+                  <Ionicons name="play-circle" size={72} color="rgba(255,255,255,0.9)" />
+                </TouchableOpacity>
+              )}
+            </Animated.View>
           </TouchableOpacity>
 
-          <Text style={styles.counterText}>
-            {currentIndex + 1} / {assets.length}
-          </Text>
-
-          <View style={styles.topRightActions}>
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={handleToggleZoom}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <View style={styles.zoomPill}>
-                <Ionicons
-                  name={zoomScale > 1 ? 'contract' : 'scan-outline'}
-                  size={18}
-                  color="#ffffff"
-                />
-                <Text style={styles.zoomText}>{zoomScale}x</Text>
-              </View>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => setShowInfo(!showInfo)}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            >
-              <Ionicons
-                name={showInfo ? 'information-circle' : 'information-circle-outline'}
-                size={26}
-                color={showInfo ? theme.colors.primaryLight : '#ffffff'}
-              />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Carrusel Deslizable de Fotos */}
-        <View style={styles.carouselContainer}>
-          <FlatList
-            ref={flatListRef}
-            data={assets}
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            keyExtractor={(item) => (item?.id ? item.id : String(item?.uri || Math.random()))}
-            getItemLayout={(_, index) => ({
-              length: SCREEN_WIDTH,
-              offset: SCREEN_WIDTH * index,
-              index,
-            })}
-            initialScrollIndex={initialIndex > 0 && initialIndex < assets.length ? initialIndex : 0}
-            onScrollToIndexFailed={(info) => {
-              setTimeout(() => {
-                try {
-                  flatListRef.current?.scrollToIndex({ index: info.index, animated: false });
-                } catch (e) {}
-              }, 100);
-            }}
-            windowSize={5}
-            initialNumToRender={assets.length > 0 ? Math.min(assets.length, Math.max(initialIndex + 2, 8)) : 1}
-            maxToRenderPerBatch={8}
-            removeClippedSubviews={false}
-            scrollEnabled={zoomScale === 1}
-            onViewableItemsChanged={onViewableItemsChanged}
-            viewabilityConfig={viewabilityConfig}
-            renderItem={renderItem}
-          />
-
           {/* Flechas de Navegación Lateral */}
-          {currentIndex > 0 && (
+          {showControls && currentIndex > 0 && (
             <TouchableOpacity
               style={[styles.arrowButton, styles.leftArrow]}
               onPress={handlePrev}
               activeOpacity={0.7}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
             >
               <Ionicons name="chevron-back" size={30} color="#ffffff" />
             </TouchableOpacity>
           )}
 
-          {currentIndex < assets.length - 1 && (
+          {showControls && currentIndex < assets.length - 1 && (
             <TouchableOpacity
               style={[styles.arrowButton, styles.rightArrow]}
               onPress={handleNext}
               activeOpacity={0.7}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
             >
               <Ionicons name="chevron-forward" size={30} color="#ffffff" />
             </TouchableOpacity>
@@ -310,7 +332,7 @@ export default function FullScreenViewer({
               <Ionicons name="document-text-outline" size={16} color={theme.colors.textSecondary} />
               <Text style={styles.infoLabel}>Nombre:</Text>
               <Text style={styles.infoValue} numberOfLines={1}>
-                {currentAsset.filename || 'Foto'}
+                {currentAsset.filename || 'Archivo'}
               </Text>
             </View>
             <View style={styles.infoRow}>
@@ -329,81 +351,77 @@ export default function FullScreenViewer({
             ) : null}
             <View style={styles.infoRow}>
               <Ionicons
-                name={currentAsset.mediaType === 'video' ? 'videocam-outline' : 'image-outline'}
+                name={isVideo ? 'videocam-outline' : 'image-outline'}
                 size={16}
                 color={theme.colors.textSecondary}
               />
               <Text style={styles.infoLabel}>Tipo:</Text>
-              <Text style={styles.infoValue}>
-                {currentAsset.mediaType === 'video' ? 'Video' : 'Fotografía'}
-              </Text>
+              <Text style={styles.infoValue}>{isVideo ? 'Video' : 'Fotografía'}</Text>
             </View>
           </View>
         )}
 
         {/* Barra Inferior de Acciones */}
-        <View style={styles.bottomBar}>
-          {/* Compartir */}
-          <TouchableOpacity
-            style={styles.actionItem}
-            onPress={() => onShare(currentAsset)}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="share-social-outline" size={24} color="#ffffff" />
-            <Text style={styles.actionLabel}>Compartir</Text>
-          </TouchableOpacity>
-
-          {/* Favorito */}
-          <TouchableOpacity
-            style={styles.actionItem}
-            onPress={() => onToggleFavorite(currentAsset)}
-            activeOpacity={0.7}
-          >
-            <Ionicons
-              name={isFavorite ? 'heart' : 'heart-outline'}
-              size={26}
-              color={isFavorite ? theme.colors.favorite : '#ffffff'}
-            />
-            <Text
-              style={[
-                styles.actionLabel,
-                isFavorite && { color: theme.colors.favorite, fontWeight: '700' },
-              ]}
+        {showControls && (
+          <View style={styles.bottomBar}>
+            {/* Compartir */}
+            <TouchableOpacity
+              style={styles.actionItem}
+              onPress={() => onShare(currentAsset)}
+              activeOpacity={0.7}
             >
-              {isFavorite ? 'Favorito' : 'Favorito'}
-            </Text>
-          </TouchableOpacity>
+              <Ionicons name="share-social-outline" size={24} color="#ffffff" />
+              <Text style={styles.actionLabel}>Compartir</Text>
+            </TouchableOpacity>
 
-          {/* Recortar / Reproducir */}
-          <TouchableOpacity
-            style={styles.actionItem}
-            onPress={() =>
-              currentAsset.mediaType === 'video'
-                ? setPlayerAsset(currentAsset)
-                : setCropAsset(currentAsset)
-            }
-            activeOpacity={0.7}
-          >
-            <Ionicons
-              name={currentAsset.mediaType === 'video' ? 'play-circle-outline' : 'crop'}
-              size={24}
-              color="#ffffff"
-            />
-            <Text style={styles.actionLabel}>
-              {currentAsset.mediaType === 'video' ? 'Reproducir' : 'Recortar'}
-            </Text>
-          </TouchableOpacity>
+            {/* Favorito */}
+            <TouchableOpacity
+              style={styles.actionItem}
+              onPress={() => onToggleFavorite(currentAsset)}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={isFavorite ? 'heart' : 'heart-outline'}
+                size={26}
+                color={isFavorite ? theme.colors.favorite : '#ffffff'}
+              />
+              <Text
+                style={[
+                  styles.actionLabel,
+                  isFavorite && { color: theme.colors.favorite, fontWeight: '700' },
+                ]}
+              >
+                Favorito
+              </Text>
+            </TouchableOpacity>
 
-          {/* Eliminar */}
-          <TouchableOpacity
-            style={styles.actionItem}
-            onPress={handleDeletePrompt}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="trash-outline" size={24} color={theme.colors.danger} />
-            <Text style={[styles.actionLabel, { color: theme.colors.danger }]}>Eliminar</Text>
-          </TouchableOpacity>
-        </View>
+            {/* Recortar / Reproducir */}
+            <TouchableOpacity
+              style={styles.actionItem}
+              onPress={() =>
+                isVideo ? setPlayerAsset(currentAsset) : setCropAsset(currentAsset)
+              }
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={isVideo ? 'play-circle-outline' : 'crop'}
+                size={24}
+                color="#ffffff"
+              />
+              <Text style={styles.actionLabel}>{isVideo ? 'Reproducir' : 'Recortar'}</Text>
+            </TouchableOpacity>
+
+            {/* Eliminar */}
+            <TouchableOpacity
+              style={styles.actionItem}
+              onPress={handleDeletePrompt}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="trash-outline" size={24} color={theme.colors.danger} />
+              <Text style={[styles.actionLabel, { color: theme.colors.danger }]}>Eliminar</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {playerAsset && (
           <VideoPlayerScreen
@@ -437,8 +455,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.lg,
     paddingTop: theme.spacing.md,
     paddingBottom: theme.spacing.md,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
-    zIndex: 10,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    zIndex: 20,
   },
   counterText: {
     color: '#ffffff',
@@ -472,15 +490,22 @@ const styles = StyleSheet.create({
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
   },
-  slide: {
-    width: SCREEN_WIDTH,
+  slideTouchable: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  imageWrapper: {
+    width: '100%',
     height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
   },
   fullImage: {
-    width: SCREEN_WIDTH,
+    width: '100%',
     height: '100%',
   },
   centerVideoOverlay: {
@@ -491,13 +516,13 @@ const styles = StyleSheet.create({
   arrowButton: {
     position: 'absolute',
     top: '48%',
-    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    backgroundColor: 'rgba(0, 0, 0, 0.55)',
     borderRadius: 24,
-    width: 44,
-    height: 44,
+    width: 46,
+    height: 46,
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 10,
+    zIndex: 15,
   },
   leftArrow: {
     left: 12,
@@ -512,7 +537,7 @@ const styles = StyleSheet.create({
     padding: theme.spacing.lg,
     borderTopWidth: 1,
     borderTopColor: theme.colors.surfaceBorder,
-    zIndex: 20,
+    zIndex: 25,
   },
   infoTitle: {
     fontSize: 15,
@@ -545,7 +570,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.85)',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.1)',
-    zIndex: 10,
+    zIndex: 20,
   },
   actionItem: {
     alignItems: 'center',
