@@ -33,6 +33,10 @@ export default function FolderBrowser({
   favorites = {},
   filterType = 'all',
   onAssetsChange,
+  hiddenFolders = {},
+  onToggleHideFolder,
+  showAllFolders = false,
+  onToggleShowAllFolders,
 }) {
   // Historial de navegación: [{ uri, name }]
   const [history, setHistory] = useState(() => {
@@ -188,25 +192,70 @@ export default function FolderBrowser({
     );
   }
 
-  // Renderizar una tarjeta de subcarpeta
-  const renderSubfolderItem = (item) => (
-    <TouchableOpacity
-      key={item.id}
-      style={[styles.folderCard, { width: FOLDER_CARD_WIDTH }]}
-      onPress={() => handleOpenSubfolder(item)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.folderIconWrap}>
-        <Ionicons name="folder" size={32} color={theme.colors.primary} />
-      </View>
-      <View style={styles.folderInfo}>
-        <Text style={styles.folderName} numberOfLines={2}>
-          {item.name}
-        </Text>
-        <Text style={styles.folderHint}>Toca para entrar</Text>
-      </View>
-    </TouchableOpacity>
-  );
+  // Subcarpetas visibles filtradas por el modo oculto
+  const visibleSubfolders = useMemo(() => {
+    if (showAllFolders) return subfolders;
+    return subfolders.filter((item) => !(hiddenFolders[item.uri] || hiddenFolders[item.name]));
+  }, [subfolders, hiddenFolders, showAllFolders]);
+
+  const hiddenSubfolderCount = useMemo(() => {
+    return subfolders.filter((item) => Boolean(hiddenFolders[item.uri] || hiddenFolders[item.name])).length;
+  }, [subfolders, hiddenFolders]);
+
+  // Renderizar una tarjeta de subcarpeta con soporte para ocultar/prender
+  const renderSubfolderItem = (item) => {
+    const isHidden = Boolean(hiddenFolders[item.uri] || hiddenFolders[item.name]);
+    if (!showAllFolders && isHidden) return null;
+
+    return (
+      <TouchableOpacity
+        key={item.id}
+        style={[
+          styles.folderCard,
+          { width: FOLDER_CARD_WIDTH },
+          isHidden && styles.folderCardHidden,
+        ]}
+        onPress={() => handleOpenSubfolder(item)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.folderCardTopRow}>
+          <View style={[styles.folderIconWrap, isHidden && styles.folderIconWrapHidden]}>
+            <Ionicons
+              name={isHidden ? 'folder-outline' : 'folder'}
+              size={28}
+              color={isHidden ? '#f59e0b' : theme.colors.primary}
+            />
+          </View>
+
+          {/* Botón para Ocultar / Prender la subcarpeta */}
+          <TouchableOpacity
+            style={[styles.hideEyeBtn, isHidden && styles.hideEyeBtnHidden]}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            onPress={(e) => {
+              e.stopPropagation();
+              if (onToggleHideFolder) onToggleHideFolder(item.uri, item.name);
+            }}
+            activeOpacity={0.7}
+          >
+            <Ionicons
+              name={isHidden ? 'eye-off' : 'eye-outline'}
+              size={18}
+              color={isHidden ? '#f59e0b' : theme.colors.textMuted}
+            />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.folderInfo}>
+          <Text style={[styles.folderName, isHidden && styles.folderNameHidden]} numberOfLines={2}>
+            {item.name}
+          </Text>
+          <Text style={[styles.folderHint, isHidden && styles.folderHintHidden]}>
+            {isHidden ? 'Oculta · Toca para entrar' : 'Toca para entrar'}
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   const hasMorePhotos = visibleLimit < totalFilteredAssets.length;
 
@@ -243,7 +292,7 @@ export default function FolderBrowser({
           </View>
         </View>
 
-        {/* Selector de modo y botón de cambiar carpeta */}
+        {/* Selector de modo, modo todo visible y cambiar carpeta */}
         <View style={styles.controlsRow}>
           <View style={styles.modeTabs}>
             <TouchableOpacity
@@ -276,6 +325,22 @@ export default function FolderBrowser({
               </Text>
             </TouchableOpacity>
           </View>
+
+          {/* Botón Modo Todo Visible */}
+          <TouchableOpacity
+            style={[styles.showAllToggle, showAllFolders && styles.showAllToggleActive]}
+            onPress={onToggleShowAllFolders}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name={showAllFolders ? 'eye' : 'eye-off-outline'}
+              size={13}
+              color={showAllFolders ? '#ffffff' : theme.colors.textSecondary}
+            />
+            <Text style={[styles.showAllToggleText, showAllFolders && styles.showAllToggleTextActive]}>
+              {showAllFolders ? 'Todo visible' : 'Ocultas (off)'}
+            </Text>
+          </TouchableOpacity>
 
           <TouchableOpacity style={styles.pickFolderBtn} onPress={onPickNewFolder} activeOpacity={0.7}>
             <Ionicons name="folder-open-outline" size={15} color={theme.colors.primaryLight} />
@@ -325,14 +390,17 @@ export default function FolderBrowser({
               ) : (
                 <>
                   {/* Sección de Subcarpetas */}
-                  {subfolders.length > 0 && (
+                  {visibleSubfolders.length > 0 && (
                     <View style={styles.subfolderSection}>
                       <View style={styles.sectionHeader}>
                         <Ionicons name="folder-outline" size={18} color={theme.colors.primary} />
-                        <Text style={styles.sectionTitle}>Carpetas ({subfolders.length})</Text>
+                        <Text style={styles.sectionTitle}>
+                          Carpetas ({visibleSubfolders.length}
+                          {hiddenSubfolderCount > 0 && showAllFolders ? ` · ${hiddenSubfolderCount} ocultas` : ''})
+                        </Text>
                       </View>
                       <View style={styles.subfolderGrid}>
-                        {subfolders.map((item) => renderSubfolderItem(item))}
+                        {visibleSubfolders.map((item) => renderSubfolderItem(item))}
                       </View>
                     </View>
                   )}
@@ -377,7 +445,7 @@ export default function FolderBrowser({
             <PhotoThumbnail
               asset={item}
               size={PHOTO_SIZE}
-              onPress={onSelectPhoto}
+              onPress={(a) => onSelectPhoto(a, totalFilteredAssets)}
               isFavorite={Boolean(favorites[item.id])}
             />
           )}
@@ -516,6 +584,29 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
   },
+  showAllToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surfaceHover,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 8,
+    gap: 4,
+    borderWidth: 1,
+    borderColor: theme.colors.surfaceBorder,
+  },
+  showAllToggleActive: {
+    backgroundColor: '#10b981',
+    borderColor: '#10b981',
+  },
+  showAllToggleText: {
+    color: theme.colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  showAllToggleTextActive: {
+    color: '#ffffff',
+  },
   loadingBox: {
     flex: 1,
     alignItems: 'center',
@@ -568,23 +659,48 @@ const styles = StyleSheet.create({
   folderCard: {
     backgroundColor: theme.colors.surface,
     borderRadius: 12,
-    padding: 12,
+    padding: 10,
     borderWidth: 1,
     borderColor: theme.colors.surfaceBorder,
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: 8,
+  },
+  folderCardHidden: {
+    borderColor: '#f59e0b',
+    borderStyle: 'dashed',
+    opacity: 0.85,
+  },
+  folderCardTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'space-between',
+    width: '100%',
   },
   folderIconWrap: {
-    width: 44,
-    height: 44,
+    width: 38,
+    height: 38,
     borderRadius: 10,
     backgroundColor: theme.colors.surfaceHover,
     alignItems: 'center',
     justifyContent: 'center',
   },
+  folderIconWrapHidden: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+  },
+  hideEyeBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: theme.colors.surfaceHover,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hideEyeBtnHidden: {
+    backgroundColor: 'rgba(245, 158, 11, 0.3)',
+  },
   folderInfo: {
-    flex: 1,
+    width: '100%',
   },
   folderName: {
     color: theme.colors.textPrimary,
@@ -592,10 +708,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     lineHeight: 17,
   },
+  folderNameHidden: {
+    color: '#f59e0b',
+  },
   folderHint: {
     color: theme.colors.textMuted,
     fontSize: 11,
     marginTop: 2,
+  },
+  folderHintHidden: {
+    color: '#f59e0b',
+    fontWeight: '600',
   },
   photoListContent: {
     paddingBottom: 40,

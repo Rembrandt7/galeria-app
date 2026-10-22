@@ -32,6 +32,8 @@ function formatTime(sec) {
 }
 
 export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
+  if (!asset?.uri) return null;
+
   const player = useVideoPlayer({ uri: asset.uri }, (p) => {
     p.timeUpdateEventInterval = 0.1;
     p.loop = false;

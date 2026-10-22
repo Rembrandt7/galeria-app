@@ -19,7 +19,8 @@ import { theme } from '../constants/theme';
 import VideoPlayerScreen from './VideoPlayerScreen';
 import ImageCropper from './ImageCropper';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const SCREEN_WIDTH = Math.round(Dimensions.get('window').width);
+const SCREEN_HEIGHT = Math.round(Dimensions.get('window').height);
 
 function formatDate(timestamp) {
   if (!timestamp) return 'Fecha desconocida';
@@ -33,7 +34,7 @@ function formatDate(timestamp) {
   });
 }
 
-// Diapositiva individual ultra-optimizada con descarte de memoria fuera de pantalla
+// Diapositiva individual ultra-optimizada y a prueba de fallos
 const SlideItem = React.memo(function SlideItem({
   item,
   isCurrent,
@@ -52,8 +53,12 @@ const SlideItem = React.memo(function SlideItem({
     lastTapRef.current = now;
   };
 
-  // Solo renderizar el componente pesado Image si está visible o adyacente inmediato (±1)
-  // Fuera de eso liberamos la memoria del hilo de renderizado para cero lag
+  // Validar que el item y su URI existan para evitar cierres inesperados
+  if (!item || !item.uri) {
+    return <View style={styles.slide} />;
+  }
+
+  // Si está muy lejos de la pantalla actual, descardar renderizado pesado para liberar memoria
   if (!isNear) {
     return <View style={styles.slide} />;
   }
@@ -71,7 +76,7 @@ const SlideItem = React.memo(function SlideItem({
           isCurrent && zoomScale > 1 ? { transform: [{ scale: zoomScale }] } : null,
         ]}
         contentFit="contain"
-        priority={isCurrent ? 'high' : 'low'}
+        priority={isCurrent ? 'high' : 'normal'}
         transition={0}
         cachePolicy="memory-disk"
         recyclingKey={item.id}
@@ -115,9 +120,10 @@ export default function FullScreenViewer({
     }
   }, [visible, initialIndex]);
 
-  if (!visible || assets.length === 0) return null;
+  if (!visible || !assets || assets.length === 0) return null;
 
-  const currentAsset = assets[currentIndex] || assets[0];
+  const currentAsset = (assets && assets[currentIndex]) || (assets && assets[0]) || null;
+  if (!currentAsset) return null;
 
   const handleNext = () => {
     if (currentIndex < assets.length - 1) {
@@ -250,22 +256,24 @@ export default function FullScreenViewer({
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item) => (item?.id ? item.id : String(item?.uri || Math.random()))}
             getItemLayout={(_, index) => ({
               length: SCREEN_WIDTH,
               offset: SCREEN_WIDTH * index,
               index,
             })}
-            initialScrollIndex={initialIndex < assets.length ? initialIndex : 0}
+            initialScrollIndex={initialIndex > 0 && initialIndex < assets.length ? initialIndex : 0}
             onScrollToIndexFailed={(info) => {
               setTimeout(() => {
-                flatListRef.current?.scrollToIndex({ index: info.index, animated: false });
+                try {
+                  flatListRef.current?.scrollToIndex({ index: info.index, animated: false });
+                } catch (e) {}
               }, 100);
             }}
-            windowSize={3}
-            initialNumToRender={1}
-            maxToRenderPerBatch={2}
-            removeClippedSubviews={Platform.OS === 'android'}
+            windowSize={5}
+            initialNumToRender={assets.length > 0 ? Math.min(assets.length, Math.max(initialIndex + 2, 8)) : 1}
+            maxToRenderPerBatch={8}
+            removeClippedSubviews={false}
             scrollEnabled={zoomScale === 1}
             onViewableItemsChanged={onViewableItemsChanged}
             viewabilityConfig={viewabilityConfig}

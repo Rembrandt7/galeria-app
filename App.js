@@ -53,15 +53,24 @@ export default function App() {
   // Modales
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  const [viewerCustomAssets, setViewerCustomAssets] = useState(null);
   const [dupVisible, setDupVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
+
+  // Carpetas ocultas y modo todo visible
+  const [hiddenFolders, setHiddenFolders] = useState({});
+  const [showAllFolders, setShowAllFolders] = useState(false);
 
   // Inicializar permisos y datos de arranque (ultra rápido)
   useEffect(() => {
     (async () => {
       // 1. Cargar favoritos en segundo plano
       storageService.getFavorites().then(setFavorites);
+
+      // 1b. Cargar carpetas ocultas y preferencia de modo todo visible
+      storageService.getHiddenFolders().then((hf) => { if (hf) setHiddenFolders(hf); });
+      storageService.getShowAllFolders().then((sa) => { setShowAllFolders(Boolean(sa)); });
 
       // 2. Cargar carpeta guardada en segundo plano
       folderService.getSavedFolder().then((saved) => {
@@ -272,9 +281,36 @@ export default function App() {
     return assets;
   }, [activeTab, favorites, assets, folderAssets, filterType]);
 
-  // Abrir visor a pantalla completa
-  const handleOpenViewer = (asset) => {
-    const idx = displayedAssets.findIndex((a) => a.id === asset.id);
+  // Ocultar o prender cualquier carpeta
+  const handleToggleHideFolder = async (folderKey, folderName) => {
+    try {
+      const updated = await storageService.toggleHideFolder(folderKey, folderName);
+      setHiddenFolders(updated);
+      const isNowHidden = Boolean(updated[folderKey]);
+      Alert.alert(
+        isNowHidden ? 'Carpeta oculta' : 'Carpeta visible',
+        isNowHidden
+          ? `La carpeta "${folderName || folderKey}" ahora está oculta. Puedes verla activando "Todo visible".`
+          : `La carpeta "${folderName || folderKey}" vuelve a estar visible normalmente.`
+      );
+    } catch (e) {
+      console.error('Error al ocultar carpeta:', e);
+    }
+  };
+
+  // Alternar modo todo visible (muestra u oculta las carpetas privadas)
+  const handleToggleShowAllFolders = async () => {
+    const nextVal = !showAllFolders;
+    setShowAllFolders(nextVal);
+    await storageService.setShowAllFolders(nextVal);
+  };
+
+  // Abrir visor a pantalla completa a prueba de fallos
+  const handleOpenViewer = (asset, optionalList) => {
+    const list = optionalList && optionalList.length > 0 ? optionalList : displayedAssets;
+    const effectiveList = list && list.length > 0 ? list : [asset];
+    const idx = effectiveList.findIndex((a) => a.id === asset.id);
+    setViewerCustomAssets(effectiveList);
     setViewerIndex(idx >= 0 ? idx : 0);
     setViewerVisible(true);
   };
@@ -390,6 +426,10 @@ export default function App() {
               favorites={favorites}
               filterType={filterType}
               onAssetsChange={(items) => setFolderAssets(items)}
+              hiddenFolders={hiddenFolders}
+              onToggleHideFolder={handleToggleHideFolder}
+              showAllFolders={showAllFolders}
+              onToggleShowAllFolders={handleToggleShowAllFolders}
             />
           ) : activeTab === 'albums' && !selectedAlbum ? (
             <AlbumList
@@ -397,6 +437,10 @@ export default function App() {
               onSelectAlbum={handleSelectAlbum}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
+              hiddenFolders={hiddenFolders}
+              onToggleHideFolder={handleToggleHideFolder}
+              showAllFolders={showAllFolders}
+              onToggleShowAllFolders={handleToggleShowAllFolders}
             />
           ) : (
             <PhotoGrid
@@ -422,9 +466,12 @@ export default function App() {
         {/* Visor de Pantalla Completa */}
         <FullScreenViewer
           visible={viewerVisible}
-          assets={displayedAssets}
+          assets={viewerCustomAssets || displayedAssets}
           initialIndex={viewerIndex}
-          onClose={() => setViewerVisible(false)}
+          onClose={() => {
+            setViewerVisible(false);
+            setViewerCustomAssets(null);
+          }}
           isFavorite={isCurrentAssetFavorite}
           onToggleFavorite={handleToggleFavorite}
           onShare={handleShare}

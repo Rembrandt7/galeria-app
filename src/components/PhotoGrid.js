@@ -36,7 +36,7 @@ export default function PhotoGrid({
         <PhotoThumbnail
           asset={item}
           size={ITEM_SIZE}
-          onPress={onSelectPhoto}
+          onPress={(a) => onSelectPhoto(a, assets)}
           isFavorite={isFav}
         />
       );
