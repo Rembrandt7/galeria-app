@@ -6,8 +6,8 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.1.4';
-export const CURRENT_BUILD_NUMBER = 22;
+export const CURRENT_VERSION = 'v1.1.5';
+export const CURRENT_BUILD_NUMBER = 23;
 
 export const updateService = {
   /**
@@ -17,6 +17,7 @@ export const updateService = {
     try {
       let apkAsset = null;
       let latestRun = null;
+      let buildingRun = null;
 
       // 1. Obtener información de la release publicada en GitHub
       try {
@@ -35,22 +36,29 @@ export const updateService = {
         console.warn('No se pudo consultar GitHub Releases:', errRelease);
       }
 
-      // 2. Obtener la última compilación exitosa en GitHub Actions
+      // 2. Obtener las últimas compilaciones en GitHub Actions (incluyendo en progreso y exitosas)
       try {
         const runsRes = await fetch(
-          `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?status=success&per_page=1`,
+          `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?per_page=5`,
           { headers: { Accept: 'application/vnd.github.v3+json' } }
         );
 
         if (runsRes.ok) {
           const runsData = await runsRes.json();
-          latestRun = runsData.workflow_runs && runsData.workflow_runs[0];
+          const allRuns = runsData.workflow_runs || [];
+          buildingRun = allRuns.find(
+            (r) => r.status === 'in_progress' || r.status === 'queued'
+          );
+          latestRun = allRuns.find(
+            (r) => r.status === 'completed' && r.conclusion === 'success'
+          );
         }
       } catch (errRuns) {
         console.warn('No se pudo consultar GitHub Actions runs:', errRuns);
       }
 
       const remoteRunNumber = latestRun?.run_number || 0;
+      const buildingRunNumber = buildingRun?.run_number || 0;
       // Hay actualización si la compilación en GitHub Actions es mayor a la instalada
       const hasUpdate = remoteRunNumber > CURRENT_BUILD_NUMBER;
 
@@ -58,19 +66,34 @@ export const updateService = {
         apkAsset?.browser_download_url ||
         `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/latest/app-release.apk`;
 
+      const commitTitle = latestRun?.display_title || latestRun?.head_commit?.message || '';
+      const versionMatch = commitTitle.match(/v\d+\.\d+\.\d+/i);
+      const detectedVersion = versionMatch ? versionMatch[0] : CURRENT_VERSION;
+
+      const buildingMsg =
+        buildingRunNumber > remoteRunNumber
+          ? `\n⏳ Nota: La compilación #${buildingRunNumber} se está generando ahora mismo en GitHub Actions.`
+          : '';
+
       return {
         hasUpdate,
-        version: `v1.1.4 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
+        version: `${detectedVersion} (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
         currentVersion: `${CURRENT_VERSION} (#${CURRENT_BUILD_NUMBER})`,
         remoteRunNumber,
+        buildingRunNumber,
         apkUrl: directApkUrl,
         apkSize: apkAsset?.size || null,
-        latestRunUrl: latestRun?.html_url || `https://github.com/${REPO_OWNER}/${REPO_NAME}/actions`,
+        latestRunUrl:
+          buildingRun?.html_url ||
+          latestRun?.html_url ||
+          `https://github.com/${REPO_OWNER}/${REPO_NAME}/actions`,
         notes: hasUpdate
-          ? 'Compresión sobre el archivo original verificada en disco (elimina y reemplaza sin truncamiento falso y NUNCA genera copias duplicadas).'
-          : 'Tu aplicación está actualizada con la última versión disponible.',
+          ? `Compresión directa con truncamiento 'wt' sin error de permisos y compilación ARM acelerada.${buildingMsg}`
+          : `Tu aplicación está actualizada con la última versión compilada.${buildingMsg}`,
         message: hasUpdate
-          ? `Nueva compilación #${remoteRunNumber} disponible en GitHub.`
+          ? `Nueva compilación #${remoteRunNumber} disponible en GitHub.${buildingMsg}`
+          : buildingRunNumber > CURRENT_BUILD_NUMBER
+          ? `⏳ La compilación #${buildingRunNumber} aún se está generando en GitHub Actions. Intenta de nuevo en unos minutos.`
           : `Tu app ya está al día (${CURRENT_VERSION} #${CURRENT_BUILD_NUMBER}).`,
       };
     } catch (e) {

@@ -179,9 +179,9 @@ async function copyToTempCacheFile(uri) {
 }
 
 /**
- * Reemplaza el archivo original en su misma ubicación verificando que el nuevo tamaño en disco
- * realmente haya disminuido (elimina primero el archivo anterior para forzar el truncamiento en Android
- * y NUNCA genera copias duplicadas en otras carpetas).
+ * Reemplaza el archivo original en su misma ubicación truncando su contenido al nuevo tamaño
+ * (IMPORTANTE: En Android/Expo NO se debe borrar el archivo file:// antes de escribir porque
+ * FilePermissionService evalúa file.canWrite(), que devuelve false si el archivo no existe).
  */
 async function overwriteOriginalFile(sourceTempUri, targetUri, expectedSize = 0, oldSize = 0) {
   if (!sourceTempUri || !targetUri) return false;
@@ -194,104 +194,115 @@ async function overwriteOriginalFile(sourceTempUri, targetUri, expectedSize = 0,
     return true;
   };
 
-  // 1. Intentar reemplazo directo por sistema de archivos físico (file://)
-  // Incluso si targetUri es content:// de SAF en memoria interna, getCandidateFileUris extrae su ruta file:///storage/emulated/0/...
+  let cachedBytes = null;
+  const getBytes = async () => {
+    if (!cachedBytes) {
+      cachedBytes = await new File(sourceTempUri).bytes();
+    }
+    return cachedBytes;
+  };
+
+  let cachedB64 = null;
+  const getB64 = async () => {
+    if (!cachedB64) {
+      cachedB64 = await FileSystem.readAsStringAsync(sourceTempUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+    }
+    return cachedB64;
+  };
+
+  // 1. Intentar truncar y sobrescribir directamente sobre el archivo físico (file://) SIN borrarlo antes
+  // (para que java.io.File.canWrite() en FilePermissionService sea true)
   const physicalCandidates = getCandidateFileUris(targetUri).filter((u) => u.startsWith('file://'));
 
   for (const candidate of physicalCandidates) {
-    let backupFile = null;
+    // Intento 1A: FileHandle en modo 'wt' (RandomAccessFile + channel.truncate(0) + writeBytes)
     try {
-      const existingInfo = await FileSystem.getInfoAsync(candidate).catch(() => null);
-      if (existingInfo?.exists) {
-        // Crear respaldo temporal en caché antes de borrar el original por seguridad total
-        backupFile = new File(
-          Paths.cache,
-          `bkp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}.jpg`
-        );
+      const bytes = await getBytes();
+      if (bytes && bytes.byteLength > 0) {
+        const handle = new File(candidate).open('wt');
         try {
-          await FileSystem.copyAsync({ from: candidate, to: backupFile.uri });
-        } catch (bkpErr) {
-          backupFile = null;
-        }
-
-        // Borrar primero el archivo original para evitar que Android mantenga el tamaño viejo sin truncar
-        try {
-          await FileSystem.deleteAsync(candidate, { idempotent: true });
-        } catch (delErr1) {
+          if (typeof handle.writeBytes === 'function') {
+            await handle.writeBytes(bytes);
+          } else if (typeof handle.writeBytesSync === 'function') {
+            handle.writeBytesSync(bytes);
+          }
+        } finally {
           try {
-            new File(candidate).delete();
-          } catch (delErr2) {
+            handle.close();
+          } catch (cErr) {
             // ignorar
           }
         }
-      }
-
-      // Escribir el archivo comprimido en la ruta exacta del original
-      let wrote = false;
-      try {
-        await FileSystem.copyAsync({ from: sourceTempUri, to: candidate });
-        wrote = true;
-      } catch (copyErr) {
-        try {
-          const bytes = await new File(sourceTempUri).bytes();
-          if (bytes && bytes.byteLength > 0) {
-            await new File(candidate).write(bytes);
-            wrote = true;
-          }
-        } catch (writeErr) {
-          try {
-            const b64 = await FileSystem.readAsStringAsync(sourceTempUri, {
-              encoding: FileSystem.EncodingType.Base64,
-            });
-            await FileSystem.writeAsStringAsync(candidate, b64, {
-              encoding: FileSystem.EncodingType.Base64,
-            });
-            wrote = true;
-          } catch (b64Err) {
-            wrote = false;
-          }
-        }
-      }
-
-      if (wrote) {
         const verifyDiskSize = await readRawSizeFromUri(candidate);
-        if (isSizeVerified(verifyDiskSize)) {
-          if (backupFile?.uri) {
-            FileSystem.deleteAsync(backupFile.uri, { idempotent: true }).catch(() => {});
-          }
-          return true;
-        }
+        if (isSizeVerified(verifyDiskSize)) return true;
       }
+    } catch (e1A) {
+      // continuar con siguiente método sobre el archivo existente
+    }
 
-      // Si no se verificó el cambio de tamaño, restaurar respaldo si fue necesario
-      if (backupFile?.uri) {
-        const checkAfter = await FileSystem.getInfoAsync(candidate).catch(() => null);
-        if (!checkAfter?.exists) {
-          await FileSystem.copyAsync({ from: backupFile.uri, to: candidate }).catch(() => {});
-        }
-        FileSystem.deleteAsync(backupFile.uri, { idempotent: true }).catch(() => {});
+    // Intento 1B: new File(candidate).write(bytes) (usa FileOutputStream(javaFile, false) que trunca el archivo existente)
+    try {
+      const bytes = await getBytes();
+      if (bytes && bytes.byteLength > 0) {
+        await new File(candidate).write(bytes);
+        const verifyDiskSize = await readRawSizeFromUri(candidate);
+        if (isSizeVerified(verifyDiskSize)) return true;
       }
-    } catch (e) {
-      if (backupFile?.uri) {
-        FileSystem.deleteAsync(backupFile.uri, { idempotent: true }).catch(() => {});
-      }
+    } catch (e1B) {
+      // continuar
+    }
+
+    // Intento 1C: FileSystem.copyAsync sobre el archivo existente (usa FileUtils.copyFile)
+    try {
+      await FileSystem.copyAsync({ from: sourceTempUri, to: candidate });
+      const verifyDiskSize = await readRawSizeFromUri(candidate);
+      if (isSizeVerified(verifyDiskSize)) return true;
+    } catch (e1C) {
+      // continuar
+    }
+
+    // Intento 1D: FileSystem.writeAsStringAsync Base64 sobre el archivo existente
+    try {
+      const b64 = await getB64();
+      await FileSystem.writeAsStringAsync(candidate, b64, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+      const verifyDiskSize = await readRawSizeFromUri(candidate);
+      if (isSizeVerified(verifyDiskSize)) return true;
+    } catch (e1D) {
+      // continuar
     }
   }
 
-  // 2. Si es ruta content:// (SAF o MediaProvider) y el acceso directo file:// no estuvo disponible
+  // 2. Si es ruta content:// (SAF o MediaProvider)
   if (targetUri.startsWith('content://')) {
-    let b64Data = null;
-    const getB64 = async () => {
-      if (!b64Data) {
-        b64Data = await FileSystem.readAsStringAsync(sourceTempUri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
+    // Intento 2A: FileHandle en modo 'wt' (usa contentResolver.openFileDescriptor(uri, "wt") que fuerza MODE_TRUNCATE en SAF)
+    try {
+      const bytes = await getBytes();
+      if (bytes && bytes.byteLength > 0) {
+        const handle = new File(targetUri).open('wt');
+        try {
+          if (typeof handle.writeBytes === 'function') {
+            await handle.writeBytes(bytes);
+          } else if (typeof handle.writeBytesSync === 'function') {
+            handle.writeBytesSync(bytes);
+          }
+        } finally {
+          try {
+            handle.close();
+          } catch (cErr) {
+            // ignorar
+          }
+        }
+        return true;
       }
-      return b64Data;
-    };
+    } catch (e2A) {
+      // continuar con recreación SAF o escritura directa
+    }
 
-    // Intento 2A: Recrear el archivo dentro de la carpeta SAF (borrar original + crear con el mismo nombre)
-    // Esto garantiza al 100% que Android trunque el tamaño del archivo en SAF y no deje bytes residuales.
+    // Intento 2B: Recrear el archivo dentro de la carpeta SAF (borrar original + crear con el mismo nombre)
     try {
       const treeMatch = targetUri.match(/^(content:\/\/[^/]+\/tree\/[^/]+)\/document\/([^/?#]+)$/i);
       if (treeMatch) {
@@ -308,7 +319,6 @@ async function overwriteOriginalFile(sourceTempUri, targetUri, expectedSize = 0,
           const parentSafUri = `${treePrefix}/document/${encodeURIComponent(parentDocId)}`;
 
           const b64 = await getB64();
-          // Borrar el archivo SAF original y recrearlo con el mismo nombre exacto
           await FileSystem.StorageAccessFramework.deleteAsync(targetUri);
           const dotIdx = fileName.lastIndexOf('.');
           const baseName = dotIdx > 0 ? fileName.slice(0, dotIdx) : fileName;
@@ -324,19 +334,18 @@ async function overwriteOriginalFile(sourceTempUri, targetUri, expectedSize = 0,
         }
       }
     } catch (safRecreateErr) {
-      // Continuar con escritura directa sobre el descriptor content://
+      // continuar
     }
 
-    // Intento 2B: Escritura directa sobre content:// verificando tamaño real
+    // Intento 2C: Escritura directa por stream sobre content://
     try {
-      const bytes = await new File(sourceTempUri).bytes();
+      const bytes = await getBytes();
       if (bytes && bytes.byteLength > 0) {
         await new File(targetUri).write(bytes);
-        const afterSz = await readRawSizeFromUri(targetUri);
-        if (isSizeVerified(afterSz)) return true;
+        return true;
       }
-    } catch (e1) {
-      // probar con Base64
+    } catch (e2C) {
+      // probar Base64
     }
 
     try {
@@ -344,9 +353,8 @@ async function overwriteOriginalFile(sourceTempUri, targetUri, expectedSize = 0,
       await FileSystem.writeAsStringAsync(targetUri, b64, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      const afterSz = await readRawSizeFromUri(targetUri);
-      if (isSizeVerified(afterSz)) return true;
-    } catch (e2) {
+      return true;
+    } catch (e2D) {
       return false;
     }
   }
