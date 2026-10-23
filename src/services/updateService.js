@@ -1,4 +1,4 @@
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Sharing from 'expo-sharing';
 import { Alert, Linking, Platform } from 'react-native';
@@ -6,8 +6,8 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.0.6';
-export const CURRENT_BUILD_NUMBER = 14;
+export const CURRENT_VERSION = 'v1.0.7';
+export const CURRENT_BUILD_NUMBER = 15;
 
 export const updateService = {
   /**
