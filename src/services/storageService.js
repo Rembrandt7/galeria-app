@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const FAVORITES_STORAGE_KEY = '@galeria_favoritos_v1';
 const HIDDEN_FOLDERS_STORAGE_KEY = '@galeria_carpetas_ocultas_v1';
 const SHOW_ALL_FOLDERS_STORAGE_KEY = '@galeria_modo_todo_visible_v1';
+const HIDDEN_PIN_STORAGE_KEY = '@galeria_pin_ocultas_v1';
 
 export const storageService = {
   async getFavorites() {
@@ -108,6 +109,29 @@ export const storageService = {
     } catch (e) {
       console.error('Error al guardar modo todo visible:', e);
       return showAll;
+    }
+  },
+
+  async getPin() {
+    try {
+      const pin = await AsyncStorage.getItem(HIDDEN_PIN_STORAGE_KEY);
+      return pin || null;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  async setPin(pin) {
+    try {
+      if (!pin) {
+        await AsyncStorage.removeItem(HIDDEN_PIN_STORAGE_KEY);
+        return null;
+      }
+      await AsyncStorage.setItem(HIDDEN_PIN_STORAGE_KEY, String(pin));
+      return String(pin);
+    } catch (e) {
+      console.error('Error al guardar PIN:', e);
+      return null;
     }
   },
 };

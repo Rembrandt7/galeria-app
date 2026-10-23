@@ -15,6 +15,10 @@ import {
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import * as MediaLibrary from 'expo-media-library';
+import { File, Paths } from 'expo-file-system';
+import * as LegacyFS from 'expo-file-system/legacy';
 import { theme } from '../constants/theme';
 import { compressionService } from '../services/compressionService';
 import VideoPlayerScreen from './VideoPlayerScreen';
@@ -53,29 +57,55 @@ export default function FullScreenViewer({
   const [zoomScale, setZoomScale] = useState(1);
   const [assetSize, setAssetSize] = useState(null);
   const [isCompressing, setIsCompressing] = useState(false);
+  const [isRotating, setIsRotating] = useState(false);
+  const [imageRev, setImageRev] = useState(0);
 
   // Animaciones y referencias declaradas incondicionalmente en la raíz
   const translateX = useRef(new Animated.Value(0)).current;
+  const panX = useRef(new Animated.Value(0)).current;
+  const panY = useRef(new Animated.Value(0)).current;
+  const panOffsetRef = useRef({ x: 0, y: 0 });
   const lastTapRef = useRef(0);
   const currentIndexRef = useRef(initialIndex);
   const zoomScaleRef = useRef(1);
   const assetsLengthRef = useRef(assets?.length || 0);
 
-  // PanResponder para deslizar fotos a los lados (declarado incondicionalmente)
+  const resetZoomAndPan = () => {
+    setZoomScale(1);
+    panX.setValue(0);
+    panY.setValue(0);
+    panOffsetRef.current = { x: 0, y: 0 };
+  };
+
+  // PanResponder para deslizar fotos a los lados (1x) o arrastrar libremente con zoom (>1x)
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, gesture) => {
+        if (zoomScaleRef.current > 1) {
+          return Math.abs(gesture.dx) > 6 || Math.abs(gesture.dy) > 6;
+        }
         return (
-          zoomScaleRef.current === 1 &&
           Math.abs(gesture.dx) > 12 &&
           Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
         );
       },
       onPanResponderMove: (_, gesture) => {
-        translateX.setValue(gesture.dx);
+        if (zoomScaleRef.current > 1) {
+          panX.setValue(panOffsetRef.current.x + gesture.dx);
+          panY.setValue(panOffsetRef.current.y + gesture.dy);
+        } else {
+          translateX.setValue(gesture.dx);
+        }
       },
       onPanResponderRelease: (_, gesture) => {
+        if (zoomScaleRef.current > 1) {
+          panOffsetRef.current = {
+            x: panOffsetRef.current.x + gesture.dx,
+            y: panOffsetRef.current.y + gesture.dy,
+          };
+          return;
+        }
         const idx = currentIndexRef.current;
         const total = assetsLengthRef.current;
 
@@ -87,7 +117,7 @@ export default function FullScreenViewer({
             useNativeDriver: false,
           }).start(() => {
             setInternalIndex((prev) => Math.min(prev + 1, total - 1));
-            setZoomScale(1);
+            resetZoomAndPan();
             translateX.setValue(screenWidth);
             Animated.timing(translateX, {
               toValue: 0,
@@ -103,7 +133,7 @@ export default function FullScreenViewer({
             useNativeDriver: false,
           }).start(() => {
             setInternalIndex((prev) => Math.max(prev - 1, 0));
-            setZoomScale(1);
+            resetZoomAndPan();
             translateX.setValue(-screenWidth);
             Animated.timing(translateX, {
               toValue: 0,
@@ -290,7 +320,63 @@ export default function FullScreenViewer({
 
   // Alternar nivel de zoom
   const handleToggleZoom = () => {
-    setZoomScale((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 1));
+    setZoomScale((prev) => {
+      const next = prev === 1 ? 2.5 : prev === 2.5 ? 4 : 1;
+      if (next === 1) {
+        panX.setValue(0);
+        panY.setValue(0);
+        panOffsetRef.current = { x: 0, y: 0 };
+      }
+      return next;
+    });
+  };
+
+  // Girar foto 90 grados con 1 toque
+  const handleQuickRotate = async () => {
+    if (isRotating || !currentAsset || currentAsset.mediaType === 'video') return;
+    setIsRotating(true);
+    try {
+      let sourceUri = currentAsset.uri;
+      if (sourceUri.startsWith('content://')) {
+        const tempDest = new File(Paths.cache, `rot_src_${Date.now()}.jpg`);
+        try {
+          await new File(sourceUri).copy(tempDest);
+          sourceUri = tempDest.uri;
+        } catch (err) {
+          await LegacyFS.copyAsync({ from: sourceUri, to: tempDest.uri });
+          sourceUri = tempDest.uri;
+        }
+      }
+      const context = ImageManipulator.manipulate(sourceUri);
+      context.rotate(90);
+      const rendered = await context.renderAsync();
+      const saved = await rendered.saveAsync({
+        format: SaveFormat.JPEG,
+        compress: 0.95,
+      });
+
+      let replaced = false;
+      try {
+        replaced = await compressionService.overwriteOriginalFile(saved.uri, currentAsset.uri);
+      } catch (owErr) {
+        replaced = false;
+      }
+      if (!replaced) {
+        await MediaLibrary.saveToLibraryAsync(saved.uri);
+        currentAsset.uri = saved.uri;
+      }
+      if (currentAsset.width && currentAsset.height) {
+        const oldW = currentAsset.width;
+        currentAsset.width = currentAsset.height;
+        currentAsset.height = oldW;
+      }
+      setImageRev((r) => r + 1);
+      if (onMediaSaved) onMediaSaved();
+    } catch (e) {
+      Alert.alert('Error al girar', String(e?.message || e));
+    } finally {
+      setIsRotating(false);
+    }
   };
 
   // Toque simple (mostrar/ocultar barras) o doble toque (zoom)
@@ -516,11 +602,15 @@ export default function FullScreenViewer({
                 },
               ]}
             >
-              <View
+              <Animated.View
                 style={[
                   styles.zoomContainer,
                   {
-                    transform: [{ scale: zoomScale }],
+                    transform: [
+                      { translateX: panX },
+                      { translateY: panY },
+                      { scale: zoomScale },
+                    ],
                   },
                 ]}
               >
@@ -531,7 +621,8 @@ export default function FullScreenViewer({
                     contentFit="contain"
                     priority="high"
                     transition={0}
-                    cachePolicy="memory-disk"
+                    recyclingKey={`${currentAsset.id}_${imageRev}`}
+                    cachePolicy={imageRev > 0 ? 'none' : 'memory-disk'}
                   />
                 ) : null}
 
@@ -545,7 +636,7 @@ export default function FullScreenViewer({
                     <Ionicons name="play-circle" size={72} color="rgba(255,255,255,0.9)" />
                   </TouchableOpacity>
                 )}
-              </View>
+              </Animated.View>
             </Animated.View>
           </TouchableOpacity>
 
@@ -667,6 +758,25 @@ export default function FullScreenViewer({
                   <>
                     <Ionicons name="sparkles-outline" size={24} color="#38bdf8" />
                     <Text style={[styles.actionLabel, { color: '#38bdf8' }]}>Comprimir</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {/* Girar 90° rápido (solo fotos) */}
+            {!isVideo && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={handleQuickRotate}
+                disabled={isRotating}
+                activeOpacity={0.7}
+              >
+                {isRotating ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <Ionicons name="refresh-outline" size={24} color="#ffffff" />
+                    <Text style={styles.actionLabel}>Girar 90°</Text>
                   </>
                 )}
               </TouchableOpacity>

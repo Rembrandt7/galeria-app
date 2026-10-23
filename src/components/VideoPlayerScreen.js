@@ -16,7 +16,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as MediaLibrary from 'expo-media-library';
 import { File, Paths } from 'expo-file-system';
+import * as LegacyFS from 'expo-file-system/legacy';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { trim } from 'react-native-video-trim';
+import { compressionService } from '../services/compressionService';
+import { mediaService } from '../services/mediaService';
 import { theme } from '../constants/theme';
 
 const FRAME = 1 / 30; // paso de un cuadro (aprox. 30 fps)
@@ -132,7 +136,33 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
     setTrimEnd(null);
   };
 
-  const handleTrim = async () => {
+  const handleCaptureFrame = async () => {
+    player.pause();
+    setBusy(true);
+    try {
+      const thumbs = await player.generateThumbnailsAsync([player.currentTime]);
+      if (!thumbs || !thumbs[0]) {
+        throw new Error('No se pudo extraer el cuadro actual.');
+      }
+      const context = ImageManipulator.manipulate(thumbs[0]);
+      const rendered = await context.renderAsync();
+      const saved = await rendered.saveAsync({
+        format: SaveFormat.JPEG,
+        compress: 0.95,
+      });
+      await MediaLibrary.saveToLibraryAsync(saved.uri);
+      Alert.alert(
+        'Cuadro capturado',
+        `Se guardó el cuadro (${formatTime(player.currentTime)}) como foto en tu galería.`
+      );
+      if (onSaved) onSaved();
+    } catch (e) {
+      Alert.alert('Error al capturar cuadro', String(e?.message || e));
+    }
+    setBusy(false);
+  };
+
+  const handleTrim = async (replaceOriginal = false) => {
     const start = trimStart ?? 0;
     const end = trimEnd ?? duration;
     if (!(end > start)) {
@@ -145,7 +175,11 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
       let source = asset.uri;
       if (source.startsWith('content://')) {
         const dest = new File(Paths.cache, `trim_src_${Date.now()}.mp4`);
-        new File(source).copy(dest);
+        try {
+          await new File(source).copy(dest);
+        } catch (copyErr) {
+          await LegacyFS.copyAsync({ from: source, to: dest.uri });
+        }
         source = dest.uri;
       }
       const result = await trim(source, {
@@ -155,10 +189,30 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
       const out = result.outputPath.startsWith('file://')
         ? result.outputPath
         : `file://${result.outputPath}`;
-      await MediaLibrary.saveToLibraryAsync(out);
-      Alert.alert('Listo', 'El video recortado se guardó en tu galería como una copia nueva.');
-      clearMarks();
-      if (onSaved) onSaved();
+
+      if (replaceOriginal) {
+        let replaced = false;
+        try {
+          replaced = await compressionService.overwriteOriginalFile(out, asset.uri);
+        } catch (owErr) {
+          replaced = false;
+        }
+        if (!replaced) {
+          await MediaLibrary.saveToLibraryAsync(out);
+          if (asset.id && !String(asset.id).startsWith('content://') && !String(asset.id).startsWith('file://')) {
+            await mediaService.deleteAssets([asset.id]);
+          }
+        }
+        Alert.alert('Listo', 'El video original fue reemplazado por el recorte.');
+        clearMarks();
+        if (onSaved) onSaved();
+        onClose();
+      } else {
+        await MediaLibrary.saveToLibraryAsync(out);
+        Alert.alert('Listo', 'El video recortado se guardó en tu galería como una copia nueva.');
+        clearMarks();
+        if (onSaved) onSaved();
+      }
     } catch (e) {
       Alert.alert('No se pudo recortar', String(e?.message || e));
     }
@@ -263,6 +317,14 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
               <Ionicons name="stop" size={18} color="#fff" />
               <Text style={styles.stopText}>Stop</Text>
             </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.captureBtn, busy && { opacity: 0.6 }]}
+              onPress={handleCaptureFrame}
+              disabled={busy}
+            >
+              <Ionicons name="camera" size={18} color="#fff" />
+              <Text style={styles.stopText}>Capturar cuadro (Foto)</Text>
+            </TouchableOpacity>
           </View>
 
           {/* Velocidad */}
@@ -292,13 +354,31 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
             </TouchableOpacity>
           </View>
           <View style={styles.trimRow}>
-            <TouchableOpacity style={[styles.saveBtn, busy && { opacity: 0.6 }]} onPress={handleTrim} disabled={busy}>
+            <TouchableOpacity
+              style={[styles.saveBtn, busy && { opacity: 0.6 }]}
+              onPress={() => handleTrim(false)}
+              disabled={busy}
+            >
               {busy ? (
                 <ActivityIndicator color="#fff" />
               ) : (
                 <>
-                  <Ionicons name="cut" size={18} color="#fff" />
-                  <Text style={styles.saveText}>Recortar y guardar copia</Text>
+                  <Ionicons name="copy-outline" size={17} color="#fff" />
+                  <Text style={styles.saveText}>Guardar copia</Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.replaceBtn, busy && { opacity: 0.6 }]}
+              onPress={() => handleTrim(true)}
+              disabled={busy}
+            >
+              {busy ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="cut" size={17} color="#fff" />
+                  <Text style={styles.saveText}>Reemplazar original</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -388,7 +468,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   row: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  rowCenter: { alignItems: 'center', marginTop: 12 },
+  rowCenter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, marginTop: 12 },
   ctrl: { alignItems: 'center', width: 44 },
   ctrlLabel: { color: theme.colors.textSecondary, fontSize: 9, marginTop: 2 },
   playBtn: {
@@ -408,7 +488,16 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 20,
   },
-  stopText: { color: '#fff', fontWeight: '600' },
+  captureBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  stopText: { color: '#fff', fontWeight: '600', fontSize: 13 },
   sectionLabel: {
     color: theme.colors.textSecondary,
     fontSize: 12,
@@ -443,13 +532,25 @@ const styles = StyleSheet.create({
   saveBtn: {
     flex: 1,
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
     backgroundColor: theme.colors.accent,
     borderRadius: 10,
     paddingVertical: 12,
+    paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  saveText: { color: '#fff', fontWeight: '700' },
+  replaceBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    gap: 6,
+    backgroundColor: theme.colors.warning,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  saveText: { color: '#fff', fontWeight: '700', fontSize: 12 },
   clearBtn: { padding: 6 },
 });

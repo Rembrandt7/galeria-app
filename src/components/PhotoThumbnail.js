@@ -15,7 +15,10 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
   asset,
   size,
   onPress,
+  onLongPress,
   isFavorite = false,
+  selectable = false,
+  isSelected = false,
 }) {
   const isVideo = asset.mediaType === 'video';
 
@@ -23,17 +26,34 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
     <TouchableOpacity
       activeOpacity={0.8}
       onPress={() => onPress(asset)}
-      style={[styles.container, { width: size, height: size }]}
+      onLongPress={() => onLongPress && onLongPress(asset)}
+      delayLongPress={250}
+      style={[
+        styles.container,
+        { width: size, height: size },
+        isSelected && styles.containerSelected,
+      ]}
     >
       <Image
         source={{ uri: asset.uri }}
-        style={styles.image}
+        style={[styles.image, isSelected && styles.imageSelected]}
         contentFit="cover"
         recyclingKey={asset.id}
         priority="normal"
         transition={0}
         cachePolicy="memory-disk"
       />
+
+      {/* Selection Checkmark Overlay */}
+      {selectable && (
+        <View style={[styles.selectBadge, isSelected && styles.selectBadgeActive]}>
+          <Ionicons
+            name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
+            size={20}
+            color={isSelected ? '#38bdf8' : 'rgba(255, 255, 255, 0.85)'}
+          />
+        </View>
+      )}
 
       {/* Video Badge */}
       {isVideo && (
@@ -62,9 +82,27 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'hidden',
   },
+  containerSelected: {
+    borderWidth: 2,
+    borderColor: '#38bdf8',
+  },
   image: {
     width: '100%',
     height: '100%',
+  },
+  imageSelected: {
+    opacity: 0.78,
+  },
+  selectBadge: {
+    position: 'absolute',
+    top: 4,
+    left: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    borderRadius: 12,
+    padding: 1,
+  },
+  selectBadgeActive: {
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
   },
   videoBadge: {
     position: 'absolute',

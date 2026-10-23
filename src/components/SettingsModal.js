@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -11,17 +11,49 @@ import {
   Linking,
   SafeAreaView,
   StatusBar,
+  TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 import { updateService, CURRENT_VERSION, CURRENT_BUILD_NUMBER } from '../services/updateService';
 import { folderService } from '../services/folderService';
+import { storageService } from '../services/storageService';
 
 export default function SettingsModal({ visible, onClose }) {
   const [checking, setChecking] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [savedPin, setSavedPin] = useState(null);
+  const [pinInput, setPinInput] = useState('');
+
+  useEffect(() => {
+    if (visible) {
+      storageService.getPin().then((p) => {
+        setSavedPin(p);
+        setPinInput('');
+      });
+    }
+  }, [visible]);
+
+  const handleSavePin = async () => {
+    const clean = (pinInput || '').trim();
+    if (!/^\d{4}$/.test(clean)) {
+      Alert.alert('PIN inválido', 'Ingresa un PIN numérico de exactamente 4 dígitos.');
+      return;
+    }
+    await storageService.setPin(clean);
+    setSavedPin(clean);
+    setPinInput('');
+    Alert.alert('PIN guardado', 'Ahora se pedirá este PIN de 4 dígitos para mostrar tus carpetas ocultas.');
+  };
+
+  const handleRemovePin = async () => {
+    await storageService.setPin(null);
+    setSavedPin(null);
+    setPinInput('');
+    Alert.alert('PIN desactivado', 'Se eliminó la protección por PIN para carpetas ocultas.');
+  };
 
   const handleCheckUpdates = async () => {
     setChecking(true);
@@ -245,6 +277,52 @@ export default function SettingsModal({ visible, onClose }) {
                   </View>
                 )}
               </View>
+            )}
+          </View>
+
+          {/* Tarjeta de Seguridad de Carpetas Ocultas (PIN y Auto-bloqueo) */}
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <View style={[styles.cardIconWrap, { backgroundColor: 'rgba(245, 158, 11, 0.15)' }]}>
+                <Ionicons name="lock-closed-outline" size={24} color={theme.colors.warning} />
+              </View>
+              <View style={styles.cardHeaderText}>
+                <Text style={styles.cardTitle}>Privacidad de Carpetas Ocultas</Text>
+                <Text style={styles.cardSubtitle}>
+                  {savedPin ? 'PIN de 4 dígitos activo · Auto-bloqueo activo' : 'Auto-bloqueo al minimizar activo · Sin PIN'}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.aboutText}>
+              Las carpetas ocultas se bloquean automáticamente al cerrar o minimizar la app. Además, puedes definir un PIN de 4 dígitos para desbloquear el botón "Todo visible".
+            </Text>
+            <View style={styles.pinRow}>
+              <TextInput
+                style={styles.pinInput}
+                value={pinInput}
+                onChangeText={(t) => setPinInput(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                placeholder={savedPin ? 'Nuevo PIN (4 dígitos)' : 'PIN de 4 dígitos'}
+                placeholderTextColor={theme.colors.textMuted}
+                keyboardType="numeric"
+                maxLength={4}
+                secureTextEntry
+              />
+              <TouchableOpacity style={styles.pinSaveBtn} onPress={handleSavePin} activeOpacity={0.8}>
+                <Ionicons name="key-outline" size={16} color="#fff" />
+                <Text style={styles.pinSaveBtnText}>{savedPin ? 'Cambiar PIN' : 'Activar PIN'}</Text>
+              </TouchableOpacity>
+            </View>
+            {savedPin && (
+              <TouchableOpacity
+                style={[styles.outlineButton, { marginTop: 10, borderColor: theme.colors.danger }]}
+                onPress={handleRemovePin}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="trash-outline" size={16} color={theme.colors.danger} />
+                <Text style={[styles.outlineButtonText, { color: theme.colors.danger }]}>
+                  Quitar protección por PIN
+                </Text>
+              </TouchableOpacity>
             )}
           </View>
 
@@ -524,5 +602,36 @@ const styles = StyleSheet.create({
     flex: 1,
     color: theme.colors.textPrimary,
     fontSize: 14,
+  },
+  pinRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  pinInput: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.surfaceBorder,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#ffffff',
+    fontSize: 14,
+    letterSpacing: 4,
+  },
+  pinSaveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.warning,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    borderRadius: 8,
+  },
+  pinSaveBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

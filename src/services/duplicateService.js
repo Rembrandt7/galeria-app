@@ -1,6 +1,8 @@
 import * as MediaLibrary from 'expo-media-library';
 import * as Crypto from 'expo-crypto';
+import * as LegacyFS from 'expo-file-system/legacy';
 import { File } from 'expo-file-system';
+import { compressionService } from './compressionService';
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -38,7 +40,7 @@ export const duplicateService = {
   async findDuplicates(photos, onProgress) {
     const images = photos.filter((a) => a.mediaType === 'photo');
 
-    // 1) Agrupar por tamaño
+    // 1) Agrupar por tamaño (compatible con file:// y content:// SAF)
     const bySize = new Map();
     let i = 0;
     for (const asset of images) {
@@ -48,13 +50,20 @@ export const duplicateService = {
       } catch (e) {
         size = 0;
       }
+      if (!size || size <= 0) {
+        try {
+          size = (await compressionService.getFileSize(asset)) || 0;
+        } catch (e2) {
+          size = 0;
+        }
+      }
       if (size > 0) {
         const list = bySize.get(size) || [];
         list.push({ ...asset, size });
         bySize.set(size, list);
       }
       i += 1;
-      if (i % 50 === 0) {
+      if (i % 40 === 0) {
         if (onProgress) onProgress({ phase: 'sizes', done: i, total: images.length });
         await tick();
       }
@@ -70,12 +79,35 @@ export const duplicateService = {
     let j = 0;
     for (const asset of candidates) {
       try {
-        const bytes = await new File(asset.uri).bytes();
-        const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, bytes);
-        const key = `${asset.size}-${toHex(digest)}`;
-        const list = byHash.get(key) || [];
-        list.push(asset);
-        byHash.set(key, list);
+        let hexHash = null;
+        try {
+          const bytes = await new File(asset.uri).bytes();
+          if (bytes && bytes.byteLength > 0) {
+            const digest = await Crypto.digest(Crypto.CryptoDigestAlgorithm.SHA256, bytes);
+            hexHash = toHex(digest);
+          }
+        } catch (errBytes) {
+          // Fallback para URIs SAF content:// o rutas con espacios
+        }
+
+        if (!hexHash) {
+          const base64 = await LegacyFS.readAsStringAsync(asset.uri, {
+            encoding: LegacyFS.EncodingType.Base64,
+          });
+          if (base64) {
+            hexHash = await Crypto.digestStringAsync(
+              Crypto.CryptoDigestAlgorithm.SHA256,
+              base64
+            );
+          }
+        }
+
+        if (hexHash) {
+          const key = `${asset.size}-${hexHash}`;
+          const list = byHash.get(key) || [];
+          list.push(asset);
+          byHash.set(key, list);
+        }
       } catch (e) {
         // archivo ilegible: se omite
       }

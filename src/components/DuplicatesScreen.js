@@ -121,11 +121,12 @@ export default function DuplicatesScreen({ visible, sourceAssets, onClose, onCha
   };
 
   const allCopies = groups.flatMap((g) => g.items.filter((a) => a.id !== keep[g.key]));
+  const totalSavingsBytes = allCopies.reduce((acc, a) => acc + (a.size || 0), 0);
 
   const deleteAllCopies = () => {
     Alert.alert(
       'Eliminar todas las copias',
-      `Se conservará una foto por grupo y se eliminarán ${allCopies.length} copias en total.`,
+      `Se conservará una foto por grupo y se eliminarán ${allCopies.length} copias en total (liberando ${formatSize(totalSavingsBytes) || 'espacio'}).`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -218,6 +219,12 @@ export default function DuplicatesScreen({ visible, sourceAssets, onClose, onCha
           </View>
         ) : (
           <>
+            <View style={styles.summaryBanner}>
+              <Ionicons name="analytics-outline" size={16} color={theme.colors.primaryLight} />
+              <Text style={styles.summaryText}>
+                {groups.length} {groups.length === 1 ? 'grupo' : 'grupos'} · {allCopies.length} copias repetidas · Liberar {formatSize(totalSavingsBytes)}
+              </Text>
+            </View>
             <FlatList
               data={groups}
               keyExtractor={(g) => g.key}
@@ -235,7 +242,7 @@ export default function DuplicatesScreen({ visible, sourceAssets, onClose, onCha
                     <ActivityIndicator color="#fff" />
                   ) : (
                     <Text style={styles.allBtnText}>
-                      Eliminar todas las copias ({allCopies.length})
+                      Eliminar todas las copias ({allCopies.length}) · Liberar {formatSize(totalSavingsBytes)}
                     </Text>
                   )}
                 </TouchableOpacity>
@@ -271,6 +278,22 @@ const styles = StyleSheet.create({
   },
   iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   title: { color: '#fff', fontSize: 18, fontWeight: '700' },
+  summaryBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    backgroundColor: theme.colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.surfaceBorder,
+  },
+  summaryText: {
+    color: theme.colors.primaryLight,
+    fontSize: 12,
+    fontWeight: '700',
+  },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   info: { color: theme.colors.textSecondary, marginTop: 14, textAlign: 'center' },
   card: {

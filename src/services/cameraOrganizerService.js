@@ -13,8 +13,8 @@ export const cameraOrganizerService = {
   getFileDate(asset) {
     const filename = asset.filename || asset.name || '';
 
-    // 1. Intentar deducir la fecha desde el nombre de archivo (ej. IMG_20240512_142030, VID_20231224_...)
-    const datePattern = /(?:IMG_|VID_|PXL_|Screenshot_)?(20\d\d)(0[1-9]|1[0-2])([0-3]\d)/i;
+    // 1. Intentar deducir la fecha desde el nombre de archivo (ej. IMG_20240512, IMG-20240512-WA0001, Screenshot_2024-05-12)
+    const datePattern = /(?:IMG[-_]?|VID[-_]?|PXL[-_]?|Screenshot[-_]?|WA[-_]?)?(20[0-3]\d)[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])/i;
     const match = filename.match(datePattern);
     if (match) {
       const year = match[1];
@@ -116,6 +116,20 @@ export const cameraOrganizerService = {
 
     if (total === 0) {
       return { success: true, moved: 0, monthsCreated: 0 };
+    }
+
+    // Completar fecha de modificación real del archivo cuando el nombre no contenga fecha
+    for (const item of filesToOrganize) {
+      if (!item.creationTime && cameraOrganizerService.getFileDate(item).key === 'Varios' && item.uri) {
+        try {
+          const info = await FileSystem.getInfoAsync(item.uri);
+          if (info && info.modificationTime) {
+            item.creationTime = info.modificationTime > 1e11 ? info.modificationTime : info.modificationTime * 1000;
+          }
+        } catch (e) {
+          // continuar
+        }
+      }
     }
 
     const groups = cameraOrganizerService.groupAssetsByMonth(filesToOrganize);

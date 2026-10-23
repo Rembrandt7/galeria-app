@@ -12,9 +12,12 @@ import {
   Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Sharing from 'expo-sharing';
 import PhotoThumbnail from './PhotoThumbnail';
 import { theme } from '../constants/theme';
 import { compressionService } from '../services/compressionService';
+import { mediaService } from '../services/mediaService';
+import { folderService } from '../services/folderService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const NUM_COLUMNS = 3;
@@ -40,11 +43,142 @@ export default function PhotoGrid({
 
   const [isCompressingBatch, setIsCompressingBatch] = useState(false);
   const [compressProgress, setCompressProgress] = useState(null);
+  const [selectedIds, setSelectedIds] = useState({});
+
+  const selectedCount = useMemo(() => Object.keys(selectedIds).length, [selectedIds]);
+  const isSelecting = selectedCount > 0;
+  const isSelectingRef = useRef(isSelecting);
+  isSelectingRef.current = isSelecting;
+
+  const selectedAssets = useMemo(
+    () => (assets || []).filter((a) => a && selectedIds[a.id]),
+    [assets, selectedIds]
+  );
 
   const photoAssets = useMemo(
     () => (assets || []).filter((a) => a && a.mediaType === 'photo'),
     [assets]
   );
+
+  const toggleSelectAsset = useCallback((asset) => {
+    if (!asset?.id) return;
+    setSelectedIds((prev) => {
+      const next = { ...prev };
+      if (next[asset.id]) {
+        delete next[asset.id];
+      } else {
+        next[asset.id] = true;
+      }
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds({});
+  }, []);
+
+  const selectAllVisible = useCallback(() => {
+    const next = {};
+    (assets || []).forEach((a) => {
+      if (a?.id) next[a.id] = true;
+    });
+    setSelectedIds(next);
+  }, [assets]);
+
+  const handleDeleteSelected = () => {
+    if (selectedAssets.length === 0) return;
+    Alert.alert(
+      'Eliminar seleccionados',
+      `¿Deseas eliminar ${selectedAssets.length} ${selectedAssets.length === 1 ? 'archivo seleccionado' : 'archivos seleccionados'}?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Eliminar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const mediaLibIds = [];
+              for (const item of selectedAssets) {
+                const isCustomFile =
+                  String(item.id).startsWith('content://') ||
+                  String(item.id).startsWith('file://');
+                if (isCustomFile) {
+                  await folderService.deleteFile(item.uri);
+                } else {
+                  mediaLibIds.push(item.id);
+                }
+              }
+              if (mediaLibIds.length > 0) {
+                await mediaService.deleteAssets(mediaLibIds);
+              }
+              clearSelection();
+              if (onRefresh) onRefresh();
+            } catch (e) {
+              Alert.alert('Error', 'No se pudieron eliminar algunos archivos.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleCompressSelected = () => {
+    const selectedPhotos = selectedAssets.filter((a) => a.mediaType === 'photo');
+    if (selectedPhotos.length === 0) {
+      Alert.alert('Sin fotos', 'Selecciona al menos una fotografía para comprimir.');
+      return;
+    }
+    Alert.alert(
+      'Comprimir seleccionadas',
+      `¿Optimizar ${selectedPhotos.length} ${selectedPhotos.length === 1 ? 'foto seleccionada' : 'fotos seleccionadas'} manteniendo el 100% de su resolución original?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Comprimir',
+          onPress: async () => {
+            setIsCompressingBatch(true);
+            setCompressProgress({
+              current: 0,
+              total: selectedPhotos.length,
+              percent: 0,
+              savedFormatted: '0 B',
+            });
+            try {
+              const res = await compressionService.compressFolderPhotos(
+                selectedPhotos,
+                (prog) => setCompressProgress(prog)
+              );
+              clearSelection();
+              Alert.alert(
+                '¡Compresión finalizada!',
+                `Se optimizaron ${res.compressedCount || res.processed} de ${selectedPhotos.length} fotos.\n\nEspacio ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+              );
+              if (onRefresh) onRefresh();
+            } catch (e) {
+              Alert.alert('Error', e?.message || String(e));
+            } finally {
+              setIsCompressingBatch(false);
+              setCompressProgress(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleShareSelected = async () => {
+    if (selectedAssets.length === 0) return;
+    try {
+      const available = await Sharing.isAvailableAsync();
+      if (!available) {
+        Alert.alert('No disponible', 'Compartir no está disponible en este dispositivo.');
+        return;
+      }
+      await Sharing.shareAsync(selectedAssets[0].uri);
+    } catch (e) {
+      Alert.alert('Error', 'No se pudo compartir el archivo.');
+    }
+  };
 
   const handleCompressAll = () => {
     if (photoAssets.length === 0) {
@@ -93,23 +227,41 @@ export default function PhotoGrid({
   };
 
   // Manejador estable: evita re-dibujar todas las miniaturas cada vez que cambia la lista
-  const handlePress = useCallback((a) => {
-    if (selectRef.current) selectRef.current(a, assetsRef.current);
-  }, []);
+  const handlePress = useCallback(
+    (a) => {
+      if (isSelectingRef.current) {
+        toggleSelectAsset(a);
+        return;
+      }
+      if (selectRef.current) selectRef.current(a, assetsRef.current);
+    },
+    [toggleSelectAsset]
+  );
+
+  const handleLongPress = useCallback(
+    (a) => {
+      toggleSelectAsset(a);
+    },
+    [toggleSelectAsset]
+  );
 
   const renderItem = useCallback(
     ({ item }) => {
       const isFav = Boolean(favorites[item.id]);
+      const isSel = Boolean(selectedIds[item.id]);
       return (
         <PhotoThumbnail
           asset={item}
           size={ITEM_SIZE}
           onPress={handlePress}
+          onLongPress={handleLongPress}
           isFavorite={isFav}
+          selectable={isSelecting}
+          isSelected={isSel}
         />
       );
     },
-    [favorites, handlePress]
+    [favorites, handlePress, handleLongPress, isSelecting, selectedIds]
   );
 
   // Con numColumns, FlatList pide el layout por FILA (no por elemento)
@@ -143,23 +295,57 @@ export default function PhotoGrid({
 
   return (
     <View style={styles.container}>
-      {photoAssets.length > 0 && (
-        <View style={styles.toolsBar}>
-          <Text style={styles.toolsInfoText}>
-            {photoAssets.length} {photoAssets.length === 1 ? 'foto' : 'fotos'}
-          </Text>
-          <TouchableOpacity
-            style={styles.compressBatchBtn}
-            onPress={handleCompressAll}
-            disabled={isCompressingBatch}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="sparkles" size={14} color="#38bdf8" />
-            <Text style={styles.compressBatchBtnText}>
-              Comprimir fotos ({photoAssets.length})
-            </Text>
-          </TouchableOpacity>
+      {isSelecting ? (
+        <View style={styles.selectionBar}>
+          <View style={styles.selectionTopRow}>
+            <TouchableOpacity onPress={clearSelection} style={styles.selHeaderBtn}>
+              <Ionicons name="close" size={18} color="#fff" />
+              <Text style={styles.selCountText}>{selectedCount} sel.</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={selectAllVisible} style={styles.selAllBtn}>
+              <Ionicons name="checkmark-done" size={15} color="#38bdf8" />
+              <Text style={styles.selAllText}>Seleccionar todo ({assets.length})</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.selectionActionsRow}>
+            <TouchableOpacity style={styles.selActionBtn} onPress={handleCompressSelected}>
+              <Ionicons name="sparkles" size={15} color="#38bdf8" />
+              <Text style={[styles.selActionText, { color: '#38bdf8' }]}>Comprimir</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.selActionBtn} onPress={handleShareSelected}>
+              <Ionicons name="share-social-outline" size={15} color="#fff" />
+              <Text style={styles.selActionText}>Compartir</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.selActionBtn, styles.selDeleteBtn]}
+              onPress={handleDeleteSelected}
+            >
+              <Ionicons name="trash-outline" size={15} color={theme.colors.danger} />
+              <Text style={[styles.selActionText, { color: theme.colors.danger }]}>
+                Eliminar ({selectedCount})
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
+      ) : (
+        photoAssets.length > 0 && (
+          <View style={styles.toolsBar}>
+            <Text style={styles.toolsInfoText}>
+              {photoAssets.length} {photoAssets.length === 1 ? 'foto' : 'fotos'} · Mantén presionado para seleccionar
+            </Text>
+            <TouchableOpacity
+              style={styles.compressBatchBtn}
+              onPress={handleCompressAll}
+              disabled={isCompressingBatch}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="sparkles" size={14} color="#38bdf8" />
+              <Text style={styles.compressBatchBtnText}>
+                Comprimir ({photoAssets.length})
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )
       )}
       <FlatList
         data={assets}
@@ -246,6 +432,68 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.surfaceBorder,
+  },
+  selectionBar: {
+    backgroundColor: theme.colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: '#38bdf8',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  selectionTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  selHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  selCountText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  selAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+    backgroundColor: theme.colors.surfaceHover,
+  },
+  selAllText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  selectionActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  selActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.surfaceBorder,
+    paddingVertical: 7,
+    borderRadius: 8,
+  },
+  selDeleteBtn: {
+    borderColor: 'rgba(239, 68, 68, 0.45)',
+  },
+  selActionText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
   },
   toolsInfoText: {
     color: theme.colors.textSecondary,

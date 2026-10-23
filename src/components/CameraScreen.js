@@ -32,12 +32,16 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
 
   const [facing, setFacing] = useState('back');
+  const [cameraMode, setCameraMode] = useState('video'); // 'video' | 'picture'
+  const [torchOn, setTorchOn] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [saving, setSaving] = useState(false);
 
   // Modo pantalla bloqueada / oculta total (pantalla 100% negra simulando estar apagada)
   const [stealthLocked, setStealthLocked] = useState(false);
+  const stealthLockedRef = useRef(false);
+  stealthLockedRef.current = stealthLocked;
   const [stealthHintVisible, setStealthHintVisible] = useState(false);
 
   const timerRef = useRef(null);
@@ -87,6 +91,32 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     };
   }, [stealthLocked]);
 
+  const handleTakePhoto = async () => {
+    if (!cameraRef.current || saving) return;
+    setSaving(true);
+    try {
+      const photo = await cameraRef.current.takePictureAsync({ quality: 0.92 });
+      if (photo?.uri) {
+        try {
+          const asset = await MediaLibrary.createAssetAsync(photo.uri);
+          let album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+          if (!album) {
+            await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
+          } else {
+            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+          }
+        } catch (err) {
+          await MediaLibrary.saveToLibraryAsync(photo.uri);
+        }
+        if (onVideoSaved) onVideoSaved();
+        Alert.alert('Foto guardada', `La fotografía se guardó en "${ALBUM_NAME}".`);
+      }
+    } catch (e) {
+      Alert.alert('Error', 'No se pudo tomar la fotografía.');
+    }
+    setSaving(false);
+  };
+
   const handleStartRecording = async () => {
     if (!cameraRef.current || isRecording) return;
     try {
@@ -96,6 +126,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
       });
 
       const video = await videoPromise;
+      const wasStealth = stealthLockedRef.current;
       if (video?.uri) {
         setSaving(true);
         try {
@@ -108,27 +139,35 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
             await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
           }
 
-          Alert.alert(
-            'Grabación guardada',
-            `El video se guardó en la carpeta "${ALBUM_NAME}". Puedes encontrarlo en la pestaña Álbumes de esta app o en tu galería.`,
-            [{ text: 'Entendido' }]
-          );
+          if (!wasStealth) {
+            Alert.alert(
+              'Grabación guardada',
+              `El video se guardó en la carpeta "${ALBUM_NAME}". Puedes encontrarlo en la pestaña Álbumes de esta app o en tu galería.`,
+              [{ text: 'Entendido' }]
+            );
+          }
           if (onVideoSaved) onVideoSaved();
         } catch (saveErr) {
           // Fallback a galería general si falla el álbum
           try {
             await MediaLibrary.saveToLibraryAsync(video.uri);
-            Alert.alert('Grabación guardada', 'El video se guardó en la galería.');
+            if (!wasStealth) {
+              Alert.alert('Grabación guardada', 'El video se guardó en la galería.');
+            }
             if (onVideoSaved) onVideoSaved();
           } catch (e2) {
-            Alert.alert('Aviso', 'No se pudo guardar el archivo de video.');
+            if (!wasStealth) {
+              Alert.alert('Aviso', 'No se pudo guardar el archivo de video.');
+            }
           }
         }
         setSaving(false);
       }
     } catch (e) {
       console.error('Error al grabar video:', e);
-      Alert.alert('Error', 'No se pudo procesar la grabación.');
+      if (!stealthLockedRef.current) {
+        Alert.alert('Error', 'No se pudo procesar la grabación.');
+      }
     } finally {
       setIsRecording(false);
       setStealthLocked(false);
@@ -230,7 +269,8 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
               ref={cameraRef}
               style={StyleSheet.absoluteFillObject}
               facing={facing}
-              mode="video"
+              mode={cameraMode}
+              enableTorch={torchOn}
             />
 
             {/* PANTALLA BLOQUEADA TOTAL (100% NEGRA, SIMULA TELÉFONO APAGADO) */}
@@ -282,14 +322,29 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                     </View>
                   )}
 
-                  {/* Cambiar cámara frontal/trasera */}
-                  <TouchableOpacity
-                    style={[styles.circleBtn, isRecording && { opacity: 0.4 }]}
-                    onPress={handleToggleFacing}
-                    disabled={isRecording}
-                  >
-                    <Ionicons name="camera-reverse-outline" size={24} color="#ffffff" />
-                  </TouchableOpacity>
+                  {/* Linterna y Cambiar cámara frontal/trasera */}
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <TouchableOpacity
+                      style={[
+                        styles.circleBtn,
+                        torchOn && { backgroundColor: theme.colors.warning },
+                      ]}
+                      onPress={() => setTorchOn((t) => !t)}
+                    >
+                      <Ionicons
+                        name={torchOn ? 'flash' : 'flash-off-outline'}
+                        size={22}
+                        color="#ffffff"
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.circleBtn, isRecording && { opacity: 0.4 }]}
+                      onPress={handleToggleFacing}
+                      disabled={isRecording}
+                    >
+                      <Ionicons name="camera-reverse-outline" size={24} color="#ffffff" />
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
                 {/* Botón para entrar al Modo Pantalla Bloqueada / Oculta durante la grabación */}
@@ -311,25 +366,67 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                   </View>
                 )}
 
-                {/* Barra Inferior con Botón de Disparo */}
-                <View style={styles.bottomRow}>
-                  <View style={{ width: 56 }} />
+                {/* Barra Inferior con Selector Foto/Video y Botón de Disparo */}
+                <View style={styles.bottomArea}>
+                  {!isRecording && (
+                    <View style={styles.modeSwitchRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.modePill,
+                          cameraMode === 'picture' && styles.modePillActive,
+                        ]}
+                        onPress={() => setCameraMode('picture')}
+                      >
+                        <Ionicons name="camera-outline" size={15} color="#fff" />
+                        <Text style={styles.modePillText}>Foto</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.modePill,
+                          cameraMode === 'video' && styles.modePillActive,
+                        ]}
+                        onPress={() => setCameraMode('video')}
+                      >
+                        <Ionicons name="videocam-outline" size={15} color="#fff" />
+                        <Text style={styles.modePillText}>Video (Discreto)</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
 
-                  {/* Botón REC / STOP */}
-                  <TouchableOpacity
-                    style={[styles.recordBtnOuter, isRecording && styles.recordBtnOuterActive]}
-                    onPress={isRecording ? handleStopRecording : handleStartRecording}
-                    disabled={saving}
-                    activeOpacity={0.8}
-                  >
-                    {saving ? (
-                      <ActivityIndicator color="#ffffff" />
-                    ) : (
-                      <View style={[styles.recordBtnInner, isRecording && styles.recordBtnInnerActive]} />
-                    )}
-                  </TouchableOpacity>
+                  <View style={styles.bottomRow}>
+                    <View style={{ width: 56 }} />
 
-                  <View style={{ width: 56 }} />
+                    {/* Botón FOTO o REC / STOP */}
+                    <TouchableOpacity
+                      style={[
+                        styles.recordBtnOuter,
+                        isRecording && styles.recordBtnOuterActive,
+                      ]}
+                      onPress={
+                        cameraMode === 'picture'
+                          ? handleTakePhoto
+                          : isRecording
+                          ? handleStopRecording
+                          : handleStartRecording
+                      }
+                      disabled={saving}
+                      activeOpacity={0.8}
+                    >
+                      {saving ? (
+                        <ActivityIndicator color="#ffffff" />
+                      ) : (
+                        <View
+                          style={[
+                            styles.recordBtnInner,
+                            cameraMode === 'picture' && styles.photoBtnInner,
+                            isRecording && styles.recordBtnInnerActive,
+                          ]}
+                        />
+                      )}
+                    </TouchableOpacity>
+
+                    <View style={{ width: 56 }} />
+                  </View>
                 </View>
               </View>
             )}
@@ -464,11 +561,39 @@ const styles = StyleSheet.create({
     fontSize: 11,
     textAlign: 'center',
   },
+  bottomArea: {
+    alignItems: 'center',
+    gap: 14,
+  },
+  modeSwitchRow: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    borderRadius: 20,
+    padding: 3,
+    gap: 4,
+  },
+  modePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 17,
+  },
+  modePillActive: {
+    backgroundColor: theme.colors.primary,
+  },
+  modePillText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   bottomRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
     paddingBottom: 24,
+    width: '100%',
   },
   recordBtnOuter: {
     width: 76,
@@ -487,6 +612,9 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 30,
     backgroundColor: '#ef4444',
+  },
+  photoBtnInner: {
+    backgroundColor: '#ffffff',
   },
   recordBtnInnerActive: {
     width: 32,

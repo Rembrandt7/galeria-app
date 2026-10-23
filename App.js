@@ -2,14 +2,19 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   StyleSheet,
   View,
+  Text,
   StatusBar,
   Alert,
   ActivityIndicator,
   Linking,
   AppState,
+  Modal,
+  TextInput,
+  TouchableOpacity,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as MediaLibrary from 'expo-media-library';
+import { Ionicons } from '@expo/vector-icons';
 
 import { theme } from './src/constants/theme';
 import { mediaService } from './src/services/mediaService';
@@ -63,6 +68,9 @@ export default function App() {
   // Carpetas ocultas y modo todo visible
   const [hiddenFolders, setHiddenFolders] = useState({});
   const [showAllFolders, setShowAllFolders] = useState(false);
+  const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [pinAttempt, setPinAttempt] = useState('');
+  const [storedPin, setStoredPin] = useState(null);
 
   // Inicializar permisos y datos de arranque (ultra rápido)
   useEffect(() => {
@@ -70,9 +78,10 @@ export default function App() {
       // 1. Cargar favoritos en segundo plano
       storageService.getFavorites().then(setFavorites);
 
-      // 1b. Cargar carpetas ocultas y preferencia de modo todo visible
+      // 1b. Cargar carpetas ocultas y SIEMPRE iniciar con carpetas ocultas bloqueadas (showAllFolders = false)
       storageService.getHiddenFolders().then((hf) => { if (hf) setHiddenFolders(hf); });
-      storageService.getShowAllFolders().then((sa) => { setShowAllFolders(Boolean(sa)); });
+      setShowAllFolders(false);
+      storageService.setShowAllFolders(false);
 
       // 2. Cargar carpetas guardadas en segundo plano
       folderService.getSavedFolders().then((folders) => {
@@ -149,10 +158,15 @@ export default function App() {
     }
   };
 
-  // Al volver desde los ajustes del sistema, revisar si ya se concedió el permiso
+  // Al minimizar/salir de la app, bloquear automáticamente las carpetas ocultas; al volver revisar permisos
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (state) => {
-      if (state !== 'active' || hasPermission !== false) return;
+      if (state !== 'active') {
+        setShowAllFolders(false);
+        storageService.setShowAllFolders(false);
+        return;
+      }
+      if (hasPermission !== false) return;
       const { status } = await MediaLibrary.getPermissionsAsync();
       if (status === 'granted') {
         setHasPermission(true);
@@ -327,11 +341,34 @@ export default function App() {
     }
   };
 
-  // Alternar modo todo visible (muestra u oculta las carpetas privadas)
+  // Alternar modo todo visible (muestra u oculta las carpetas privadas, con PIN opcional)
   const handleToggleShowAllFolders = async () => {
-    const nextVal = !showAllFolders;
-    setShowAllFolders(nextVal);
-    await storageService.setShowAllFolders(nextVal);
+    if (showAllFolders) {
+      setShowAllFolders(false);
+      await storageService.setShowAllFolders(false);
+      return;
+    }
+    const pin = await storageService.getPin();
+    if (pin) {
+      setStoredPin(pin);
+      setPinAttempt('');
+      setPinModalVisible(true);
+    } else {
+      setShowAllFolders(true);
+      await storageService.setShowAllFolders(true);
+    }
+  };
+
+  const handleConfirmPin = async () => {
+    if (pinAttempt.trim() === storedPin) {
+      setPinModalVisible(false);
+      setPinAttempt('');
+      setShowAllFolders(true);
+      await storageService.setShowAllFolders(true);
+    } else {
+      Alert.alert('PIN incorrecto', 'El PIN ingresado no coincide.');
+      setPinAttempt('');
+    }
   };
 
   // Abrir visor a pantalla completa a prueba de fallos
@@ -539,6 +576,48 @@ export default function App() {
           onClose={() => setCameraVisible(false)}
           onVideoSaved={() => handleRefresh()}
         />
+
+        {/* Modal de PIN para desbloquear carpetas ocultas */}
+        <Modal
+          visible={pinModalVisible}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setPinModalVisible(false)}
+          statusBarTranslucent
+        >
+          <View style={styles.pinModalBackdrop}>
+            <View style={styles.pinModalCard}>
+              <Ionicons name="lock-closed" size={36} color={theme.colors.warning} />
+              <Text style={styles.pinModalTitle}>Desbloquear carpetas ocultas</Text>
+              <Text style={styles.pinModalSub}>Ingresa tu PIN de 4 dígitos</Text>
+              <TextInput
+                style={styles.pinModalInput}
+                value={pinAttempt}
+                onChangeText={(t) => setPinAttempt(t.replace(/[^0-9]/g, '').slice(0, 4))}
+                keyboardType="numeric"
+                maxLength={4}
+                secureTextEntry
+                autoFocus
+                placeholder="••••"
+                placeholderTextColor={theme.colors.textMuted}
+              />
+              <View style={styles.pinModalActions}>
+                <TouchableOpacity
+                  style={styles.pinCancelBtn}
+                  onPress={() => setPinModalVisible(false)}
+                >
+                  <Text style={styles.pinCancelText}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.pinConfirmBtn}
+                  onPress={handleConfirmPin}
+                >
+                  <Text style={styles.pinConfirmText}>Desbloquear</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </SafeAreaView>
     </SafeAreaProvider>
   );
@@ -557,5 +636,75 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
+  },
+  pinModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.78)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  pinModalCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: 16,
+    padding: 22,
+    width: '100%',
+    maxWidth: 320,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.surfaceBorder,
+  },
+  pinModalTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 10,
+  },
+  pinModalSub: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    marginTop: 4,
+    marginBottom: 14,
+  },
+  pinModalInput: {
+    width: '100%',
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.surfaceBorder,
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    color: '#ffffff',
+    fontSize: 20,
+    textAlign: 'center',
+    letterSpacing: 10,
+    marginBottom: 16,
+  },
+  pinModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  pinCancelBtn: {
+    flex: 1,
+    backgroundColor: theme.colors.surfaceHover,
+    paddingVertical: 11,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  pinCancelText: {
+    color: theme.colors.textSecondary,
+    fontWeight: '600',
+  },
+  pinConfirmBtn: {
+    flex: 1,
+    backgroundColor: theme.colors.warning,
+    paddingVertical: 11,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  pinConfirmText: {
+    color: '#ffffff',
+    fontWeight: '700',
   },
 });
