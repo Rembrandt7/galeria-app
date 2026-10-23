@@ -11,10 +11,11 @@ import {
   Platform,
   ScrollView,
   Alert,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
-import { folderService } from '../services/folderService';
+import { folderService, COMMON_SYSTEM_FOLDERS } from '../services/folderService';
 import PhotoThumbnail from './PhotoThumbnail';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -67,6 +68,8 @@ export default function FolderBrowser({
 
   // Límite de fotos visibles para renderizado parcial fluido
   const [visibleLimit, setVisibleLimit] = useState(BATCH_SIZE);
+  // Modal de carpetas del sistema y permisos especiales
+  const [showSystemModal, setShowSystemModal] = useState(false);
 
   const currentFolder = history[history.length - 1] || null;
 
@@ -214,6 +217,16 @@ export default function FolderBrowser({
           >
             <Ionicons name="add-circle" size={18} color="#ffffff" />
             <Text style={styles.addFolderChipText}>+ Agregar carpeta</Text>
+          </TouchableOpacity>
+
+          {/* Botón Carpetas del Sistema / Acceso Especial */}
+          <TouchableOpacity
+            style={styles.systemFolderChip}
+            onPress={() => setShowSystemModal(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="shield-checkmark" size={16} color={theme.colors.accent} />
+            <Text style={styles.systemFolderChipText}>Carpetas del sistema</Text>
           </TouchableOpacity>
 
           {/* Chips de Carpetas Guardadas */}
@@ -527,6 +540,99 @@ export default function FolderBrowser({
           }
         />
       )}
+
+      {/* Modal de Carpetas del Sistema y Permisos */}
+      <Modal
+        visible={showSystemModal}
+        animationType="slide"
+        onRequestClose={() => setShowSystemModal(false)}
+        transparent={true}
+        statusBarTranslucent
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.systemModalCard}>
+            <View style={styles.systemModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <Ionicons name="folder-open" size={24} color={theme.colors.accent} />
+                <Text style={styles.systemModalTitle}>Carpetas del sistema</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowSystemModal(false)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Ionicons name="close" size={24} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+              {/* Sección de Permiso Especial de Acceso a Todos los Archivos */}
+              <View style={styles.permissionCard}>
+                <View style={{ flexDirection: 'row', gap: 10, alignItems: 'flex-start' }}>
+                  <Ionicons name="key" size={24} color={theme.colors.warning} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.permissionCardTitle}>Permiso de Acceso a Todos los Archivos</Text>
+                    <Text style={styles.permissionCardDesc}>
+                      En Android 11+, para explorar la memoria interna completa, descargas y fotos de apps (WhatsApp, Telegram), activa este permiso en los Ajustes de tu teléfono.
+                    </Text>
+                  </View>
+                </View>
+                <TouchableOpacity
+                  style={styles.permissionButton}
+                  onPress={() => folderService.openAllFilesAccessSettings()}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="settings" size={16} color="#ffffff" />
+                  <Text style={styles.permissionButtonText}>Activar permiso en Ajustes de Android</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Accesos directos a carpetas del teléfono */}
+              <Text style={styles.sectionSubtitle}>Accesos directos a carpetas del teléfono:</Text>
+
+              {COMMON_SYSTEM_FOLDERS.map((item) => {
+                const isAdded = savedFolders.some((f) => f.uri === item.uri);
+                return (
+                  <View key={item.id} style={styles.commonFolderItem}>
+                    <View style={styles.commonFolderIconWrap}>
+                      <Ionicons name={item.icon} size={22} color={theme.colors.primaryLight} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.commonFolderName}>{item.name}</Text>
+                      <Text style={styles.commonFolderDesc}>{item.description}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={[
+                        styles.addQuickFolderBtn,
+                        isAdded && styles.addQuickFolderBtnAdded,
+                      ]}
+                      onPress={async () => {
+                        await folderService.addSavedFolder(item.uri, item.name);
+                        if (onSelectSavedFolder) onSelectSavedFolder(item.uri);
+                        setShowSystemModal(false);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons
+                        name={isAdded ? 'checkmark' : 'add'}
+                        size={16}
+                        color="#ffffff"
+                      />
+                      <Text style={styles.addQuickFolderBtnText}>
+                        {isAdded ? 'Abierta' : 'Agregar'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+
+              {/* Nota explicativa de Android 11+ */}
+              <View style={styles.systemNoteBox}>
+                <Ionicons name="information-circle-outline" size={20} color={theme.colors.primaryLight} />
+                <Text style={styles.systemNoteText}>
+                  Nota: Google bloquea la carpeta Android/data a nivel de sistema por privacidad. Sin embargo, las fotos y videos de WhatsApp se ubican en Android/media (puedes abrirla directamente con el botón de WhatsApp arriba).
+                </Text>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -875,5 +981,148 @@ const styles = StyleSheet.create({
   streamingText: {
     color: theme.colors.textSecondary,
     fontSize: 12,
+  },
+  systemFolderChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+  },
+  systemFolderChipText: {
+    color: theme.colors.accent,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'flex-end',
+  },
+  systemModalCard: {
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    maxHeight: '85%',
+    padding: 18,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.surfaceBorder,
+  },
+  systemModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  systemModalTitle: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  permissionCard: {
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.3)',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+  },
+  permissionCardTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  permissionCardDesc: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  permissionButton: {
+    backgroundColor: theme.colors.warning,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+  },
+  permissionButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sectionSubtitle: {
+    color: theme.colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+  commonFolderItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: theme.colors.background,
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: theme.colors.surfaceBorder,
+  },
+  commonFolderIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surfaceHover,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  commonFolderName: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  commonFolderDesc: {
+    color: theme.colors.textSecondary,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  addQuickFolderBtn: {
+    backgroundColor: theme.colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+  },
+  addQuickFolderBtnAdded: {
+    backgroundColor: '#10b981',
+  },
+  addQuickFolderBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  systemNoteBox: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: theme.colors.surfaceHover,
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 10,
+    alignItems: 'flex-start',
+  },
+  systemNoteText: {
+    color: theme.colors.textSecondary,
+    fontSize: 11,
+    flex: 1,
+    lineHeight: 16,
   },
 });

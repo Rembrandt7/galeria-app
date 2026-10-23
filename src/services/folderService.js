@@ -1,9 +1,56 @@
 import { Directory, File } from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform, Linking, Alert } from 'react-native';
+import * as IntentLauncher from 'expo-intent-launcher';
 
 const FOLDER_KEY = '@galeria_selected_folder';
 const FOLDERS_LIST_KEY = '@galeria_saved_folders_list';
 const MAX_DEPTH = 4;
+
+export const COMMON_SYSTEM_FOLDERS = [
+  {
+    id: 'internal_root',
+    name: 'Memoria Interna (Raíz)',
+    uri: 'file:///storage/emulated/0',
+    icon: 'phone-portrait-outline',
+    description: 'Acceso a todas las carpetas del teléfono',
+  },
+  {
+    id: 'whatsapp_media',
+    name: 'WhatsApp (Fotos y Videos)',
+    uri: 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media',
+    icon: 'logo-whatsapp',
+    description: 'Fotos, videos y estados recibidos y enviados',
+  },
+  {
+    id: 'download',
+    name: 'Descargas (Download)',
+    uri: 'file:///storage/emulated/0/Download',
+    icon: 'download-outline',
+    description: 'Archivos e imágenes descargadas',
+  },
+  {
+    id: 'dcim',
+    name: 'Cámara (DCIM)',
+    uri: 'file:///storage/emulated/0/DCIM',
+    icon: 'camera-outline',
+    description: 'Fotos y videos de la cámara original',
+  },
+  {
+    id: 'pictures',
+    name: 'Imágenes (Pictures)',
+    uri: 'file:///storage/emulated/0/Pictures',
+    icon: 'images-outline',
+    description: 'Capturas de pantalla y fotos de apps',
+  },
+  {
+    id: 'telegram',
+    name: 'Telegram Media',
+    uri: 'file:///storage/emulated/0/Android/media/org.telegram.messenger',
+    icon: 'paper-plane-outline',
+    description: 'Archivos multimedia recibidos en Telegram',
+  },
+];
 
 const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif', 'avif'];
 const VIDEO_EXT = ['mp4', 'mkv', 'mov', 'webm', 'avi', '3gp', 'm4v'];
@@ -110,6 +157,31 @@ export const folderService = {
     } catch (e) {
       console.error('Error al seleccionar carpeta:', e);
       return null;
+    }
+  },
+
+  /**
+   * Abre la configuración especial de Android para conceder acceso a todos los archivos
+   * (necesario para ver carpetas ocultas, descargas completas y carpetas del sistema).
+   */
+  async openAllFilesAccessSettings() {
+    if (Platform.OS !== 'android') {
+      Alert.alert('Aviso', 'Esta configuración solo aplica para dispositivos Android.');
+      return;
+    }
+    try {
+      await IntentLauncher.startActivityAsync(
+        'android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION',
+        { data: 'package:com.rembrant.galeriaapp' }
+      );
+    } catch (e1) {
+      try {
+        await IntentLauncher.startActivityAsync(
+          'android.settings.MANAGE_ALL_FILES_ACCESS_PERMISSION'
+        );
+      } catch (e2) {
+        Linking.openSettings();
+      }
     }
   },
 

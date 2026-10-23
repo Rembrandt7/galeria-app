@@ -15,6 +15,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 import { updateService, CURRENT_VERSION, CURRENT_BUILD_NUMBER } from '../services/updateService';
+import { folderService } from '../services/folderService';
 
 export default function SettingsModal({ visible, onClose }) {
   const [checking, setChecking] = useState(false);
@@ -245,6 +246,32 @@ export default function SettingsModal({ visible, onClose }) {
                 )}
               </View>
             )}
+          </View>
+
+          {/* Tarjeta de Permisos del Sistema */}
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <View style={[styles.cardIconWrap, { backgroundColor: 'rgba(56, 189, 248, 0.15)' }]}>
+                <Ionicons name="shield-checkmark-outline" size={24} color={theme.colors.accent} />
+              </View>
+              <View style={styles.cardHeaderText}>
+                <Text style={styles.cardTitle}>Permisos del sistema</Text>
+                <Text style={styles.cardSubtitle}>Acceso total a memoria y carpetas</Text>
+              </View>
+            </View>
+            <Text style={styles.aboutText}>
+              Para que la aplicación pueda mostrar carpetas ocultas, descargas y archivos multimedia del sistema en Android 11+, activa el permiso especial "Acceso a todos los archivos".
+            </Text>
+            <TouchableOpacity
+              style={[styles.outlineButton, { borderColor: theme.colors.accent, marginTop: 10 }]}
+              onPress={() => folderService.openAllFilesAccessSettings()}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="settings-outline" size={16} color={theme.colors.accent} />
+              <Text style={[styles.outlineButtonText, { color: theme.colors.accent }]}>
+                Abrir Ajustes de Acceso a Todos los Archivos
+              </Text>
+            </TouchableOpacity>
           </View>
 
           {/* Tarjeta de Información */}
