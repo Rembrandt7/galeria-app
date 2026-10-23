@@ -134,7 +134,7 @@ export default function FullScreenViewer({
       setShowControls(true);
       translateX.setValue(0);
     }
-  }, [visible, initialIndex, assets?.length]);
+  }, [visible, initialIndex]);
 
   // Manejo de la tecla o gesto atrás de Android
   useEffect(() => {
@@ -183,8 +183,16 @@ export default function FullScreenViewer({
   useEffect(() => {
     let active = true;
     if (visible && currentAsset?.uri) {
-      compressionService.getFileSize(currentAsset.uri).then((sz) => {
-        if (active) setAssetSize(sz);
+      if (typeof currentAsset.fileSize === 'number' && currentAsset.fileSize > 0) {
+        setAssetSize(currentAsset.fileSize);
+      } else {
+        setAssetSize(null);
+      }
+      compressionService.getFileSize(currentAsset).then((sz) => {
+        if (active && sz > 0) {
+          currentAsset.fileSize = sz;
+          setAssetSize(sz);
+        }
       });
     } else {
       setAssetSize(null);
@@ -192,7 +200,7 @@ export default function FullScreenViewer({
     return () => {
       active = false;
     };
-  }, [visible, currentAsset?.uri]);
+  }, [visible, currentAsset?.id, currentAsset?.uri]);
 
   const sizeInfo = compressionService.getSizeLevel(assetSize);
 
@@ -207,13 +215,31 @@ export default function FullScreenViewer({
     setIsCompressing(true);
     try {
       const res = await compressionService.compressPhoto(currentAsset);
-      setAssetSize(res.newSize);
+      if (res?.newSize > 0) {
+        currentAsset.fileSize = res.newSize;
+        setAssetSize(res.newSize);
+      }
+      if (res?.uri) {
+        currentAsset.uri = res.uri;
+      }
+
+      const oldFormatted = compressionService.formatBytes(res.oldSize);
       const savedFormatted = compressionService.formatBytes(res.savedBytes);
       const newFormatted = compressionService.formatBytes(res.newSize);
-      Alert.alert(
-        '¡Foto comprimida con éxito!',
-        `Se mantuvo la resolución original al 100% (mismo ancho y alto).\n\nNuevo peso: ${newFormatted}\nEspacio ahorrado: ${savedFormatted}`
-      );
+      const resolutionText =
+        res.width && res.height ? `\nResolución intacta: ${res.width} × ${res.height} px (100%)` : '';
+
+      if (res.alreadyOptimized || res.savedBytes <= 0) {
+        Alert.alert(
+          'Foto ya optimizada',
+          `Esta fotografía ya se encuentra en su peso mínimo óptimo (${newFormatted}) manteniendo el 100% de su resolución original.${resolutionText}`
+        );
+      } else {
+        Alert.alert(
+          '¡Foto comprimida con éxito!',
+          `Se mantuvo la resolución original al 100% (mismo ancho y alto).${resolutionText}\n\nPeso anterior: ${oldFormatted}\nNuevo peso: ${newFormatted}\nEspacio ahorrado: ${savedFormatted}`
+        );
+      }
       if (onMediaSaved) onMediaSaved();
     } catch (e) {
       Alert.alert('Aviso de compresión', 'No se pudo completar la compresión: ' + (e?.message || String(e)));
@@ -371,7 +397,7 @@ export default function FullScreenViewer({
         )}
 
         {/* Franja indicadora de peso (Verde 0-2MB, Amarillo 2-4MB, Rojo >4MB con franja y título rojo) */}
-        {showControls && assetSize !== null && assetSize > 0 && (
+        {showControls && (!isVideo || (assetSize !== null && assetSize > 0)) && (
           <View
             style={[
               styles.weightBanner,
@@ -407,22 +433,26 @@ export default function FullScreenViewer({
                   ]}
                   numberOfLines={1}
                 >
-                  {sizeInfo.isHeavy
-                    ? `PESO ALTO: ${sizeInfo.mb} MB`
-                    : `PESO: ${sizeInfo.mb} MB`}
+                  {assetSize && assetSize > 0
+                    ? sizeInfo.isHeavy
+                      ? `PESO ALTO: ${sizeInfo.mb} MB`
+                      : `PESO: ${sizeInfo.mb} MB`
+                    : 'FOTO (100% RESOLUCIÓN)'}
                 </Text>
-                <View
-                  style={[
-                    styles.weightTag,
-                    {
-                      backgroundColor: sizeInfo.isHeavy
-                        ? '#991b1b'
-                        : sizeInfo.color,
-                    },
-                  ]}
-                >
-                  <Text style={styles.weightTagText}>{sizeInfo.tagText}</Text>
-                </View>
+                {assetSize && assetSize > 0 ? (
+                  <View
+                    style={[
+                      styles.weightTag,
+                      {
+                        backgroundColor: sizeInfo.isHeavy
+                          ? '#991b1b'
+                          : sizeInfo.color,
+                      },
+                    ]}
+                  >
+                    <Text style={styles.weightTagText}>{sizeInfo.tagText}</Text>
+                  </View>
+                ) : null}
               </View>
 
               {/* Botón Comprimir sin perder resolución */}
@@ -436,7 +466,8 @@ export default function FullScreenViewer({
                   ]}
                   onPress={handleCompressCurrentPhoto}
                   disabled={isCompressing}
-                  activeOpacity={0.8}
+                  activeOpacity={0.75}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
                   {isCompressing ? (
                     <ActivityIndicator
@@ -447,7 +478,7 @@ export default function FullScreenViewer({
                     <>
                       <Ionicons
                         name="sparkles"
-                        size={13}
+                        size={14}
                         color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
                       />
                       <Text

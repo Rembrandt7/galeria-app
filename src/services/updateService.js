@@ -6,8 +6,8 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.1.1';
-export const CURRENT_BUILD_NUMBER = 19;
+export const CURRENT_VERSION = 'v1.1.2';
+export const CURRENT_BUILD_NUMBER = 20;
 
 export const updateService = {
   /**
@@ -60,14 +60,14 @@ export const updateService = {
 
       return {
         hasUpdate,
-        version: `v1.1.1 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
+        version: `v1.1.2 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
         currentVersion: `${CURRENT_VERSION} (#${CURRENT_BUILD_NUMBER})`,
         remoteRunNumber,
         apkUrl: directApkUrl,
         apkSize: apkAsset?.size || null,
         latestRunUrl: latestRun?.html_url || `https://github.com/${REPO_OWNER}/${REPO_NAME}/actions`,
         notes: hasUpdate
-          ? 'Recorte de fotos corregido y carga de fotos y carpetas mucho más rápida.'
+          ? 'Botón de comprimir corregido (100% resolución sin pérdida en fotos individuales, carpetas y álbumes).'
           : 'Tu aplicación está actualizada con la última versión disponible.',
         message: hasUpdate
           ? `Nueva compilación #${remoteRunNumber} disponible en GitHub.`

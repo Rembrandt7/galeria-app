@@ -208,7 +208,7 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
         // Si la ruta es de acceso por carpeta (content://), copiar a caché y reintentar
         if (String(asset.uri).startsWith('content://')) {
           const dest = new File(Paths.cache, `crop_src_${Date.now()}.${isPng ? 'png' : 'jpg'}`);
-          new File(asset.uri).copy(dest);
+          await new File(asset.uri).copy(dest);
           out = await cropFrom(dest.uri);
         } else {
           throw firstErr;

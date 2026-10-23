@@ -194,31 +194,47 @@ export default function FolderBrowser({
     return [...folderPhotos, ...folderVideos];
   }, [folderCategory, filterType, folderPhotos, folderVideos]);
 
-  // Comprimir fotos de la carpeta completa
+  // Comprimir fotos de la carpeta completa (incluyendo subcarpetas si el nivel actual solo tiene carpetas)
   const handleCompressFolder = async () => {
-    if (folderPhotos.length === 0) {
-      Alert.alert('Sin fotos', 'No hay fotografías en esta carpeta para comprimir.');
+    let targetPhotos = folderPhotos;
+
+    if (targetPhotos.length === 0 && currentFolder?.uri) {
+      setIsCompressingFolder(true);
+      setCompressProgress({ current: 0, total: 1, percent: 0, savedFormatted: 'Buscando fotos en subcarpetas…' });
+      try {
+        const recursiveAssets = await folderService.loadFolderAssets(currentFolder.uri);
+        targetPhotos = (recursiveAssets || []).filter((a) => a.mediaType === 'photo');
+      } catch (e) {
+        targetPhotos = [];
+      } finally {
+        setIsCompressingFolder(false);
+        setCompressProgress(null);
+      }
+    }
+
+    if (targetPhotos.length === 0) {
+      Alert.alert('Sin fotos', 'No se encontraron fotografías en esta carpeta para comprimir.');
       return;
     }
 
     Alert.alert(
       'Comprimir fotos de la carpeta',
-      `¿Deseas optimizar las ${folderPhotos.length} fotos de esta carpeta sin perder resolución?\n\nSe mantendrá el 100% del tamaño original en píxeles (mismo ancho y alto) y se reducirá notablemente el peso en memoria.`,
+      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas sin perder resolución?\n\nSe mantendrá el 100% del tamaño original en píxeles (mismo ancho y alto) y se reducirá notablemente el peso en memoria.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir fotos',
           onPress: async () => {
             setIsCompressingFolder(true);
-            setCompressProgress({ current: 0, total: folderPhotos.length, percent: 0, savedFormatted: '0 B' });
+            setCompressProgress({ current: 0, total: targetPhotos.length, percent: 0, savedFormatted: '0 B' });
             try {
               const res = await compressionService.compressFolderPhotos(
-                folderPhotos,
+                targetPhotos,
                 (prog) => setCompressProgress(prog)
               );
               Alert.alert(
                 '¡Compresión finalizada!',
-                `Se optimizaron ${res.processed} fotos con éxito.\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+                `Se procesaron ${res.compressedCount || res.processed} de ${targetPhotos.length} fotos con éxito manteniendo el 100% de su resolución.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
               );
               handleRefresh();
             } catch (e) {
@@ -594,112 +610,115 @@ export default function FolderBrowser({
                   </Text>
                 </View>
               ) : (
-                <>
-                  {/* Sección de Subcarpetas */}
-                  {visibleSubfolders.length > 0 && (
-                    <View style={styles.subfolderSection}>
-                      <View style={styles.sectionHeader}>
-                        <Ionicons name="folder-outline" size={18} color={theme.colors.primary} />
-                        <Text style={styles.sectionTitle}>
-                          Carpetas ({visibleSubfolders.length}
-                          {hiddenSubfolderCount > 0 && showAllFolders ? ` · ${hiddenSubfolderCount} ocultas` : ''})
-                        </Text>
-                      </View>
-                      <View style={styles.folderGrid}>
-                        {visibleSubfolders.map((item) => renderSubfolderItem(item))}
-                      </View>
+                /* Sección de Subcarpetas */
+                visibleSubfolders.length > 0 && (
+                  <View style={styles.subfolderSection}>
+                    <View style={styles.sectionHeader}>
+                      <Ionicons name="folder-outline" size={18} color={theme.colors.primary} />
+                      <Text style={styles.sectionTitle}>
+                        Carpetas ({visibleSubfolders.length}
+                        {hiddenSubfolderCount > 0 && showAllFolders ? ` · ${hiddenSubfolderCount} ocultas` : ''})
+                      </Text>
                     </View>
+                    <View style={styles.folderGrid}>
+                      {visibleSubfolders.map((item) => renderSubfolderItem(item))}
+                    </View>
+                  </View>
+                )
+              )}
+
+              {/* Barra de División Fotos y Videos + Botón Comprimir (visible en ambos modos) */}
+              <View style={styles.divisionBar}>
+                <View style={styles.categorySegmentRow}>
+                  <TouchableOpacity
+                    style={[styles.categoryPill, folderCategory === 'all' && styles.categoryPillActive]}
+                    onPress={() => setFolderCategory('all')}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={[styles.categoryPillText, folderCategory === 'all' && styles.categoryPillTextActive]}>
+                      Todas ({folderPhotos.length + folderVideos.length})
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.categoryPill, folderCategory === 'photos' && styles.categoryPillActive]}
+                    onPress={() => setFolderCategory('photos')}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name="images"
+                      size={14}
+                      color={folderCategory === 'photos' ? '#ffffff' : theme.colors.primaryLight}
+                    />
+                    <Text style={[styles.categoryPillText, folderCategory === 'photos' && styles.categoryPillTextActive]}>
+                      Fotos ({folderPhotos.length})
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.categoryPill, folderCategory === 'videos' && styles.categoryPillActive]}
+                    onPress={() => setFolderCategory('videos')}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name="videocam"
+                      size={14}
+                      color={folderCategory === 'videos' ? '#ffffff' : theme.colors.primaryLight}
+                    />
+                    <Text style={[styles.categoryPillText, folderCategory === 'videos' && styles.categoryPillTextActive]}>
+                      Videos ({folderVideos.length})
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {/* Barra de Acciones Inteligentes: Comprimir y Organizar Cámara */}
+                <View style={styles.actionToolsRow}>
+                  {(folderPhotos.length > 0 || visibleSubfolders.length > 0) && (
+                    <TouchableOpacity
+                      style={styles.actionToolButton}
+                      onPress={handleCompressFolder}
+                      disabled={isCompressingFolder}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="sparkles" size={14} color="#38bdf8" />
+                      <Text style={styles.actionToolButtonText}>
+                        {folderPhotos.length > 0
+                          ? `Comprimir fotos (${folderPhotos.length})`
+                          : 'Comprimir fotos de carpeta'}
+                      </Text>
+                    </TouchableOpacity>
                   )}
 
-                  {/* Barra de División Fotos y Videos */}
-                  <View style={styles.divisionBar}>
-                    <View style={styles.categorySegmentRow}>
-                      <TouchableOpacity
-                        style={[styles.categoryPill, folderCategory === 'all' && styles.categoryPillActive]}
-                        onPress={() => setFolderCategory('all')}
-                        activeOpacity={0.8}
-                      >
-                        <Text style={[styles.categoryPillText, folderCategory === 'all' && styles.categoryPillTextActive]}>
-                          Todas ({folderPhotos.length + folderVideos.length})
-                        </Text>
-                      </TouchableOpacity>
+                  {viewMode === 'folders' && currentFolderAssets.length > 5 && (
+                    <TouchableOpacity
+                      style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
+                      onPress={() => setShowOrganizeConfirmModal(true)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="calendar" size={14} color={theme.colors.warning} />
+                      <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
+                        Organizar por meses (físico)
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
 
-                      <TouchableOpacity
-                        style={[styles.categoryPill, folderCategory === 'photos' && styles.categoryPillActive]}
-                        onPress={() => setFolderCategory('photos')}
-                        activeOpacity={0.8}
-                      >
-                        <Ionicons
-                          name="images"
-                          size={14}
-                          color={folderCategory === 'photos' ? '#ffffff' : theme.colors.primaryLight}
-                        />
-                        <Text style={[styles.categoryPillText, folderCategory === 'photos' && styles.categoryPillTextActive]}>
-                          Fotos ({folderPhotos.length})
-                        </Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={[styles.categoryPill, folderCategory === 'videos' && styles.categoryPillActive]}
-                        onPress={() => setFolderCategory('videos')}
-                        activeOpacity={0.8}
-                      >
-                        <Ionicons
-                          name="videocam"
-                          size={14}
-                          color={folderCategory === 'videos' ? '#ffffff' : theme.colors.primaryLight}
-                        />
-                        <Text style={[styles.categoryPillText, folderCategory === 'videos' && styles.categoryPillTextActive]}>
-                          Videos ({folderVideos.length})
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-
-                    {/* Barra de Acciones Inteligentes: Comprimir y Organizar Cámara */}
-                    <View style={styles.actionToolsRow}>
-                      {folderPhotos.length > 0 && (
-                        <TouchableOpacity
-                          style={styles.actionToolButton}
-                          onPress={handleCompressFolder}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="sparkles" size={14} color="#38bdf8" />
-                          <Text style={styles.actionToolButtonText}>Comprimir fotos ({folderPhotos.length})</Text>
-                        </TouchableOpacity>
-                      )}
-
-                      {currentFolderAssets.length > 5 && (
-                        <TouchableOpacity
-                          style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
-                          onPress={() => setShowOrganizeConfirmModal(true)}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="calendar" size={14} color={theme.colors.warning} />
-                          <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
-                            Organizar por meses (físico)
-                          </Text>
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  </View>
-
-                  {/* Cabecera descriptiva según división */}
-                  <View style={styles.sectionHeader}>
-                    <Ionicons
-                      name={folderCategory === 'videos' ? 'videocam-outline' : 'images-outline'}
-                      size={18}
-                      color={theme.colors.primary}
-                    />
-                    <Text style={styles.sectionTitle}>
-                      {folderCategory === 'photos'
-                        ? `Fotos (${folderPhotos.length})`
-                        : folderCategory === 'videos'
-                        ? `Videos (${folderVideos.length})`
-                        : `Fotos (${folderPhotos.length}) y Videos (${folderVideos.length})`}
-                    </Text>
-                  </View>
-                </>
-              )}
+              {/* Cabecera descriptiva según división */}
+              <View style={styles.sectionHeader}>
+                <Ionicons
+                  name={folderCategory === 'videos' ? 'videocam-outline' : 'images-outline'}
+                  size={18}
+                  color={theme.colors.primary}
+                />
+                <Text style={styles.sectionTitle}>
+                  {folderCategory === 'photos'
+                    ? `Fotos (${folderPhotos.length})`
+                    : folderCategory === 'videos'
+                    ? `Videos (${folderVideos.length})`
+                    : `Fotos (${folderPhotos.length}) y Videos (${folderVideos.length})`}
+                </Text>
+              </View>
             </View>
           }
           renderItem={renderPhotoItem}
