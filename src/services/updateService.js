@@ -6,8 +6,8 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.1.3';
-export const CURRENT_BUILD_NUMBER = 21;
+export const CURRENT_VERSION = 'v1.1.4';
+export const CURRENT_BUILD_NUMBER = 22;
 
 export const updateService = {
   /**
@@ -60,14 +60,14 @@ export const updateService = {
 
       return {
         hasUpdate,
-        version: `v1.1.3 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
+        version: `v1.1.4 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
         currentVersion: `${CURRENT_VERSION} (#${CURRENT_BUILD_NUMBER})`,
         remoteRunNumber,
         apkUrl: directApkUrl,
         apkSize: apkAsset?.size || null,
         latestRunUrl: latestRun?.html_url || `https://github.com/${REPO_OWNER}/${REPO_NAME}/actions`,
         notes: hasUpdate
-          ? 'Nuevas funciones: Selección múltiple, captura de cuadro en video, giro 90° rápido, PIN y auto-bloqueo de ocultas, detector de duplicados con ahorro en MB y mejoras en cámara discreta.'
+          ? 'Compresión sobre el archivo original verificada en disco (elimina y reemplaza sin truncamiento falso y NUNCA genera copias duplicadas).'
           : 'Tu aplicación está actualizada con la última versión disponible.',
         message: hasUpdate
           ? `Nueva compilación #${remoteRunNumber} disponible en GitHub.`

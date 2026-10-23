@@ -21,6 +21,7 @@ import { File, Paths } from 'expo-file-system';
 import * as LegacyFS from 'expo-file-system/legacy';
 import { theme } from '../constants/theme';
 import { compressionService } from '../services/compressionService';
+import { folderService } from '../services/folderService';
 import VideoPlayerScreen from './VideoPlayerScreen';
 import ImageCropper from './ImageCropper';
 
@@ -218,7 +219,7 @@ export default function FullScreenViewer({
       } else {
         setAssetSize(null);
       }
-      compressionService.getFileSize(currentAsset).then((sz) => {
+      compressionService.getFileSize(currentAsset, { forceFresh: true }).then((sz) => {
         if (active && sz > 0) {
           currentAsset.fileSize = sz;
           setAssetSize(sz);
@@ -252,6 +253,7 @@ export default function FullScreenViewer({
       if (res?.uri) {
         currentAsset.uri = res.uri;
       }
+      setImageRev((r) => r + 1);
 
       const oldFormatted = compressionService.formatBytes(res.oldSize);
       const savedFormatted = compressionService.formatBytes(res.savedBytes);
@@ -266,13 +268,27 @@ export default function FullScreenViewer({
         );
       } else {
         Alert.alert(
-          '¡Foto comprimida con éxito!',
-          `Se mantuvo la resolución original al 100% (mismo ancho y alto).${resolutionText}\n\nPeso anterior: ${oldFormatted}\nNuevo peso: ${newFormatted}\nEspacio ahorrado: ${savedFormatted}`
+          '¡Foto original comprimida!',
+          `Se reemplazó el archivo original sin crear copias y manteniendo su resolución al 100%.${resolutionText}\n\nPeso anterior: ${oldFormatted}\nNuevo peso en disco: ${newFormatted}\nEspacio ahorrado: ${savedFormatted}`
         );
       }
       if (onMediaSaved) onMediaSaved();
     } catch (e) {
-      Alert.alert('Aviso de compresión', 'No se pudo completar la compresión: ' + (e?.message || String(e)));
+      if (e?.code === 'PERMISSION_REQUIRED') {
+        Alert.alert(
+          'Permiso requerido para modificar el original',
+          e.message,
+          [
+            { text: 'Cancelar', style: 'cancel' },
+            {
+              text: 'Activar permiso en Ajustes',
+              onPress: () => folderService.openAllFilesAccessSettings(),
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Aviso de compresión', 'No se pudo completar la compresión: ' + (e?.message || String(e)));
+      }
     } finally {
       setIsCompressing(false);
     }
