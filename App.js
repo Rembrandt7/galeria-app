@@ -176,7 +176,7 @@ export default function App() {
     try {
       const cursor = reset ? null : endCursor;
       const result = await mediaService.getAssets({
-        first: 36,
+        first: 72,
         after: cursor,
         albumId: album ? album.id : null,
         mediaTypes: getMediaTypes(filter),

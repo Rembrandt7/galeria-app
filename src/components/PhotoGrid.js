@@ -1,4 +1,4 @@
-import React, { useMemo, useCallback } from 'react';
+import React, { useMemo, useCallback, useRef } from 'react';
 import {
   View,
   FlatList,
@@ -29,6 +29,16 @@ export default function PhotoGrid({
   isLoadingMore,
   emptyMessage = 'No se encontraron fotos ni videos.',
 }) {
+  const selectRef = useRef(onSelectPhoto);
+  selectRef.current = onSelectPhoto;
+  const assetsRef = useRef(assets);
+  assetsRef.current = assets;
+
+  // Manejador estable: evita re-dibujar todas las miniaturas cada vez que cambia la lista
+  const handlePress = useCallback((a) => {
+    if (selectRef.current) selectRef.current(a, assetsRef.current);
+  }, []);
+
   const renderItem = useCallback(
     ({ item }) => {
       const isFav = Boolean(favorites[item.id]);
@@ -36,18 +46,19 @@ export default function PhotoGrid({
         <PhotoThumbnail
           asset={item}
           size={ITEM_SIZE}
-          onPress={(a) => onSelectPhoto(a, assets)}
+          onPress={handlePress}
           isFavorite={isFav}
         />
       );
     },
-    [favorites, onSelectPhoto, assets]
+    [favorites, handlePress]
   );
 
+  // Con numColumns, FlatList pide el layout por FILA (no por elemento)
   const getItemLayout = useCallback(
     (_, index) => ({
       length: ITEM_SIZE + ITEM_MARGIN * 2,
-      offset: (ITEM_SIZE + ITEM_MARGIN * 2) * Math.floor(index / NUM_COLUMNS),
+      offset: (ITEM_SIZE + ITEM_MARGIN * 2) * index,
       index,
     }),
     []
@@ -81,9 +92,10 @@ export default function PhotoGrid({
         numColumns={NUM_COLUMNS}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
-        initialNumToRender={18}
-        maxToRenderPerBatch={18}
-        windowSize={9}
+        initialNumToRender={24}
+        maxToRenderPerBatch={24}
+        updateCellsBatchingPeriod={30}
+        windowSize={7}
         removeClippedSubviews={true}
         getItemLayout={getItemLayout}
         onEndReached={() => {

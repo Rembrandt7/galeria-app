@@ -12,6 +12,8 @@ import {
   BackHandler,
 } from 'react-native';
 import { Image } from 'expo-image';
+import { Image as RNImage } from 'react-native';
+import { File, Paths } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
@@ -146,24 +148,84 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
     }),
   }).current;
 
+  // Tamaño REAL de la imagen original (sin reducciones del visor)
+  useEffect(() => {
+    let alive = true;
+    if (!asset?.uri) return undefined;
+    RNImage.getSize(
+      asset.uri,
+      (w, h) => {
+        if (alive && w > 0 && h > 0) setNatural({ w, h });
+      },
+      async () => {
+        try {
+          const probe = await ImageManipulator.manipulate(asset.uri).renderAsync();
+          if (alive) setNatural({ w: probe.width, h: probe.height });
+        } catch (e) {
+          if (alive) Alert.alert('No se pudo abrir la imagen', 'No fue posible leer este archivo para recortarlo.');
+        }
+      }
+    );
+    return () => {
+      alive = false;
+    };
+  }, [asset?.uri]);
+
   const handleSave = async () => {
-    if (!natural || !rect || !disp.w) return;
+    if (!rect || !disp.w || !disp.h) return;
     setBusy(true);
     try {
-      const k = natural.w / disp.w;
-      const originX = clamp(Math.round(rect.x * k), 0, natural.w - 1);
-      const originY = clamp(Math.round(rect.y * k), 0, natural.h - 1);
-      const width = clamp(Math.round(rect.w * k), 1, natural.w - originX);
-      const height = clamp(Math.round(rect.h * k), 1, natural.h - originY);
+      // El recorte se guarda como fracción de la imagen mostrada: funciona con cualquier resolución
+      const fx = rect.x / disp.w;
+      const fy = rect.y / disp.h;
+      const fw = rect.w / disp.w;
+      const fh = rect.h / disp.h;
+      const isPng = /\.png$/i.test(asset.filename || asset.uri || '');
 
-      const ctx = ImageManipulator.manipulate(asset.uri);
-      ctx.crop({ originX, originY, width, height });
-      const ref = await ctx.renderAsync();
-      const out = await ref.saveAsync({ format: SaveFormat.JPEG, compress: 0.95 });
-      await MediaLibrary.saveToLibraryAsync(out.uri);
+      const cropFrom = async (src) => {
+        const probe = await ImageManipulator.manipulate(src).renderAsync();
+        const W = probe.width;
+        const H = probe.height;
+        const originX = clamp(Math.round(fx * W), 0, W - 1);
+        const originY = clamp(Math.round(fy * H), 0, H - 1);
+        const width = clamp(Math.round(fw * W), 1, W - originX);
+        const height = clamp(Math.round(fh * H), 1, H - originY);
+
+        const ctx = ImageManipulator.manipulate(src);
+        ctx.crop({ originX, originY, width, height });
+        const ref = await ctx.renderAsync();
+        return ref.saveAsync(
+          isPng
+            ? { format: SaveFormat.PNG }
+            : { format: SaveFormat.JPEG, compress: 0.95 }
+        );
+      };
+
+      let out;
+      try {
+        out = await cropFrom(asset.uri);
+      } catch (firstErr) {
+        // Si la ruta es de acceso por carpeta (content://), copiar a caché y reintentar
+        if (String(asset.uri).startsWith('content://')) {
+          const dest = new File(Paths.cache, `crop_src_${Date.now()}.${isPng ? 'png' : 'jpg'}`);
+          new File(asset.uri).copy(dest);
+          out = await cropFrom(dest.uri);
+        } else {
+          throw firstErr;
+        }
+      }
+
+      try {
+        await MediaLibrary.createAssetAsync(out.uri);
+      } catch (saveErr) {
+        await MediaLibrary.saveToLibraryAsync(out.uri);
+      }
+
+      setBusy(false);
       Alert.alert('Listo', 'La imagen recortada se guardó en tu galería como una copia nueva.');
       if (onSaved) onSaved();
       onClose();
+      return;
     } catch (e) {
       Alert.alert('No se pudo recortar', String(e?.message || e));
     }
@@ -214,13 +276,10 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
               contentFit="fill"
             />
           )}
-          {/* Carga inicial para conocer el tamaño real */}
           {!natural && (
-            <Image
-              source={{ uri: asset.uri }}
-              style={styles.hidden}
-              onLoad={(e) => setNatural({ w: e.source.width, h: e.source.height })}
-            />
+            <View style={styles.hidden}>
+              <ActivityIndicator color="#ffffff" />
+            </View>
           )}
 
           {box && (
@@ -298,7 +357,7 @@ const styles = StyleSheet.create({
   iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   title: { color: '#fff', fontSize: 16, fontWeight: '600' },
   area: { flex: 1, margin: 12 },
-  hidden: { position: 'absolute', width: 1, height: 1, opacity: 0 },
+  hidden: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center' },
   shade: { position: 'absolute', backgroundColor: 'rgba(0,0,0,0.6)' },
   cropBox: { position: 'absolute', borderWidth: 2, borderColor: '#fff' },
   handleTouch: {

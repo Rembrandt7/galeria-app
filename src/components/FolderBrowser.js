@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -32,7 +32,7 @@ const NUM_FOLDER_COLUMNS = 2;
 const FOLDER_CARD_WIDTH =
   (SCREEN_WIDTH - theme.spacing.lg * 2 - FOLDER_GAP) / NUM_FOLDER_COLUMNS;
 
-const BATCH_SIZE = 30; // Tamaño de carga parcial progresiva
+const BATCH_SIZE = 90; // Tamaño de carga parcial progresiva
 
 export default function FolderBrowser({
   rootUri,
@@ -114,10 +114,11 @@ export default function FolderBrowser({
     setAllAssets([]);
     setVisibleLimit(BATCH_SIZE);
     try {
-      await folderService.loadFolderAssets(uri, (chunk) => {
+      const sorted = await folderService.loadFolderAssets(uri, (chunk) => {
         setAllAssets((prev) => [...prev, ...chunk]);
         setLoadingAll(false);
       });
+      if (sorted && sorted.length > 0) setAllAssets(sorted);
     } catch (e) {
       setAllAssets([]);
     }
@@ -271,6 +272,26 @@ export default function FolderBrowser({
       setVisibleLimit((prev) => Math.min(prev + BATCH_SIZE, totalFilteredAssets.length));
     }
   };
+
+  // Manejadores estables para que las miniaturas no se vuelvan a dibujar innecesariamente
+  const selectRef = useRef(onSelectPhoto);
+  selectRef.current = onSelectPhoto;
+  const listRef = useRef(totalFilteredAssets);
+  listRef.current = totalFilteredAssets;
+  const handlePressPhoto = useCallback((a) => {
+    if (selectRef.current) selectRef.current(a, listRef.current);
+  }, []);
+  const renderPhotoItem = useCallback(
+    ({ item }) => (
+      <PhotoThumbnail
+        asset={item}
+        size={PHOTO_SIZE}
+        onPress={handlePressPhoto}
+        isFavorite={Boolean(favorites[item.id])}
+      />
+    ),
+    [favorites, handlePressPhoto]
+  );
 
   // Notificar al componente padre los assets totales visibles
   useEffect(() => {
@@ -681,14 +702,8 @@ export default function FolderBrowser({
               )}
             </View>
           }
-          renderItem={({ item }) => (
-            <PhotoThumbnail
-              asset={item}
-              size={PHOTO_SIZE}
-              onPress={(a) => onSelectPhoto(a, totalFilteredAssets)}
-              isFavorite={Boolean(favorites[item.id])}
-            />
-          )}
+          renderItem={renderPhotoItem}
+          updateCellsBatchingPeriod={30}
           ListEmptyComponent={
             !loading && subfolders.length === 0 ? (
               <View style={styles.emptyContainer}>

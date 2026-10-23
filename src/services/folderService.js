@@ -2,6 +2,7 @@ import { Directory, File } from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform, Linking, Alert } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
+import * as LegacyFS from 'expo-file-system/legacy';
 
 const FOLDER_KEY = '@galeria_selected_folder';
 const FOLDERS_LIST_KEY = '@galeria_saved_folders_list';
@@ -63,6 +64,41 @@ const getMediaType = (file) => {
   if (IMAGE_EXT.includes(ext)) return 'photo';
   if (VIDEO_EXT.includes(ext)) return 'video';
   return null;
+};
+
+// --- Utilidades rápidas basadas en el nombre (sin llamadas nativas por archivo) ---
+const mediaTypeByName = (name) => {
+  const i = name.lastIndexOf('.');
+  if (i < 0) return null;
+  const ext = name.slice(i + 1).toLowerCase();
+  if (IMAGE_EXT.includes(ext)) return 'photo';
+  if (VIDEO_EXT.includes(ext)) return 'video';
+  return null;
+};
+
+const hasExtension = (name) => {
+  const i = name.lastIndexOf('.');
+  return i > 0 && name.length - i <= 6;
+};
+
+const nameFromUri = (uri) => {
+  let decoded = uri;
+  try {
+    decoded = decodeURIComponent(uri);
+  } catch (e) {
+    // usar el uri tal cual
+  }
+  const last = decoded.split('/').pop() || '';
+  return last.split(':').pop() || last;
+};
+
+const byFilenameDesc = (a, b) =>
+  a.filename < b.filename ? 1 : a.filename > b.filename ? -1 : 0;
+
+const byNameAsc = (a, b) => {
+  const x = (a.name || '').toLowerCase();
+  const y = (b.name || '').toLowerCase();
+  return x < y ? -1 : x > y ? 1 : 0;
 };
 
 export const folderService = {
@@ -196,27 +232,88 @@ export const folderService = {
   },
 
   /**
-   * Lee la carpeta actual de forma instantánea emitiendo lotes progresivos.
+   * Lista un nivel de carpeta de forma RÁPIDA: una sola llamada nativa para obtener
+   * los nombres y el tipo se deduce por extensión (sin consultar archivo por archivo).
    */
-  async readDirectory(uri, onBatch) {
-    try {
-      const dir = new Directory(uri);
-      const items = dir.list();
-      const subfolders = [];
-      const assets = [];
+  async _listFast(uri) {
+    let entries;
+    if (uri.startsWith('content://')) {
+      const children = await LegacyFS.StorageAccessFramework.readDirectoryAsync(uri);
+      entries = children.map((u) => ({ uri: u, name: nameFromUri(u) }));
+    } else if (uri.startsWith('file://')) {
+      const base = uri.endsWith('/') ? uri : `${uri}/`;
+      const names = await LegacyFS.readDirectoryAsync(uri);
+      entries = names.map((n) => ({ uri: base + encodeURIComponent(n), name: n }));
+    } else {
+      throw new Error('Ruta no soportada para lectura rápida');
+    }
 
-      let processed = 0;
-      for (const item of items) {
-        if (item instanceof Directory) {
-          subfolders.push({
-            id: item.uri,
-            uri: item.uri,
-            name: item.name || folderService.folderName(item.uri),
-            isDirectory: true,
-          });
-        } else {
-          const mediaType = getMediaType(item);
-          if (!mediaType) continue;
+    const assets = [];
+    const candidates = [];
+    for (const e of entries) {
+      const mediaType = mediaTypeByName(e.name);
+      if (mediaType) {
+        assets.push({
+          id: e.uri,
+          uri: e.uri,
+          filename: e.name,
+          mediaType,
+          creationTime: 0,
+          width: null,
+          height: null,
+          fromFolder: true,
+        });
+      } else if (!hasExtension(e.name)) {
+        candidates.push(e);
+      }
+    }
+
+    let dirEntries = candidates;
+    if (uri.startsWith('file://')) {
+      // Confirmar cuáles candidatos son realmente carpetas (pocos, en lotes paralelos)
+      dirEntries = [];
+      const limited = candidates.slice(0, 400);
+      for (let i = 0; i < limited.length; i += 25) {
+        const slice = limited.slice(i, i + 25);
+        const infos = await Promise.all(
+          slice.map((c) => LegacyFS.getInfoAsync(c.uri).catch(() => null))
+        );
+        infos.forEach((info, j) => {
+          if (info && info.isDirectory) dirEntries.push(slice[j]);
+        });
+      }
+    }
+
+    const subfolders = dirEntries.map((e) => ({
+      id: e.uri,
+      uri: e.uri,
+      name: e.name || folderService.folderName(e.uri),
+      isDirectory: true,
+    }));
+
+    return { subfolders, assets };
+  },
+
+  /**
+   * Lectura de respaldo (más lenta) usando la API nueva de expo-file-system.
+   */
+  async _listSlow(uri) {
+    const dir = new Directory(uri);
+    const items = dir.list();
+    const subfolders = [];
+    const assets = [];
+    let processed = 0;
+    for (const item of items) {
+      if (item instanceof Directory) {
+        subfolders.push({
+          id: item.uri,
+          uri: item.uri,
+          name: item.name || folderService.folderName(item.uri),
+          isDirectory: true,
+        });
+      } else {
+        const mediaType = getMediaType(item);
+        if (mediaType) {
           assets.push({
             id: item.uri,
             uri: item.uri,
@@ -228,41 +325,37 @@ export const folderService = {
             fromFolder: true,
           });
         }
-        processed++;
-
-        // Emisión temprana del primer lote (~24 fotos) en milisegundos
-        if (onBatch && processed === 24 && assets.length > 0) {
-          onBatch({
-            subfolders: [...subfolders].sort((a, b) =>
-              a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-            ),
-            assets: [...assets].sort((a, b) =>
-              b.filename.localeCompare(a.filename, undefined, {
-                numeric: true,
-                sensitivity: 'base',
-              })
-            ),
-            isPartial: true,
-          });
-        }
       }
+      processed++;
+      // Ceder el hilo para que la pantalla no se congele con carpetas enormes
+      if (processed % 150 === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+    return { subfolders, assets };
+  },
 
-      // Ordenar subcarpetas alfabéticamente
-      subfolders.sort((a, b) =>
-        a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
-      );
-      // Ordenar fotos por nombre descendente
-      assets.sort((a, b) =>
-        b.filename.localeCompare(a.filename, undefined, {
-          numeric: true,
-          sensitivity: 'base',
-        })
-      );
+  async _listLevel(uri) {
+    try {
+      const fast = await folderService._listFast(uri);
+      if (fast.assets.length > 0 || fast.subfolders.length > 0) return fast;
+    } catch (e) {
+      // continuar con el método de respaldo
+    }
+    return folderService._listSlow(uri);
+  },
 
+  /**
+   * Lee la carpeta actual (rápido, ordenada de la más reciente a la más antigua).
+   */
+  async readDirectory(uri, onBatch) {
+    try {
+      const { subfolders, assets } = await folderService._listLevel(uri);
+      subfolders.sort(byNameAsc);
+      assets.sort(byFilenameDesc);
       if (onBatch) {
         onBatch({ subfolders, assets, isPartial: false });
       }
-
       return { subfolders, assets };
     } catch (e) {
       console.warn('Error al leer carpeta:', e);
@@ -271,51 +364,31 @@ export const folderService = {
   },
 
   /**
-   * Carga recursiva rápida para "Todo junto".
+   * Carga recursiva para "Todo junto" (asíncrona, no bloquea la interfaz).
    */
   async loadFolderAssets(uri, onBatch) {
     const out = [];
-    const collect = (dir, depth) => {
-      let items = [];
+    const walk = async (dirUri, depth) => {
+      let level;
       try {
-        items = dir.list();
+        level = await folderService._listLevel(dirUri);
       } catch (e) {
         return;
       }
-      const batch = [];
-      for (const item of items) {
-        if (item instanceof Directory) {
-          if (depth < MAX_DEPTH) collect(item, depth + 1);
-        } else {
-          const mediaType = getMediaType(item);
-          if (!mediaType) continue;
-          const assetObj = {
-            id: item.uri,
-            uri: item.uri,
-            filename: item.name,
-            mediaType,
-            creationTime: 0,
-            width: null,
-            height: null,
-            fromFolder: true,
-          };
-          out.push(assetObj);
-          batch.push(assetObj);
-        }
+      if (level.assets.length > 0) {
+        for (const a of level.assets) out.push(a);
+        if (onBatch) onBatch(level.assets);
       }
-
-      if (onBatch && batch.length > 0) {
-        onBatch(batch);
+      if (depth < MAX_DEPTH) {
+        for (const sub of level.subfolders) {
+          if (sub.name && sub.name.startsWith('.')) continue; // omitir .thumbnails, .trash...
+          await walk(sub.uri, depth + 1);
+        }
       }
     };
 
-    collect(new Directory(uri), 0);
-    out.sort((a, b) =>
-      b.filename.localeCompare(a.filename, undefined, {
-        numeric: true,
-        sensitivity: 'base',
-      })
-    );
+    await walk(uri, 0);
+    out.sort(byFilenameDesc);
     return out;
   },
 
