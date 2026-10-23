@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
+  Modal,
   View,
   Text,
   StyleSheet,
@@ -9,7 +10,6 @@ import {
   SafeAreaView,
   Animated,
   PanResponder,
-  BackHandler,
   useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -31,7 +31,7 @@ function formatDate(timestamp) {
 }
 
 export default function FullScreenViewer({
-  visible,
+  visible = false,
   assets = [],
   initialIndex = 0,
   onClose,
@@ -43,7 +43,7 @@ export default function FullScreenViewer({
   onMediaSaved,
 }) {
   const { width: screenWidth } = useWindowDimensions();
-  const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const [internalIndex, setInternalIndex] = useState(initialIndex);
   const [playerAsset, setPlayerAsset] = useState(null);
   const [cropAsset, setCropAsset] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
@@ -53,20 +53,12 @@ export default function FullScreenViewer({
   const translateX = useRef(new Animated.Value(0)).current;
   const lastTapRef = useRef(0);
 
-  // Refs para evitar problemas de stale closure en PanResponder
-  const currentIndexRef = useRef(currentIndex);
-  currentIndexRef.current = currentIndex;
-  const zoomScaleRef = useRef(zoomScale);
-  zoomScaleRef.current = zoomScale;
-  const assetsLengthRef = useRef(assets?.length || 0);
-  assetsLengthRef.current = assets?.length || 0;
-
-  // Sincronizar índice inicial al abrirse
+  // Sincronizar el índice cuando el visor se abre o cambia el asset inicial
   useEffect(() => {
     if (visible) {
-      const validIndex =
+      const valid =
         initialIndex >= 0 && initialIndex < (assets?.length || 0) ? initialIndex : 0;
-      setCurrentIndex(validIndex);
+      setInternalIndex(valid);
       setZoomScale(1);
       setShowInfo(false);
       setShowControls(true);
@@ -74,44 +66,23 @@ export default function FullScreenViewer({
     }
   }, [visible, initialIndex, assets?.length]);
 
-  // Manejo de tecla volver / gesto atrás de Android
-  useEffect(() => {
-    if (!visible) return;
-
-    const onBackPress = () => {
-      if (cropAsset) {
-        setCropAsset(null);
-        return true;
-      }
-      if (playerAsset) {
-        setPlayerAsset(null);
-        return true;
-      }
-      if (showInfo) {
-        setShowInfo(false);
-        return true;
-      }
-      if (zoomScale > 1) {
-        setZoomScale(1);
-        return true;
-      }
-      onClose();
-      return true;
-    };
-
-    const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
-    return () => backSub.remove();
-  }, [visible, cropAsset, playerAsset, showInfo, zoomScale, onClose]);
-
   // Si no está visible o no hay archivos, no renderizar nada
   if (!visible || !assets || assets.length === 0) return null;
 
   const validIndex =
-    currentIndex >= 0 && currentIndex < assets.length ? currentIndex : 0;
+    internalIndex >= 0 && internalIndex < assets.length ? internalIndex : 0;
   const currentAsset = assets[validIndex] || assets[0] || null;
   if (!currentAsset) return null;
 
-  // Cambiar a la siguiente imagen con animación en JS (segura, sin desincronización nativa)
+  // Refs para evitar cierres obsoletos en PanResponder
+  const currentIndexRef = useRef(validIndex);
+  currentIndexRef.current = validIndex;
+  const zoomScaleRef = useRef(zoomScale);
+  zoomScaleRef.current = zoomScale;
+  const assetsLengthRef = useRef(assets.length);
+  assetsLengthRef.current = assets.length;
+
+  // Cambiar a la siguiente imagen con animación en JS (segura, sin conflictos de driver nativo)
   const handleNext = () => {
     const total = assetsLengthRef.current;
     if (currentIndexRef.current < total - 1) {
@@ -120,7 +91,7 @@ export default function FullScreenViewer({
         duration: 120,
         useNativeDriver: false,
       }).start(() => {
-        setCurrentIndex((idx) => Math.min(idx + 1, total - 1));
+        setInternalIndex((idx) => Math.min(idx + 1, total - 1));
         setZoomScale(1);
         translateX.setValue(screenWidth);
         Animated.timing(translateX, {
@@ -140,7 +111,7 @@ export default function FullScreenViewer({
         duration: 120,
         useNativeDriver: false,
       }).start(() => {
-        setCurrentIndex((idx) => Math.max(idx - 1, 0));
+        setInternalIndex((idx) => Math.max(idx - 1, 0));
         setZoomScale(1);
         translateX.setValue(-screenWidth);
         Animated.timing(translateX, {
@@ -152,12 +123,12 @@ export default function FullScreenViewer({
     }
   };
 
-  // Alternar nivel de zoom
+  // Alternar zoom
   const handleToggleZoom = () => {
     setZoomScale((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 1));
   };
 
-  // Toque simple (ocultar/mostrar controles) o doble toque (zoom)
+  // Toque simple (ocultar/mostrar barras) o doble toque (zoom)
   const handleScreenTouch = () => {
     const now = Date.now();
     if (now - lastTapRef.current < 280) {
@@ -173,7 +144,6 @@ export default function FullScreenViewer({
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       onMoveShouldSetPanResponder: (_, gesture) => {
-        // Solo deslizar si no hay zoom y el movimiento es predominantemente horizontal
         return (
           zoomScaleRef.current === 1 &&
           Math.abs(gesture.dx) > 12 &&
@@ -194,7 +164,7 @@ export default function FullScreenViewer({
             duration: 120,
             useNativeDriver: false,
           }).start(() => {
-            setCurrentIndex(Math.min(idx + 1, total - 1));
+            setInternalIndex(Math.min(idx + 1, total - 1));
             setZoomScale(1);
             translateX.setValue(screenWidth);
             Animated.timing(translateX, {
@@ -210,7 +180,7 @@ export default function FullScreenViewer({
             duration: 120,
             useNativeDriver: false,
           }).start(() => {
-            setCurrentIndex(Math.max(idx - 1, 0));
+            setInternalIndex(Math.max(idx - 1, 0));
             setZoomScale(1);
             translateX.setValue(-screenWidth);
             Animated.timing(translateX, {
@@ -231,7 +201,27 @@ export default function FullScreenViewer({
     })
   ).current;
 
-  // Confirmar eliminación
+  // Manejo de retroceso cuando hay paneles activos
+  const handleModalClose = () => {
+    if (cropAsset) {
+      setCropAsset(null);
+      return;
+    }
+    if (playerAsset) {
+      setPlayerAsset(null);
+      return;
+    }
+    if (showInfo) {
+      setShowInfo(false);
+      return;
+    }
+    if (zoomScale > 1) {
+      setZoomScale(1);
+      return;
+    }
+    onClose();
+  };
+
   const handleDeletePrompt = () => {
     Alert.alert(
       '¿Eliminar archivo?',
@@ -255,7 +245,13 @@ export default function FullScreenViewer({
     : Boolean(isFavorite);
 
   return (
-    <View style={styles.fullscreenOverlay}>
+    <Modal
+      visible={visible}
+      transparent={false}
+      animationType="fade"
+      onRequestClose={handleModalClose}
+      statusBarTranslucent={true}
+    >
       <StatusBar hidden={!showControls} barStyle="light-content" backgroundColor="#000000" />
       <SafeAreaView style={styles.container}>
         {/* Barra Superior */}
@@ -263,7 +259,7 @@ export default function FullScreenViewer({
           <View style={styles.topBar}>
             <TouchableOpacity
               style={styles.iconButton}
-              onPress={onClose}
+              onPress={handleModalClose}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
               <Ionicons name="close" size={26} color="#ffffff" />
@@ -493,23 +489,11 @@ export default function FullScreenViewer({
           />
         )}
       </SafeAreaView>
-    </View>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  fullscreenOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#000000',
-    zIndex: 99999,
-    elevation: 99999,
-  },
   container: {
     flex: 1,
     backgroundColor: '#000000',

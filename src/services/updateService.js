@@ -6,21 +6,19 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.0.5';
-export const CURRENT_BUILD_NUMBER = 13;
+export const CURRENT_VERSION = 'v1.0.6';
+export const CURRENT_BUILD_NUMBER = 14;
 
 export const updateService = {
   /**
    * Consulta en GitHub si existe una versión más reciente o un APK disponible.
-   * Compara el número de compilación (run_number) de GitHub Actions y obtiene
-   * el enlace directo al APK generado en GitHub Releases.
    */
   async checkForUpdates() {
     try {
       let apkAsset = null;
       let latestRun = null;
 
-      // 1. Obtener información de la release publicada (donde reside el APK descargable)
+      // 1. Obtener información de la release publicada en GitHub
       try {
         const releaseRes = await fetch(
           `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
@@ -37,7 +35,7 @@ export const updateService = {
         console.warn('No se pudo consultar GitHub Releases:', errRelease);
       }
 
-      // 2. Obtener la última compilación exitosa en GitHub Actions para verificar versión
+      // 2. Obtener la última compilación exitosa en GitHub Actions
       try {
         const runsRes = await fetch(
           `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?status=success&per_page=1`,
@@ -56,20 +54,21 @@ export const updateService = {
       // Hay actualización si la compilación en GitHub Actions es mayor a la instalada
       const hasUpdate = remoteRunNumber > CURRENT_BUILD_NUMBER;
 
-      const directApkUrl = apkAsset?.browser_download_url ||
+      const directApkUrl =
+        apkAsset?.browser_download_url ||
         `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/latest/app-release.apk`;
 
       return {
         hasUpdate,
-        version: `v1.0.5 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
+        version: `v1.0.6 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
         currentVersion: `${CURRENT_VERSION} (#${CURRENT_BUILD_NUMBER})`,
         remoteRunNumber,
         apkUrl: directApkUrl,
         apkSize: apkAsset?.size || null,
         latestRunUrl: latestRun?.html_url || `https://github.com/${REPO_OWNER}/${REPO_NAME}/actions`,
         notes: hasUpdate
-          ? 'Nueva compilación lista con mejoras de rendimiento y visor optimizado.'
-          : 'Tu aplicación está actualizada con la última compilación disponible.',
+          ? 'Nueva versión con soporte para agregar múltiples carpetas y visor de fotos optimizado.'
+          : 'Tu aplicación está actualizada con la última versión disponible.',
         message: hasUpdate
           ? `Nueva compilación #${remoteRunNumber} disponible en GitHub.`
           : `Tu app ya está al día (${CURRENT_VERSION} #${CURRENT_BUILD_NUMBER}).`,
@@ -92,7 +91,7 @@ export const updateService = {
     try {
       const targetPath = `${FileSystem.cacheDirectory}galeria_update.apk`;
 
-      // Limpiar archivo previo si existía en cache
+      // 1. Limpiar archivo previo si existía en cache
       try {
         const info = await FileSystem.getInfoAsync(targetPath);
         if (info.exists) {
@@ -102,7 +101,7 @@ export const updateService = {
         // Ignorar
       }
 
-      // Descargar con seguimiento de progreso
+      // 2. Descargar con seguimiento de progreso
       const downloadResumable = FileSystem.createDownloadResumable(
         apkUrl,
         targetPath,
@@ -122,15 +121,15 @@ export const updateService = {
         );
       }
 
-      // Convertir a Content URI compatible con Android FileProvider
+      // 3. Convertir a Content URI compatible con Android FileProvider
       const contentUri = await FileSystem.getContentUriAsync(downloadResult.uri);
 
-      // Lanzar el instalador nativo de Android
+      // 4. Lanzar el instalador nativo de Android con flags requeridos (READ_URI + NEW_TASK)
       try {
         await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
           data: contentUri,
           type: 'application/vnd.android.package-archive',
-          flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+          flags: 1 | 268435456, // FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK
         });
         return true;
       } catch (intentErr) {
@@ -142,13 +141,19 @@ export const updateService = {
           });
           return true;
         }
-        // Si todo falla, abrir en el navegador
+        // Fallback garantizado: abrir directamente en el navegador Chrome
         await Linking.openURL(apkUrl);
         return true;
       }
     } catch (error) {
       console.error('Error durante la descarga o instalación:', error);
-      throw error;
+      // Fallback infalible si la descarga interna falla
+      try {
+        await Linking.openURL(apkUrl);
+      } catch (e) {
+        Alert.alert('Error', 'No se pudo iniciar la actualización: ' + (error?.message || String(error)));
+      }
+      return false;
     }
   },
 };

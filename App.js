@@ -39,7 +39,8 @@ export default function App() {
   const [favorites, setFavorites] = useState({});
   const [selectedAlbum, setSelectedAlbum] = useState(null);
 
-  // Carpeta elegida por el usuario
+  // Carpetas elegidas por el usuario (múltiples carpetas)
+  const [savedFolders, setSavedFolders] = useState([]);
   const [folderUri, setFolderUri] = useState(null);
   const [folderAssets, setFolderAssets] = useState([]);
 
@@ -72,9 +73,12 @@ export default function App() {
       storageService.getHiddenFolders().then((hf) => { if (hf) setHiddenFolders(hf); });
       storageService.getShowAllFolders().then((sa) => { setShowAllFolders(Boolean(sa)); });
 
-      // 2. Cargar carpeta guardada en segundo plano
-      folderService.getSavedFolder().then((saved) => {
-        if (saved) setFolderUri(saved);
+      // 2. Cargar carpetas guardadas en segundo plano
+      folderService.getSavedFolders().then((folders) => {
+        if (folders && folders.length > 0) {
+          setSavedFolders(folders);
+          setFolderUri(folders[0].uri);
+        }
       });
 
       // 3. Revisar permisos
@@ -93,18 +97,42 @@ export default function App() {
     })();
   }, []);
 
-  // Elegir cualquier carpeta del sistema
+  // Elegir o agregar una nueva carpeta del sistema
   const handlePickFolder = async () => {
     try {
-      const uri = await folderService.pickFolder();
-      if (uri) {
-        setFolderUri(uri);
+      const res = await folderService.pickFolder();
+      if (res && res.uri) {
+        const updated = await folderService.getSavedFolders();
+        setSavedFolders(updated);
+        setFolderUri(res.uri);
         setActiveTab('folder');
         setSelectedAlbum(null);
       }
     } catch (e) {
       Alert.alert('Error', 'No se pudo seleccionar la carpeta.');
     }
+  };
+
+  // Quitar una carpeta de la lista
+  const handleRemoveFolder = (uri) => {
+    Alert.alert(
+      '¿Quitar carpeta?',
+      'Esta carpeta se quitará de tus accesos directos (sus fotos no se borrarán del teléfono).',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Quitar',
+          style: 'destructive',
+          onPress: async () => {
+            const updated = await folderService.removeSavedFolder(uri);
+            setSavedFolders(updated);
+            if (folderUri === uri) {
+              setFolderUri(updated.length > 0 ? updated[0].uri : null);
+            }
+          },
+        },
+      ]
+    );
   };
 
   // Solicitar permiso manualmente desde el botón
@@ -327,9 +355,12 @@ export default function App() {
     }
 
     if (activeTab === 'folder') {
+      const count = savedFolders.length;
       return {
-        title: folderUri ? folderService.folderName(folderUri) : 'Mi carpeta',
-        subtitle: folderUri ? `${folderAssets.length} fotos y videos aquí` : 'Elige una carpeta',
+        title: folderUri ? folderService.folderName(folderUri) : 'Mis carpetas',
+        subtitle: folderUri
+          ? `${folderAssets.length} fotos y videos · ${count} ${count === 1 ? 'carpeta agregada' : 'carpetas agregadas'}`
+          : `${count} ${count === 1 ? 'carpeta agregada' : 'carpetas agregadas'}`,
         showBack: false,
       };
     }
@@ -421,7 +452,10 @@ export default function App() {
           {activeTab === 'folder' ? (
             <FolderBrowser
               rootUri={folderUri}
+              savedFolders={savedFolders}
+              onSelectSavedFolder={(uri) => setFolderUri(uri)}
               onPickNewFolder={handlePickFolder}
+              onRemoveFolder={handleRemoveFolder}
               onSelectPhoto={handleOpenViewer}
               favorites={favorites}
               filterType={filterType}

@@ -41,7 +41,7 @@ export default function PhotoGrid({
         />
       );
     },
-    [favorites, onSelectPhoto]
+    [favorites, onSelectPhoto, assets]
   );
 
   const getItemLayout = useCallback(
