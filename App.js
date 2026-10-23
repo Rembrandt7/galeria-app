@@ -22,6 +22,7 @@ import PhotoGrid from './src/components/PhotoGrid';
 import AlbumList from './src/components/AlbumList';
 import FolderBrowser from './src/components/FolderBrowser';
 import FullScreenViewer from './src/components/FullScreenViewer';
+import ErrorBoundary from './src/components/ErrorBoundary';
 import PermissionScreen from './src/components/PermissionScreen';
 import DuplicatesScreen from './src/components/DuplicatesScreen';
 import SettingsModal from './src/components/SettingsModal';
@@ -498,21 +499,25 @@ export default function App() {
         </View>
 
         {/* Visor de Pantalla Completa */}
-        <FullScreenViewer
-          visible={viewerVisible}
-          assets={viewerCustomAssets || displayedAssets}
-          initialIndex={viewerIndex}
-          onClose={() => {
-            setViewerVisible(false);
-            setViewerCustomAssets(null);
-          }}
-          favorites={favorites}
-          isFavorite={isCurrentAssetFavorite}
-          onToggleFavorite={handleToggleFavorite}
-          onShare={handleShare}
-          onDelete={handleDelete}
-          onMediaSaved={() => handleRefresh()}
-        />
+        {viewerVisible && (
+          <ErrorBoundary onReset={() => setViewerVisible(false)}>
+            <FullScreenViewer
+              visible={viewerVisible}
+              assets={viewerCustomAssets || displayedAssets}
+              initialIndex={viewerIndex}
+              onClose={() => {
+                setViewerVisible(false);
+                setViewerCustomAssets(null);
+              }}
+              favorites={favorites}
+              isFavorite={isCurrentAssetFavorite}
+              onToggleFavorite={handleToggleFavorite}
+              onShare={handleShare}
+              onDelete={handleDelete}
+              onMediaSaved={() => handleRefresh()}
+            />
+          </ErrorBoundary>
+        )}
 
         {/* Buscador de fotos duplicadas */}
         <DuplicatesScreen

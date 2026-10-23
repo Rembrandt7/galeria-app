@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
@@ -10,6 +9,7 @@ import {
   SafeAreaView,
   Animated,
   PanResponder,
+  BackHandler,
   useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
@@ -50,8 +50,74 @@ export default function FullScreenViewer({
   const [showControls, setShowControls] = useState(true);
   const [zoomScale, setZoomScale] = useState(1);
 
+  // Animaciones y referencias declaradas incondicionalmente en la raíz
   const translateX = useRef(new Animated.Value(0)).current;
   const lastTapRef = useRef(0);
+  const currentIndexRef = useRef(initialIndex);
+  const zoomScaleRef = useRef(1);
+  const assetsLengthRef = useRef(assets?.length || 0);
+
+  // PanResponder para deslizar fotos a los lados (declarado incondicionalmente)
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_, gesture) => {
+        return (
+          zoomScaleRef.current === 1 &&
+          Math.abs(gesture.dx) > 12 &&
+          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
+        );
+      },
+      onPanResponderMove: (_, gesture) => {
+        translateX.setValue(gesture.dx);
+      },
+      onPanResponderRelease: (_, gesture) => {
+        const idx = currentIndexRef.current;
+        const total = assetsLengthRef.current;
+
+        if (gesture.dx < -60 && idx < total - 1) {
+          // Deslizó hacia la izquierda -> Siguiente foto
+          Animated.timing(translateX, {
+            toValue: -screenWidth,
+            duration: 120,
+            useNativeDriver: false,
+          }).start(() => {
+            setInternalIndex((prev) => Math.min(prev + 1, total - 1));
+            setZoomScale(1);
+            translateX.setValue(screenWidth);
+            Animated.timing(translateX, {
+              toValue: 0,
+              duration: 120,
+              useNativeDriver: false,
+            }).start();
+          });
+        } else if (gesture.dx > 60 && idx > 0) {
+          // Deslizó hacia la derecha -> Foto anterior
+          Animated.timing(translateX, {
+            toValue: screenWidth,
+            duration: 120,
+            useNativeDriver: false,
+          }).start(() => {
+            setInternalIndex((prev) => Math.max(prev - 1, 0));
+            setZoomScale(1);
+            translateX.setValue(-screenWidth);
+            Animated.timing(translateX, {
+              toValue: 0,
+              duration: 120,
+              useNativeDriver: false,
+            }).start();
+          });
+        } else {
+          // Regresar al centro si fue un arrastre corto
+          Animated.spring(translateX, {
+            toValue: 0,
+            friction: 7,
+            useNativeDriver: false,
+          }).start();
+        }
+      },
+    })
+  ).current;
 
   // Sincronizar el índice cuando el visor se abre o cambia el asset inicial
   useEffect(() => {
@@ -66,23 +132,55 @@ export default function FullScreenViewer({
     }
   }, [visible, initialIndex, assets?.length]);
 
-  // Si no está visible o no hay archivos, no renderizar nada
-  if (!visible || !assets || assets.length === 0) return null;
+  // Manejo de la tecla o gesto atrás de Android
+  useEffect(() => {
+    if (!visible) return;
 
+    const onBackPress = () => {
+      if (cropAsset) {
+        setCropAsset(null);
+        return true;
+      }
+      if (playerAsset) {
+        setPlayerAsset(null);
+        return true;
+      }
+      if (showInfo) {
+        setShowInfo(false);
+        return true;
+      }
+      if (zoomScale > 1) {
+        setZoomScale(1);
+        return true;
+      }
+      if (onClose) {
+        onClose();
+        return true;
+      }
+      return false;
+    };
+
+    const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => backSub.remove();
+  }, [visible, cropAsset, playerAsset, showInfo, zoomScale, onClose]);
+
+  // Cálculo del elemento actual y actualización de referencias
   const validIndex =
-    internalIndex >= 0 && internalIndex < assets.length ? internalIndex : 0;
-  const currentAsset = assets[validIndex] || assets[0] || null;
-  if (!currentAsset) return null;
+    assets && assets.length > 0
+      ? Math.max(0, Math.min(internalIndex, assets.length - 1))
+      : 0;
+  const currentAsset = assets && assets.length > 0 ? assets[validIndex] : null;
 
-  // Refs para evitar cierres obsoletos en PanResponder
-  const currentIndexRef = useRef(validIndex);
   currentIndexRef.current = validIndex;
-  const zoomScaleRef = useRef(zoomScale);
   zoomScaleRef.current = zoomScale;
-  const assetsLengthRef = useRef(assets.length);
-  assetsLengthRef.current = assets.length;
+  assetsLengthRef.current = assets?.length || 0;
 
-  // Cambiar a la siguiente imagen con animación en JS (segura, sin conflictos de driver nativo)
+  // Si no está visible o no hay archivos, no mostrar nada (TODOS los hooks ya se ejecutaron)
+  if (!visible || !currentAsset) {
+    return null;
+  }
+
+  // Navegación con flechas
   const handleNext = () => {
     const total = assetsLengthRef.current;
     if (currentIndexRef.current < total - 1) {
@@ -103,7 +201,6 @@ export default function FullScreenViewer({
     }
   };
 
-  // Cambiar a la imagen anterior con animación en JS
   const handlePrev = () => {
     if (currentIndexRef.current > 0) {
       Animated.timing(translateX, {
@@ -123,12 +220,12 @@ export default function FullScreenViewer({
     }
   };
 
-  // Alternar zoom
+  // Alternar nivel de zoom
   const handleToggleZoom = () => {
     setZoomScale((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 1));
   };
 
-  // Toque simple (ocultar/mostrar barras) o doble toque (zoom)
+  // Toque simple (mostrar/ocultar barras) o doble toque (zoom)
   const handleScreenTouch = () => {
     const now = Date.now();
     if (now - lastTapRef.current < 280) {
@@ -139,70 +236,7 @@ export default function FullScreenViewer({
     lastTapRef.current = now;
   };
 
-  // PanResponder táctil para deslizar fotos a los lados
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gesture) => {
-        return (
-          zoomScaleRef.current === 1 &&
-          Math.abs(gesture.dx) > 12 &&
-          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
-        );
-      },
-      onPanResponderMove: (_, gesture) => {
-        translateX.setValue(gesture.dx);
-      },
-      onPanResponderRelease: (_, gesture) => {
-        const idx = currentIndexRef.current;
-        const total = assetsLengthRef.current;
-
-        if (gesture.dx < -60 && idx < total - 1) {
-          // Deslizó hacia la izquierda -> Siguiente
-          Animated.timing(translateX, {
-            toValue: -screenWidth,
-            duration: 120,
-            useNativeDriver: false,
-          }).start(() => {
-            setInternalIndex(Math.min(idx + 1, total - 1));
-            setZoomScale(1);
-            translateX.setValue(screenWidth);
-            Animated.timing(translateX, {
-              toValue: 0,
-              duration: 120,
-              useNativeDriver: false,
-            }).start();
-          });
-        } else if (gesture.dx > 60 && idx > 0) {
-          // Deslizó hacia la derecha -> Anterior
-          Animated.timing(translateX, {
-            toValue: screenWidth,
-            duration: 120,
-            useNativeDriver: false,
-          }).start(() => {
-            setInternalIndex(Math.max(idx - 1, 0));
-            setZoomScale(1);
-            translateX.setValue(-screenWidth);
-            Animated.timing(translateX, {
-              toValue: 0,
-              duration: 120,
-              useNativeDriver: false,
-            }).start();
-          });
-        } else {
-          // Regresar al centro si el arrastre fue corto
-          Animated.spring(translateX, {
-            toValue: 0,
-            friction: 7,
-            useNativeDriver: false,
-          }).start();
-        }
-      },
-    })
-  ).current;
-
-  // Manejo de retroceso cuando hay paneles activos
-  const handleModalClose = () => {
+  const handleCloseViewer = () => {
     if (cropAsset) {
       setCropAsset(null);
       return;
@@ -219,7 +253,7 @@ export default function FullScreenViewer({
       setZoomScale(1);
       return;
     }
-    onClose();
+    if (onClose) onClose();
   };
 
   const handleDeletePrompt = () => {
@@ -232,7 +266,7 @@ export default function FullScreenViewer({
           text: 'Eliminar',
           style: 'destructive',
           onPress: () => {
-            onDelete(currentAsset);
+            if (onDelete) onDelete(currentAsset);
           },
         },
       ]
@@ -245,21 +279,15 @@ export default function FullScreenViewer({
     : Boolean(isFavorite);
 
   return (
-    <Modal
-      visible={visible}
-      transparent={false}
-      animationType="fade"
-      onRequestClose={handleModalClose}
-      statusBarTranslucent={true}
-    >
+    <View style={styles.fullscreenOverlay}>
       <StatusBar hidden={!showControls} barStyle="light-content" backgroundColor="#000000" />
       <SafeAreaView style={styles.container}>
-        {/* Barra Superior */}
+        {/* Barra Superior de Controles */}
         {showControls && (
           <View style={styles.topBar}>
             <TouchableOpacity
               style={styles.iconButton}
-              onPress={handleModalClose}
+              onPress={handleCloseViewer}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
               <Ionicons name="close" size={26} color="#ffffff" />
@@ -307,7 +335,6 @@ export default function FullScreenViewer({
             style={styles.slideTouchable}
             onPress={handleScreenTouch}
           >
-            {/* Contenedor animado de desplazamiento lateral (sin conflictos nativos) */}
             <Animated.View
               style={[
                 styles.swipeContainer,
@@ -316,7 +343,6 @@ export default function FullScreenViewer({
                 },
               ]}
             >
-              {/* Contenedor de zoom separado */}
               <View
                 style={[
                   styles.zoomContainer,
@@ -417,7 +443,7 @@ export default function FullScreenViewer({
             {/* Compartir */}
             <TouchableOpacity
               style={styles.actionItem}
-              onPress={() => onShare(currentAsset)}
+              onPress={() => onShare && onShare(currentAsset)}
               activeOpacity={0.7}
             >
               <Ionicons name="share-social-outline" size={24} color="#ffffff" />
@@ -427,7 +453,7 @@ export default function FullScreenViewer({
             {/* Favorito */}
             <TouchableOpacity
               style={styles.actionItem}
-              onPress={() => onToggleFavorite(currentAsset)}
+              onPress={() => onToggleFavorite && onToggleFavorite(currentAsset)}
               activeOpacity={0.7}
             >
               <Ionicons
@@ -489,11 +515,23 @@ export default function FullScreenViewer({
           />
         )}
       </SafeAreaView>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fullscreenOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000000',
+    zIndex: 99999,
+    elevation: 99999,
+  },
   container: {
     flex: 1,
     backgroundColor: '#000000',
