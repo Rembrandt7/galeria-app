@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
@@ -11,6 +10,7 @@ import {
   ScrollView,
   StatusBar,
   SafeAreaView,
+  BackHandler,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -169,10 +169,19 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
   const progress = pct(time);
   const hasRange = trimStart !== null || trimEnd !== null;
 
+  useEffect(() => {
+    const onBackPress = () => {
+      onClose();
+      return true;
+    };
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [onClose]);
+
   if (!asset?.uri) return null;
 
   return (
-    <Modal visible animationType="fade" onRequestClose={onClose} statusBarTranslucent>
+    <View style={styles.fullscreenOverlay}>
       <StatusBar barStyle="light-content" backgroundColor="#000000" />
       <SafeAreaView style={styles.container}>
         <View style={styles.topBar}>
@@ -295,7 +304,7 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
           </View>
         </ScrollView>
       </SafeAreaView>
-    </Modal>
+    </View>
   );
 }
 
@@ -309,6 +318,12 @@ function Ctrl({ icon, label, onPress }) {
 }
 
 const styles = StyleSheet.create({
+  fullscreenOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000000',
+    zIndex: 100000,
+    elevation: 100000,
+  },
   container: { flex: 1, backgroundColor: '#000' },
   topBar: {
     flexDirection: 'row',

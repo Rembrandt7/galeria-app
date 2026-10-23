@@ -5,15 +5,22 @@ import { Alert, Linking, Platform } from 'react-native';
 
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
-export const CURRENT_VERSION = 'v1.0.4';
+
+export const CURRENT_VERSION = 'v1.0.5';
+export const CURRENT_BUILD_NUMBER = 13;
 
 export const updateService = {
   /**
    * Consulta en GitHub si existe una versión más reciente o un APK disponible.
+   * Compara el número de compilación (run_number) de GitHub Actions y obtiene
+   * el enlace directo al APK generado en GitHub Releases.
    */
   async checkForUpdates() {
     try {
-      // 1. Intentar obtener la última release publicada
+      let apkAsset = null;
+      let latestRun = null;
+
+      // 1. Obtener información de la release publicada (donde reside el APK descargable)
       try {
         const releaseRes = await fetch(
           `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`,
@@ -22,89 +29,59 @@ export const updateService = {
 
         if (releaseRes.ok) {
           const release = await releaseRes.json();
-          const apkAsset = (release.assets || []).find(
+          apkAsset = (release.assets || []).find(
             (a) => a.name && a.name.toLowerCase().endsWith('.apk')
           );
-
-          if (apkAsset) {
-            const remoteVersion = release.tag_name || release.name || 'v1.0.2';
-            const isNewer = remoteVersion !== CURRENT_VERSION;
-            return {
-              hasUpdate: isNewer,
-              version: remoteVersion,
-              publishedAt: release.published_at,
-              notes: release.body || 'Nuevas mejoras de rendimiento y visor ultrarrápido.',
-              apkUrl: apkAsset.browser_download_url,
-              apkSize: apkAsset.size,
-            };
-          }
         }
-      } catch (errRel) {
-        // Continuar con siguientes opciones
+      } catch (errRelease) {
+        console.warn('No se pudo consultar GitHub Releases:', errRelease);
       }
 
-      // 2. Si no hay release latest, buscar en el listado de todas las releases
+      // 2. Obtener la última compilación exitosa en GitHub Actions para verificar versión
       try {
-        const allReleasesRes = await fetch(
-          `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases?per_page=5`,
+        const runsRes = await fetch(
+          `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?status=success&per_page=1`,
           { headers: { Accept: 'application/vnd.github.v3+json' } }
         );
 
-        if (allReleasesRes.ok) {
-          const releases = await allReleasesRes.json();
-          if (Array.isArray(releases) && releases.length > 0) {
-            const relWithApk = releases.find((r) =>
-              (r.assets || []).some((a) => a.name?.toLowerCase().endsWith('.apk'))
-            );
-            if (relWithApk) {
-              const apkAsset = relWithApk.assets.find((a) =>
-                a.name?.toLowerCase().endsWith('.apk')
-              );
-              const remoteVer = relWithApk.tag_name || relWithApk.name || 'v1.0.2';
-              return {
-                hasUpdate: remoteVer !== CURRENT_VERSION,
-                version: remoteVer,
-                publishedAt: relWithApk.published_at,
-                notes: relWithApk.body || 'Corrección de errores y visor optimizado.',
-                apkUrl: apkAsset.browser_download_url,
-                apkSize: apkAsset.size,
-              };
-            }
-          }
+        if (runsRes.ok) {
+          const runsData = await runsRes.json();
+          latestRun = runsData.workflow_runs && runsData.workflow_runs[0];
         }
-      } catch (errAll) {}
-
-      // 3. Consultar la última compilación exitosa en GitHub Actions
-      const runsRes = await fetch(
-        `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/actions/runs?status=success&per_page=1`,
-        { headers: { Accept: 'application/vnd.github.v3+json' } }
-      );
-
-      if (runsRes.ok) {
-        const data = await runsRes.json();
-        const latestRun = data.workflow_runs && data.workflow_runs[0];
-        if (latestRun) {
-          return {
-            hasUpdate: false,
-            latestRunUrl: latestRun.html_url,
-            latestRunDate: latestRun.created_at,
-            message: `Tu app ya está en la versión ${CURRENT_VERSION}. Última compilación de GitHub Actions disponible.`,
-          };
-        }
+      } catch (errRuns) {
+        console.warn('No se pudo consultar GitHub Actions runs:', errRuns);
       }
 
+      const remoteRunNumber = latestRun?.run_number || 0;
+      // Hay actualización si la compilación en GitHub Actions es mayor a la instalada
+      const hasUpdate = remoteRunNumber > CURRENT_BUILD_NUMBER;
+
+      const directApkUrl = apkAsset?.browser_download_url ||
+        `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/download/latest/app-release.apk`;
+
       return {
-        hasUpdate: false,
-        message: `Tu app ya está en la versión más reciente (${CURRENT_VERSION}).`,
+        hasUpdate,
+        version: `v1.0.5 (Compilación #${remoteRunNumber || CURRENT_BUILD_NUMBER})`,
+        currentVersion: `${CURRENT_VERSION} (#${CURRENT_BUILD_NUMBER})`,
+        remoteRunNumber,
+        apkUrl: directApkUrl,
+        apkSize: apkAsset?.size || null,
+        latestRunUrl: latestRun?.html_url || `https://github.com/${REPO_OWNER}/${REPO_NAME}/actions`,
+        notes: hasUpdate
+          ? 'Nueva compilación lista con mejoras de rendimiento y visor optimizado.'
+          : 'Tu aplicación está actualizada con la última compilación disponible.',
+        message: hasUpdate
+          ? `Nueva compilación #${remoteRunNumber} disponible en GitHub.`
+          : `Tu app ya está al día (${CURRENT_VERSION} #${CURRENT_BUILD_NUMBER}).`,
       };
     } catch (e) {
-      console.error('Error al consultar GitHub:', e);
+      console.error('Error general al consultar GitHub:', e);
       throw e;
     }
   },
 
   /**
-   * Descarga el APK con seguimiento de progreso y lanza el instalador del sistema.
+   * Descarga el APK con seguimiento de porcentaje de progreso y lanza el instalador del sistema.
    */
   async downloadAndInstallApk(apkUrl, onProgress) {
     if (Platform.OS !== 'android') {
@@ -113,15 +90,15 @@ export const updateService = {
     }
 
     try {
-      const targetPath = `${FileSystem.documentDirectory}galeria_update.apk`;
+      const targetPath = `${FileSystem.cacheDirectory}galeria_update.apk`;
 
-      // Limpiar archivo previo si existía
+      // Limpiar archivo previo si existía en cache
       try {
         const info = await FileSystem.getInfoAsync(targetPath);
         if (info.exists) {
           await FileSystem.deleteAsync(targetPath, { idempotent: true });
         }
-      } catch (err) {
+      } catch (errClean) {
         // Ignorar
       }
 
@@ -140,10 +117,12 @@ export const updateService = {
 
       const downloadResult = await downloadResumable.downloadAsync();
       if (!downloadResult || downloadResult.status !== 200) {
-        throw new Error(`Error en la descarga (código ${downloadResult?.status || 'desconocido'})`);
+        throw new Error(
+          `Error en la descarga del paquete (código ${downloadResult?.status || 'desconocido'})`
+        );
       }
 
-      // Convertir a Content URI (obligatorio en Android 7+)
+      // Convertir a Content URI compatible con Android FileProvider
       const contentUri = await FileSystem.getContentUriAsync(downloadResult.uri);
 
       // Lanzar el instalador nativo de Android
@@ -155,7 +134,7 @@ export const updateService = {
         });
         return true;
       } catch (intentErr) {
-        // Fallback mediante compartir si el launcher directo requiere permiso adicional
+        console.warn('IntentLauncher falló, probando con Sharing...', intentErr);
         if (await Sharing.isAvailableAsync()) {
           await Sharing.shareAsync(downloadResult.uri, {
             mimeType: 'application/vnd.android.package-archive',
@@ -163,7 +142,9 @@ export const updateService = {
           });
           return true;
         }
-        throw intentErr;
+        // Si todo falla, abrir en el navegador
+        await Linking.openURL(apkUrl);
+        return true;
       }
     } catch (error) {
       console.error('Error durante la descarga o instalación:', error);

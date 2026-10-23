@@ -472,6 +472,7 @@ export default function App() {
             setViewerVisible(false);
             setViewerCustomAssets(null);
           }}
+          favorites={favorites}
           isFavorite={isCurrentAssetFavorite}
           onToggleFavorite={handleToggleFavorite}
           onShare={handleShare}

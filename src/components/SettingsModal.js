@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
-import { updateService, CURRENT_VERSION } from '../services/updateService';
+import { updateService, CURRENT_VERSION, CURRENT_BUILD_NUMBER } from '../services/updateService';
 
 export default function SettingsModal({ visible, onClose }) {
   const [checking, setChecking] = useState(false);
@@ -107,7 +107,9 @@ export default function SettingsModal({ visible, onClose }) {
               </View>
               <View style={styles.cardHeaderText}>
                 <Text style={styles.cardTitle}>Actualizaciones</Text>
-                <Text style={styles.cardSubtitle}>Versión instalada: {CURRENT_VERSION}</Text>
+                <Text style={styles.cardSubtitle}>
+                  Versión instalada: {CURRENT_VERSION} (#{CURRENT_BUILD_NUMBER})
+                </Text>
               </View>
             </View>
 
@@ -137,6 +139,12 @@ export default function SettingsModal({ visible, onClose }) {
                       <Text style={styles.badgeUpdateText}>Nueva versión {updateInfo.version}</Text>
                     </View>
 
+                    {updateInfo.apkSize ? (
+                      <Text style={styles.apkSizeText}>
+                        Tamaño del instalador: {(updateInfo.apkSize / (1024 * 1024)).toFixed(1)} MB
+                      </Text>
+                    ) : null}
+
                     {updateInfo.notes ? (
                       <Text style={styles.updateNotes}>{updateInfo.notes}</Text>
                     ) : null}
@@ -144,44 +152,95 @@ export default function SettingsModal({ visible, onClose }) {
                     {downloading ? (
                       <View style={styles.progressContainer}>
                         <View style={styles.progressBarBg}>
-                          <View style={[styles.progressBarFill, { width: `${Math.round(progress * 100)}%` }]} />
+                          <View
+                            style={[
+                              styles.progressBarFill,
+                              { width: `${Math.round(progress * 100)}%` },
+                            ]}
+                          />
                         </View>
                         <Text style={styles.progressText}>
                           Descargando actualización… {Math.round(progress * 100)}%
                         </Text>
                       </View>
                     ) : (
-                      <TouchableOpacity
-                        style={[styles.installButton]}
-                        onPress={handleDownloadAndInstall}
-                        activeOpacity={0.8}
-                      >
-                        <Ionicons name="download-outline" size={20} color="#ffffff" />
-                        <Text style={styles.installButtonText}>Descargar e instalar ahora</Text>
-                      </TouchableOpacity>
+                      <View style={{ gap: 8 }}>
+                        <TouchableOpacity
+                          style={[styles.installButton]}
+                          onPress={handleDownloadAndInstall}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="download-outline" size={20} color="#ffffff" />
+                          <Text style={styles.installButtonText}>Descargar e instalar ahora</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.outlineButton}
+                          onPress={() => handleOpenGitHub(updateInfo.apkUrl)}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="globe-outline" size={16} color={theme.colors.primaryLight} />
+                          <Text style={styles.outlineButtonText}>Descargar en navegador (Chrome)</Text>
+                        </TouchableOpacity>
+                      </View>
                     )}
                   </>
-                ) : updateInfo.latestRunUrl ? (
-                  <View style={styles.upToDateBox}>
-                    <Ionicons name="checkmark-circle-outline" size={32} color={theme.colors.primary} />
-                    <Text style={styles.upToDateTitle}>Tu app está al día</Text>
-                    <Text style={styles.upToDateDesc}>
-                      Última compilación exitosa detectada en GitHub Actions.
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.outlineButton}
-                      onPress={() => handleOpenGitHub(updateInfo.latestRunUrl)}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="logo-github" size={16} color={theme.colors.primaryLight} />
-                      <Text style={styles.outlineButtonText}>Ver compilación en GitHub</Text>
-                    </TouchableOpacity>
-                  </View>
                 ) : (
                   <View style={styles.upToDateBox}>
-                    <Ionicons name="checkmark-circle-outline" size={32} color={theme.colors.primary} />
-                    <Text style={styles.upToDateTitle}>Todo en orden</Text>
-                    <Text style={styles.upToDateDesc}>{updateInfo.message}</Text>
+                    <Ionicons name="checkmark-circle-outline" size={36} color="#10b981" />
+                    <Text style={styles.upToDateTitle}>Tu app está al día</Text>
+                    <Text style={styles.upToDateDesc}>
+                      {updateInfo.message || 'Tienes instalada la versión más reciente disponible.'}
+                    </Text>
+
+                    {downloading ? (
+                      <View style={[styles.progressContainer, { width: '100%', marginTop: 8 }]}>
+                        <View style={styles.progressBarBg}>
+                          <View
+                            style={[
+                              styles.progressBarFill,
+                              { width: `${Math.round(progress * 100)}%` },
+                            ]}
+                          />
+                        </View>
+                        <Text style={styles.progressText}>
+                          Descargando APK… {Math.round(progress * 100)}%
+                        </Text>
+                      </View>
+                    ) : updateInfo.apkUrl ? (
+                      <View style={{ width: '100%', gap: 8, marginTop: 8 }}>
+                        <TouchableOpacity
+                          style={[styles.secondaryButton]}
+                          onPress={handleDownloadAndInstall}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="cloud-download-outline" size={18} color="#ffffff" />
+                          <Text style={styles.secondaryButtonText}>
+                            Reinstalar / Descargar APK actual
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.outlineButton}
+                          onPress={() => handleOpenGitHub(updateInfo.apkUrl)}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="globe-outline" size={16} color={theme.colors.primaryLight} />
+                          <Text style={styles.outlineButtonText}>Descargar en navegador (Chrome)</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : null}
+
+                    {updateInfo.latestRunUrl ? (
+                      <TouchableOpacity
+                        style={styles.outlineButton}
+                        onPress={() => handleOpenGitHub(updateInfo.latestRunUrl)}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="logo-github" size={16} color={theme.colors.primaryLight} />
+                        <Text style={styles.outlineButtonText}>Ver compilaciones en GitHub</Text>
+                      </TouchableOpacity>
+                    ) : null}
                   </View>
                 )}
               </View>
@@ -385,17 +444,39 @@ const styles = StyleSheet.create({
   outlineButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: theme.colors.surfaceHover,
-    paddingVertical: 8,
+    paddingVertical: 10,
     paddingHorizontal: 14,
     borderRadius: 8,
     gap: 6,
-    marginTop: 8,
+    width: '100%',
   },
   outlineButtonText: {
     color: theme.colors.primaryLight,
     fontSize: 13,
     fontWeight: '600',
+  },
+  secondaryButton: {
+    backgroundColor: theme.colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    gap: 8,
+    width: '100%',
+  },
+  secondaryButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  apkSizeText: {
+    color: theme.colors.textMuted,
+    fontSize: 12,
+    marginBottom: 6,
   },
   aboutText: {
     color: theme.colors.textSecondary,

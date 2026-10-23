@@ -1,16 +1,16 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  Modal,
-  Dimensions,
   TouchableOpacity,
   Alert,
   StatusBar,
   SafeAreaView,
   Animated,
   PanResponder,
+  BackHandler,
+  useWindowDimensions,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -35,12 +35,14 @@ export default function FullScreenViewer({
   assets = [],
   initialIndex = 0,
   onClose,
+  favorites = {},
   isFavorite = false,
   onToggleFavorite,
   onShare,
   onDelete,
   onMediaSaved,
 }) {
+  const { width: screenWidth } = useWindowDimensions();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [playerAsset, setPlayerAsset] = useState(null);
   const [cropAsset, setCropAsset] = useState(null);
@@ -48,74 +50,114 @@ export default function FullScreenViewer({
   const [showControls, setShowControls] = useState(true);
   const [zoomScale, setZoomScale] = useState(1);
 
-  const screenWidth = Math.round(Dimensions.get('window').width);
   const translateX = useRef(new Animated.Value(0)).current;
   const lastTapRef = useRef(0);
+
+  // Refs para evitar problemas de stale closure en PanResponder
+  const currentIndexRef = useRef(currentIndex);
+  currentIndexRef.current = currentIndex;
+  const zoomScaleRef = useRef(zoomScale);
+  zoomScaleRef.current = zoomScale;
+  const assetsLengthRef = useRef(assets?.length || 0);
+  assetsLengthRef.current = assets?.length || 0;
 
   // Sincronizar índice inicial al abrirse
   useEffect(() => {
     if (visible) {
-      const validIndex = initialIndex >= 0 && initialIndex < assets.length ? initialIndex : 0;
+      const validIndex =
+        initialIndex >= 0 && initialIndex < (assets?.length || 0) ? initialIndex : 0;
       setCurrentIndex(validIndex);
       setZoomScale(1);
       setShowInfo(false);
       setShowControls(true);
       translateX.setValue(0);
     }
-  }, [visible, initialIndex, assets.length]);
+  }, [visible, initialIndex, assets?.length]);
 
-  // Si no está visible o no hay archivos, no renderizar
+  // Manejo de tecla volver / gesto atrás de Android
+  useEffect(() => {
+    if (!visible) return;
+
+    const onBackPress = () => {
+      if (cropAsset) {
+        setCropAsset(null);
+        return true;
+      }
+      if (playerAsset) {
+        setPlayerAsset(null);
+        return true;
+      }
+      if (showInfo) {
+        setShowInfo(false);
+        return true;
+      }
+      if (zoomScale > 1) {
+        setZoomScale(1);
+        return true;
+      }
+      onClose();
+      return true;
+    };
+
+    const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => backSub.remove();
+  }, [visible, cropAsset, playerAsset, showInfo, zoomScale, onClose]);
+
+  // Si no está visible o no hay archivos, no renderizar nada
   if (!visible || !assets || assets.length === 0) return null;
 
-  const currentAsset = assets[currentIndex] || assets[0] || null;
+  const validIndex =
+    currentIndex >= 0 && currentIndex < assets.length ? currentIndex : 0;
+  const currentAsset = assets[validIndex] || assets[0] || null;
   if (!currentAsset) return null;
 
-  // Cambiar a la siguiente imagen con animación fluida
+  // Cambiar a la siguiente imagen con animación en JS (segura, sin desincronización nativa)
   const handleNext = () => {
-    if (currentIndex < assets.length - 1) {
+    const total = assetsLengthRef.current;
+    if (currentIndexRef.current < total - 1) {
       Animated.timing(translateX, {
         toValue: -screenWidth,
         duration: 120,
-        useNativeDriver: true,
+        useNativeDriver: false,
       }).start(() => {
-        setCurrentIndex((idx) => idx + 1);
+        setCurrentIndex((idx) => Math.min(idx + 1, total - 1));
         setZoomScale(1);
         translateX.setValue(screenWidth);
         Animated.timing(translateX, {
           toValue: 0,
           duration: 120,
-          useNativeDriver: true,
+          useNativeDriver: false,
         }).start();
       });
     }
   };
 
-  // Cambiar a la imagen anterior con animación fluida
+  // Cambiar a la imagen anterior con animación en JS
   const handlePrev = () => {
-    if (currentIndex > 0) {
+    if (currentIndexRef.current > 0) {
       Animated.timing(translateX, {
         toValue: screenWidth,
         duration: 120,
-        useNativeDriver: true,
+        useNativeDriver: false,
       }).start(() => {
-        setCurrentIndex((idx) => idx - 1);
+        setCurrentIndex((idx) => Math.max(idx - 1, 0));
         setZoomScale(1);
         translateX.setValue(-screenWidth);
         Animated.timing(translateX, {
           toValue: 0,
           duration: 120,
-          useNativeDriver: true,
+          useNativeDriver: false,
         }).start();
       });
     }
   };
 
-  // Alternar zoom
+  // Alternar nivel de zoom
   const handleToggleZoom = () => {
     setZoomScale((prev) => (prev === 1 ? 2 : prev === 2 ? 3 : 1));
   };
 
-  // Toque simple (ocultar/mostrar barras) o doble toque (zoom)
+  // Toque simple (ocultar/mostrar controles) o doble toque (zoom)
   const handleScreenTouch = () => {
     const now = Date.now();
     if (now - lastTapRef.current < 280) {
@@ -133,7 +175,7 @@ export default function FullScreenViewer({
       onMoveShouldSetPanResponder: (_, gesture) => {
         // Solo deslizar si no hay zoom y el movimiento es predominantemente horizontal
         return (
-          zoomScale === 1 &&
+          zoomScaleRef.current === 1 &&
           Math.abs(gesture.dx) > 12 &&
           Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
         );
@@ -142,36 +184,39 @@ export default function FullScreenViewer({
         translateX.setValue(gesture.dx);
       },
       onPanResponderRelease: (_, gesture) => {
-        if (gesture.dx < -60 && currentIndex < assets.length - 1) {
+        const idx = currentIndexRef.current;
+        const total = assetsLengthRef.current;
+
+        if (gesture.dx < -60 && idx < total - 1) {
           // Deslizó hacia la izquierda -> Siguiente
           Animated.timing(translateX, {
             toValue: -screenWidth,
-            duration: 130,
-            useNativeDriver: true,
+            duration: 120,
+            useNativeDriver: false,
           }).start(() => {
-            setCurrentIndex((idx) => Math.min(idx + 1, assets.length - 1));
+            setCurrentIndex(Math.min(idx + 1, total - 1));
             setZoomScale(1);
             translateX.setValue(screenWidth);
             Animated.timing(translateX, {
               toValue: 0,
-              duration: 130,
-              useNativeDriver: true,
+              duration: 120,
+              useNativeDriver: false,
             }).start();
           });
-        } else if (gesture.dx > 60 && currentIndex > 0) {
+        } else if (gesture.dx > 60 && idx > 0) {
           // Deslizó hacia la derecha -> Anterior
           Animated.timing(translateX, {
             toValue: screenWidth,
-            duration: 130,
-            useNativeDriver: true,
+            duration: 120,
+            useNativeDriver: false,
           }).start(() => {
-            setCurrentIndex((idx) => Math.max(idx - 1, 0));
+            setCurrentIndex(Math.max(idx - 1, 0));
             setZoomScale(1);
             translateX.setValue(-screenWidth);
             Animated.timing(translateX, {
               toValue: 0,
-              duration: 130,
-              useNativeDriver: true,
+              duration: 120,
+              useNativeDriver: false,
             }).start();
           });
         } else {
@@ -179,7 +224,7 @@ export default function FullScreenViewer({
           Animated.spring(translateX, {
             toValue: 0,
             friction: 7,
-            useNativeDriver: true,
+            useNativeDriver: false,
           }).start();
         }
       },
@@ -205,15 +250,12 @@ export default function FullScreenViewer({
   };
 
   const isVideo = currentAsset.mediaType === 'video';
+  const isCurrentFav = favorites && currentAsset.id
+    ? Boolean(favorites[currentAsset.id])
+    : Boolean(isFavorite);
 
   return (
-    <Modal
-      visible={visible}
-      transparent={false}
-      animationType="fade"
-      onRequestClose={onClose}
-      statusBarTranslucent={true}
-    >
+    <View style={styles.fullscreenOverlay}>
       <StatusBar hidden={!showControls} barStyle="light-content" backgroundColor="#000000" />
       <SafeAreaView style={styles.container}>
         {/* Barra Superior */}
@@ -228,7 +270,7 @@ export default function FullScreenViewer({
             </TouchableOpacity>
 
             <Text style={styles.counterText}>
-              {currentIndex + 1} / {assets.length}
+              {validIndex + 1} / {assets.length}
             </Text>
 
             <View style={styles.topRightActions}>
@@ -262,46 +304,58 @@ export default function FullScreenViewer({
           </View>
         )}
 
-        {/* Visor Central Táctil con soporte de deslizamiento */}
+        {/* Visor Central con Deslizamiento y Zoom Independientes */}
         <View style={styles.carouselContainer} {...panResponder.panHandlers}>
-          <TouchableOpacity activeOpacity={1} style={styles.slideTouchable} onPress={handleScreenTouch}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={styles.slideTouchable}
+            onPress={handleScreenTouch}
+          >
+            {/* Contenedor animado de desplazamiento lateral (sin conflictos nativos) */}
             <Animated.View
               style={[
-                styles.imageWrapper,
+                styles.swipeContainer,
                 {
-                  transform: [
-                    { translateX },
-                    { scale: zoomScale },
-                  ],
+                  transform: [{ translateX }],
                 },
               ]}
             >
-              {currentAsset.uri ? (
-                <Image
-                  source={{ uri: currentAsset.uri }}
-                  style={styles.fullImage}
-                  contentFit="contain"
-                  priority="high"
-                  transition={0}
-                  cachePolicy="memory-disk"
-                />
-              ) : null}
+              {/* Contenedor de zoom separado */}
+              <View
+                style={[
+                  styles.zoomContainer,
+                  {
+                    transform: [{ scale: zoomScale }],
+                  },
+                ]}
+              >
+                {currentAsset.uri ? (
+                  <Image
+                    source={{ uri: currentAsset.uri }}
+                    style={styles.fullImage}
+                    contentFit="contain"
+                    priority="high"
+                    transition={0}
+                    cachePolicy="memory-disk"
+                  />
+                ) : null}
 
-              {/* Botón de reproducción si es un video */}
-              {isVideo && (
-                <TouchableOpacity
-                  style={styles.centerVideoOverlay}
-                  activeOpacity={0.8}
-                  onPress={() => setPlayerAsset(currentAsset)}
-                >
-                  <Ionicons name="play-circle" size={72} color="rgba(255,255,255,0.9)" />
-                </TouchableOpacity>
-              )}
+                {/* Botón central de reproducción si es un video */}
+                {isVideo && (
+                  <TouchableOpacity
+                    style={styles.centerVideoOverlay}
+                    activeOpacity={0.8}
+                    onPress={() => setPlayerAsset(currentAsset)}
+                  >
+                    <Ionicons name="play-circle" size={72} color="rgba(255,255,255,0.9)" />
+                  </TouchableOpacity>
+                )}
+              </View>
             </Animated.View>
           </TouchableOpacity>
 
           {/* Flechas de Navegación Lateral */}
-          {showControls && currentIndex > 0 && (
+          {showControls && validIndex > 0 && (
             <TouchableOpacity
               style={[styles.arrowButton, styles.leftArrow]}
               onPress={handlePrev}
@@ -312,7 +366,7 @@ export default function FullScreenViewer({
             </TouchableOpacity>
           )}
 
-          {showControls && currentIndex < assets.length - 1 && (
+          {showControls && validIndex < assets.length - 1 && (
             <TouchableOpacity
               style={[styles.arrowButton, styles.rightArrow]}
               onPress={handleNext}
@@ -381,14 +435,14 @@ export default function FullScreenViewer({
               activeOpacity={0.7}
             >
               <Ionicons
-                name={isFavorite ? 'heart' : 'heart-outline'}
+                name={isCurrentFav ? 'heart' : 'heart-outline'}
                 size={26}
-                color={isFavorite ? theme.colors.favorite : '#ffffff'}
+                color={isCurrentFav ? theme.colors.favorite : '#ffffff'}
               />
               <Text
                 style={[
                   styles.actionLabel,
-                  isFavorite && { color: theme.colors.favorite, fontWeight: '700' },
+                  isCurrentFav && { color: theme.colors.favorite, fontWeight: '700' },
                 ]}
               >
                 Favorito
@@ -423,6 +477,7 @@ export default function FullScreenViewer({
           </View>
         )}
 
+        {/* Sub-pantallas sobrepuestas protegidas */}
         {playerAsset && (
           <VideoPlayerScreen
             asset={playerAsset}
@@ -438,11 +493,23 @@ export default function FullScreenViewer({
           />
         )}
       </SafeAreaView>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fullscreenOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+    backgroundColor: '#000000',
+    zIndex: 99999,
+    elevation: 99999,
+  },
   container: {
     flex: 1,
     backgroundColor: '#000000',
@@ -498,7 +565,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  imageWrapper: {
+  swipeContainer: {
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  zoomContainer: {
     width: '100%',
     height: '100%',
     justifyContent: 'center',
