@@ -11,10 +11,12 @@ import {
   PanResponder,
   BackHandler,
   useWindowDimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
+import { compressionService } from '../services/compressionService';
 import VideoPlayerScreen from './VideoPlayerScreen';
 import ImageCropper from './ImageCropper';
 
@@ -49,6 +51,8 @@ export default function FullScreenViewer({
   const [showInfo, setShowInfo] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [zoomScale, setZoomScale] = useState(1);
+  const [assetSize, setAssetSize] = useState(null);
+  const [isCompressing, setIsCompressing] = useState(false);
 
   // Animaciones y referencias declaradas incondicionalmente en la raíz
   const translateX = useRef(new Animated.Value(0)).current;
@@ -175,10 +179,48 @@ export default function FullScreenViewer({
   zoomScaleRef.current = zoomScale;
   assetsLengthRef.current = assets?.length || 0;
 
+  // Consultar peso real del archivo incondicionalmente
+  useEffect(() => {
+    let active = true;
+    if (visible && currentAsset?.uri) {
+      compressionService.getFileSize(currentAsset.uri).then((sz) => {
+        if (active) setAssetSize(sz);
+      });
+    } else {
+      setAssetSize(null);
+    }
+    return () => {
+      active = false;
+    };
+  }, [visible, currentAsset?.uri]);
+
+  const sizeInfo = compressionService.getSizeLevel(assetSize);
+
   // Si no está visible o no hay archivos, no mostrar nada (TODOS los hooks ya se ejecutaron)
   if (!visible || !currentAsset) {
     return null;
   }
+
+  // Comprimir foto actual sin perder resolución
+  const handleCompressCurrentPhoto = async () => {
+    if (isCompressing || !currentAsset) return;
+    setIsCompressing(true);
+    try {
+      const res = await compressionService.compressPhoto(currentAsset);
+      setAssetSize(res.newSize);
+      const savedFormatted = compressionService.formatBytes(res.savedBytes);
+      const newFormatted = compressionService.formatBytes(res.newSize);
+      Alert.alert(
+        '¡Foto comprimida con éxito!',
+        `Se mantuvo la resolución original al 100% (mismo ancho y alto).\n\nNuevo peso: ${newFormatted}\nEspacio ahorrado: ${savedFormatted}`
+      );
+      if (onMediaSaved) onMediaSaved();
+    } catch (e) {
+      Alert.alert('Aviso de compresión', 'No se pudo completar la compresión: ' + (e?.message || String(e)));
+    } finally {
+      setIsCompressing(false);
+    }
+  };
 
   // Navegación con flechas
   const handleNext = () => {
@@ -328,6 +370,106 @@ export default function FullScreenViewer({
           </View>
         )}
 
+        {/* Franja indicadora de peso (Verde 0-2MB, Amarillo 2-4MB, Rojo >4MB con franja y título rojo) */}
+        {showControls && assetSize !== null && assetSize > 0 && (
+          <View
+            style={[
+              styles.weightBanner,
+              sizeInfo.isHeavy
+                ? styles.weightBannerHeavy
+                : {
+                    backgroundColor: sizeInfo.bannerBg,
+                    borderBottomColor: sizeInfo.color,
+                  },
+            ]}
+          >
+            {/* Línea de color superior */}
+            <View
+              style={[
+                styles.weightLine,
+                { backgroundColor: sizeInfo.color },
+              ]}
+            />
+
+            <View style={styles.weightBannerContent}>
+              <View style={styles.weightTextGroup}>
+                <Ionicons
+                  name={sizeInfo.isHeavy ? 'alert-circle' : 'speedometer-outline'}
+                  size={19}
+                  color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
+                />
+                <Text
+                  style={[
+                    styles.weightTitle,
+                    sizeInfo.isHeavy
+                      ? styles.weightTitleHeavy
+                      : { color: sizeInfo.color },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {sizeInfo.isHeavy
+                    ? `PESO ALTO: ${sizeInfo.mb} MB`
+                    : `PESO: ${sizeInfo.mb} MB`}
+                </Text>
+                <View
+                  style={[
+                    styles.weightTag,
+                    {
+                      backgroundColor: sizeInfo.isHeavy
+                        ? '#991b1b'
+                        : sizeInfo.color,
+                    },
+                  ]}
+                >
+                  <Text style={styles.weightTagText}>{sizeInfo.tagText}</Text>
+                </View>
+              </View>
+
+              {/* Botón Comprimir sin perder resolución */}
+              {!isVideo && (
+                <TouchableOpacity
+                  style={[
+                    styles.compressBtn,
+                    sizeInfo.isHeavy
+                      ? styles.compressBtnHeavy
+                      : { borderColor: sizeInfo.color },
+                  ]}
+                  onPress={handleCompressCurrentPhoto}
+                  disabled={isCompressing}
+                  activeOpacity={0.8}
+                >
+                  {isCompressing ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
+                    />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name="sparkles"
+                        size={13}
+                        color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
+                      />
+                      <Text
+                        style={[
+                          styles.compressBtnText,
+                          {
+                            color: sizeInfo.isHeavy
+                              ? '#ffffff'
+                              : sizeInfo.color,
+                          },
+                        ]}
+                      >
+                        Comprimir
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
+        )}
+
         {/* Visor Central con Deslizamiento y Zoom Independientes */}
         <View style={styles.carouselContainer} {...panResponder.panHandlers}>
           <TouchableOpacity
@@ -416,6 +558,15 @@ export default function FullScreenViewer({
               <Text style={styles.infoLabel}>Fecha:</Text>
               <Text style={styles.infoValue}>{formatDate(currentAsset.creationTime)}</Text>
             </View>
+            {assetSize ? (
+              <View style={styles.infoRow}>
+                <Ionicons name="pie-chart-outline" size={16} color={sizeInfo.color} />
+                <Text style={styles.infoLabel}>Peso:</Text>
+                <Text style={[styles.infoValue, { color: sizeInfo.color, fontWeight: '700' }]}>
+                  {compressionService.formatBytes(assetSize)} ({sizeInfo.tagText})
+                </Text>
+              </View>
+            ) : null}
             {currentAsset.width && currentAsset.height ? (
               <View style={styles.infoRow}>
                 <Ionicons name="resize-outline" size={16} color={theme.colors.textSecondary} />
@@ -470,6 +621,25 @@ export default function FullScreenViewer({
                 Favorito
               </Text>
             </TouchableOpacity>
+
+            {/* Comprimir foto sin perder resolución */}
+            {!isVideo && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={handleCompressCurrentPhoto}
+                disabled={isCompressing}
+                activeOpacity={0.7}
+              >
+                {isCompressing ? (
+                  <ActivityIndicator size="small" color="#38bdf8" />
+                ) : (
+                  <>
+                    <Ionicons name="sparkles-outline" size={24} color="#38bdf8" />
+                    <Text style={[styles.actionLabel, { color: '#38bdf8' }]}>Comprimir</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
 
             {/* Recortar / Reproducir */}
             <TouchableOpacity
@@ -574,6 +744,72 @@ const styles = StyleSheet.create({
   iconButton: {
     padding: 6,
   },
+  weightBanner: {
+    position: 'relative',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    zIndex: 19,
+  },
+  weightBannerHeavy: {
+    backgroundColor: '#dc2626', // Franja roja sólida para visualizar fácilmente
+    borderBottomColor: '#b91c1c',
+  },
+  weightLine: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+  },
+  weightBannerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  weightTextGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+  },
+  weightTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  weightTitleHeavy: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  weightTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  weightTagText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  compressBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  compressBtnHeavy: {
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    borderColor: '#ffffff',
+  },
+  compressBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
   carouselContainer: {
     flex: 1,
     position: 'relative',
@@ -670,11 +906,11 @@ const styles = StyleSheet.create({
   actionItem: {
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
   actionLabel: {
     color: '#ffffff',
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 4,
     fontWeight: '500',
   },

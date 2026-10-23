@@ -200,7 +200,13 @@ export default function VideoPlayerScreen({ asset, onClose, onSaved }) {
             style={styles.video}
             contentFit="contain"
             nativeControls={false}
+            surfaceType="textureView"
           />
+          {!playing && (
+            <View pointerEvents="none" style={styles.centerPlayIconOverlay}>
+              <Ionicons name="play-circle" size={64} color="rgba(255, 255, 255, 0.85)" />
+            </View>
+          )}
         </TouchableOpacity>
 
         <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>
@@ -334,8 +340,24 @@ const styles = StyleSheet.create({
   },
   iconBtn: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
   title: { color: '#fff', fontSize: 15, fontWeight: '600', flex: 1, textAlign: 'center' },
-  videoArea: { flex: 1, backgroundColor: '#000', minHeight: 180 },
-  video: { flex: 1 },
+  videoArea: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: '#000000',
+    minHeight: 220,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  video: {
+    width: '100%',
+    height: '100%',
+  },
+  centerPlayIconOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   panel: { maxHeight: '58%', backgroundColor: theme.colors.background },
   panelContent: { padding: 16, paddingBottom: 28 },
   timeRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },

@@ -16,6 +16,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 import { folderService, COMMON_SYSTEM_FOLDERS } from '../services/folderService';
+import { compressionService } from '../services/compressionService';
+import { cameraOrganizerService } from '../services/cameraOrganizerService';
 import PhotoThumbnail from './PhotoThumbnail';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -70,6 +72,16 @@ export default function FolderBrowser({
   const [visibleLimit, setVisibleLimit] = useState(BATCH_SIZE);
   // Modal de carpetas del sistema y permisos especiales
   const [showSystemModal, setShowSystemModal] = useState(false);
+
+  // División y categoría interna: 'all' | 'photos' | 'videos'
+  const [folderCategory, setFolderCategory] = useState('all');
+  // Compresión de carpeta completa
+  const [isCompressingFolder, setIsCompressingFolder] = useState(false);
+  const [compressProgress, setCompressProgress] = useState(null);
+  // Organización física de cámara por meses
+  const [isOrganizingCamera, setIsOrganizingCamera] = useState(false);
+  const [organizeProgress, setOrganizeProgress] = useState(null);
+  const [showOrganizeConfirmModal, setShowOrganizeConfirmModal] = useState(false);
 
   const currentFolder = history[history.length - 1] || null;
 
@@ -163,13 +175,90 @@ export default function FolderBrowser({
     setRefreshing(false);
   };
 
-  // Lista total filtrada (photos | videos | all)
+  // División entre Fotos y Videos
+  const rawFolderList = viewMode === 'folders' ? currentFolderAssets : allAssets;
+  const folderPhotos = useMemo(
+    () => rawFolderList.filter((a) => a.mediaType === 'photo'),
+    [rawFolderList]
+  );
+  const folderVideos = useMemo(
+    () => rawFolderList.filter((a) => a.mediaType === 'video'),
+    [rawFolderList]
+  );
+
+  // Lista total filtrada (photos | videos | all con división clara)
   const totalFilteredAssets = useMemo(() => {
-    const list = viewMode === 'folders' ? currentFolderAssets : allAssets;
-    if (filterType === 'photos') return list.filter((a) => a.mediaType === 'photo');
-    if (filterType === 'videos') return list.filter((a) => a.mediaType === 'video');
-    return list;
-  }, [viewMode, currentFolderAssets, allAssets, filterType]);
+    if (folderCategory === 'photos' || filterType === 'photos') return folderPhotos;
+    if (folderCategory === 'videos' || filterType === 'videos') return folderVideos;
+    return [...folderPhotos, ...folderVideos];
+  }, [folderCategory, filterType, folderPhotos, folderVideos]);
+
+  // Comprimir fotos de la carpeta completa
+  const handleCompressFolder = async () => {
+    if (folderPhotos.length === 0) {
+      Alert.alert('Sin fotos', 'No hay fotografías en esta carpeta para comprimir.');
+      return;
+    }
+
+    Alert.alert(
+      'Comprimir fotos de la carpeta',
+      `¿Deseas optimizar las ${folderPhotos.length} fotos de esta carpeta sin perder resolución?\n\nSe mantendrá el 100% del tamaño original en píxeles (mismo ancho y alto) y se reducirá notablemente el peso en memoria.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Comprimir fotos',
+          onPress: async () => {
+            setIsCompressingFolder(true);
+            setCompressProgress({ current: 0, total: folderPhotos.length, percent: 0, savedFormatted: '0 B' });
+            try {
+              const res = await compressionService.compressFolderPhotos(
+                folderPhotos,
+                (prog) => setCompressProgress(prog)
+              );
+              Alert.alert(
+                '¡Compresión finalizada!',
+                `Se optimizaron ${res.processed} fotos con éxito.\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+              );
+              handleRefresh();
+            } catch (e) {
+              Alert.alert('Error', 'Ocurrió un problema durante la compresión: ' + (e?.message || String(e)));
+            } finally {
+              setIsCompressingFolder(false);
+              setCompressProgress(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Organizar cámara físicamente por meses
+  const handleOrganizeCamera = async () => {
+    setShowOrganizeConfirmModal(false);
+    if (!currentFolder?.uri) return;
+
+    setIsOrganizingCamera(true);
+    setOrganizeProgress({ current: 0, total: currentFolderAssets.length, percent: 0, currentFile: '', currentMonth: '' });
+
+    try {
+      const res = await cameraOrganizerService.physicallyOrganizeFolder({
+        targetDirUri: currentFolder.uri,
+        assets: currentFolderAssets,
+        onProgress: (prog) => setOrganizeProgress(prog),
+      });
+
+      Alert.alert(
+        '¡Cámara organizada con éxito!',
+        `Se crearon físicamente ${res.monthsCreated} carpetas por mes con división de Fotos y Videos.\nSe movieron ${res.moved} archivos para descongestionar la cámara.`
+      );
+      handleRefresh();
+    } catch (e) {
+      Alert.alert('Aviso', 'No se pudo completar la organización: ' + (e?.message || String(e)));
+    } finally {
+      setIsOrganizingCamera(false);
+      setOrganizeProgress(null);
+    }
+  };
 
   // Porción visible para no sobrecargar el renderizado
   const paginatedAssets = useMemo(() => {
@@ -501,11 +590,91 @@ export default function FolderBrowser({
                     </View>
                   )}
 
-                  {/* Cabecera de Fotos */}
+                  {/* Barra de División Fotos y Videos */}
+                  <View style={styles.divisionBar}>
+                    <View style={styles.categorySegmentRow}>
+                      <TouchableOpacity
+                        style={[styles.categoryPill, folderCategory === 'all' && styles.categoryPillActive]}
+                        onPress={() => setFolderCategory('all')}
+                        activeOpacity={0.8}
+                      >
+                        <Text style={[styles.categoryPillText, folderCategory === 'all' && styles.categoryPillTextActive]}>
+                          Todas ({folderPhotos.length + folderVideos.length})
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.categoryPill, folderCategory === 'photos' && styles.categoryPillActive]}
+                        onPress={() => setFolderCategory('photos')}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons
+                          name="images"
+                          size={14}
+                          color={folderCategory === 'photos' ? '#ffffff' : theme.colors.primaryLight}
+                        />
+                        <Text style={[styles.categoryPillText, folderCategory === 'photos' && styles.categoryPillTextActive]}>
+                          Fotos ({folderPhotos.length})
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.categoryPill, folderCategory === 'videos' && styles.categoryPillActive]}
+                        onPress={() => setFolderCategory('videos')}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons
+                          name="videocam"
+                          size={14}
+                          color={folderCategory === 'videos' ? '#ffffff' : theme.colors.primaryLight}
+                        />
+                        <Text style={[styles.categoryPillText, folderCategory === 'videos' && styles.categoryPillTextActive]}>
+                          Videos ({folderVideos.length})
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* Barra de Acciones Inteligentes: Comprimir y Organizar Cámara */}
+                    <View style={styles.actionToolsRow}>
+                      {folderPhotos.length > 0 && (
+                        <TouchableOpacity
+                          style={styles.actionToolButton}
+                          onPress={handleCompressFolder}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="sparkles" size={14} color="#38bdf8" />
+                          <Text style={styles.actionToolButtonText}>Comprimir fotos ({folderPhotos.length})</Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {currentFolderAssets.length > 5 && (
+                        <TouchableOpacity
+                          style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
+                          onPress={() => setShowOrganizeConfirmModal(true)}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="calendar" size={14} color={theme.colors.warning} />
+                          <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
+                            Organizar por meses (físico)
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  </View>
+
+                  {/* Cabecera descriptiva según división */}
                   <View style={styles.sectionHeader}>
-                    <Ionicons name="images-outline" size={18} color={theme.colors.primary} />
+                    <Ionicons
+                      name={folderCategory === 'videos' ? 'videocam-outline' : 'images-outline'}
+                      size={18}
+                      color={theme.colors.primary}
+                    />
                     <Text style={styles.sectionTitle}>
-                      Fotos y Videos ({totalFilteredAssets.length})
+                      {folderCategory === 'photos'
+                        ? `Fotos (${folderPhotos.length})`
+                        : folderCategory === 'videos'
+                        ? `Videos (${folderVideos.length})`
+                        : `Fotos (${folderPhotos.length}) y Videos (${folderVideos.length})`}
                     </Text>
                   </View>
                 </>
@@ -630,6 +799,121 @@ export default function FolderBrowser({
                 </Text>
               </View>
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de Progreso de Compresión de Carpeta */}
+      <Modal
+        visible={isCompressingFolder}
+        transparent={true}
+        animationType="fade"
+        statusBarTranslucent
+      >
+        <View style={styles.progressModalBackdrop}>
+          <View style={styles.progressModalCard}>
+            <Ionicons name="sparkles" size={36} color="#38bdf8" />
+            <Text style={styles.progressModalTitle}>Comprimiendo fotos...</Text>
+            <Text style={styles.progressModalSubtitle}>
+              Manteniendo el 100% de la resolución original sin pérdida
+            </Text>
+
+            {compressProgress && (
+              <View style={{ width: '100%', marginTop: 14 }}>
+                <View style={styles.progressBarBg}>
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      { width: `${Math.round((compressProgress.percent || 0) * 100)}%` },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.progressPercentText}>
+                  {compressProgress.current} de {compressProgress.total} fotos ({Math.round((compressProgress.percent || 0) * 100)}%)
+                </Text>
+                <Text style={styles.progressSavedText}>
+                  Espacio ahorrado: {compressProgress.savedFormatted}
+                </Text>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de Confirmación para Organizar Cámara por Meses Físicamente */}
+      <Modal
+        visible={showOrganizeConfirmModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowOrganizeConfirmModal(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.progressModalBackdrop}>
+          <View style={[styles.progressModalCard, { maxWidth: 360 }]}>
+            <Ionicons name="calendar" size={40} color={theme.colors.warning} />
+            <Text style={styles.progressModalTitle}>Organizar Cámara por Meses</Text>
+            <Text style={styles.progressModalSubtitle}>
+              Esta opción creará físicamente en tu almacenamiento carpetas para cada mes (ej. 2024-05 Mayo) y separará dentro las carpetas Fotos y Videos para descongestionar la cámara.
+            </Text>
+            <View style={{ width: '100%', gap: 10, marginTop: 16 }}>
+              <TouchableOpacity
+                style={styles.confirmOrganizeBtn}
+                onPress={handleOrganizeCamera}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="folder" size={18} color="#ffffff" />
+                <Text style={styles.confirmOrganizeBtnText}>Crear carpetas y mover archivos</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.cancelOrganizeBtn}
+                onPress={() => setShowOrganizeConfirmModal(false)}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.cancelOrganizeBtnText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de Progreso de Organización de Cámara */}
+      <Modal
+        visible={isOrganizingCamera}
+        transparent={true}
+        animationType="fade"
+        statusBarTranslucent
+      >
+        <View style={styles.progressModalBackdrop}>
+          <View style={styles.progressModalCard}>
+            <ActivityIndicator size="large" color={theme.colors.warning} />
+            <Text style={styles.progressModalTitle}>Organizando carpetas físicas...</Text>
+            <Text style={styles.progressModalSubtitle}>
+              Moviendo fotos y videos a sus respectivas carpetas de mes
+            </Text>
+
+            {organizeProgress && (
+              <View style={{ width: '100%', marginTop: 14 }}>
+                <View style={styles.progressBarBg}>
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        width: `${Math.round((organizeProgress.percent || 0) * 100)}%`,
+                        backgroundColor: theme.colors.warning,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={styles.progressPercentText}>
+                  {organizeProgress.current} de {organizeProgress.total} archivos ({Math.round((organizeProgress.percent || 0) * 100)}%)
+                </Text>
+                {organizeProgress.currentMonth ? (
+                  <Text style={styles.progressSavedText}>
+                    Carpeta: {organizeProgress.currentMonth}
+                  </Text>
+                ) : null}
+              </View>
+            )}
           </View>
         </View>
       </Modal>
@@ -1124,5 +1408,147 @@ const styles = StyleSheet.create({
     fontSize: 11,
     flex: 1,
     lineHeight: 16,
+  },
+  divisionBar: {
+    backgroundColor: theme.colors.surface,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.surfaceBorder,
+    gap: 8,
+  },
+  categorySegmentRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  categoryPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: theme.colors.surfaceHover,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  categoryPillActive: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primaryLight,
+  },
+  categoryPillText: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  categoryPillTextActive: {
+    color: '#ffffff',
+    fontWeight: '700',
+  },
+  actionToolsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  actionToolButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  actionToolButtonOrganize: {
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+  },
+  actionToolButtonText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  progressModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  progressModalCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: 16,
+    padding: 22,
+    alignItems: 'center',
+    width: '100%',
+    maxWidth: 340,
+    borderWidth: 1,
+    borderColor: theme.colors.surfaceBorder,
+  },
+  progressModalTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 12,
+    textAlign: 'center',
+  },
+  progressModalSubtitle: {
+    color: theme.colors.textSecondary,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
+    lineHeight: 16,
+  },
+  progressBarBg: {
+    height: 8,
+    backgroundColor: theme.colors.surfaceBorder,
+    borderRadius: 4,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  progressBarFill: {
+    height: '100%',
+    backgroundColor: '#38bdf8',
+    borderRadius: 4,
+  },
+  progressPercentText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 6,
+    textAlign: 'center',
+  },
+  progressSavedText: {
+    color: '#10b981',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  confirmOrganizeBtn: {
+    backgroundColor: theme.colors.warning,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  confirmOrganizeBtnText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  cancelOrganizeBtn: {
+    backgroundColor: theme.colors.surfaceHover,
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  cancelOrganizeBtnText: {
+    color: theme.colors.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
   },
 });
