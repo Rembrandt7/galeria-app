@@ -18,6 +18,7 @@ import * as Sharing from 'expo-sharing';
 import { theme } from '../constants/theme';
 import { folderService, COMMON_SYSTEM_FOLDERS } from '../services/folderService';
 import { compressionService } from '../services/compressionService';
+import { videoEngineService } from '../services/videoEngineService';
 import { cameraOrganizerService } from '../services/cameraOrganizerService';
 import { mediaService } from '../services/mediaService';
 import PhotoThumbnail from './PhotoThumbnail';
@@ -84,6 +85,56 @@ export default function FolderBrowser({
   const [isOrganizingCamera, setIsOrganizingCamera] = useState(false);
   const [organizeProgress, setOrganizeProgress] = useState(null);
   const [showOrganizeConfirmModal, setShowOrganizeConfirmModal] = useState(false);
+  // Control de Pausa / Cancelación para procesos en lote
+  const [isProcessPaused, setIsProcessPaused] = useState(false);
+  const processControlRef = useRef(null);
+
+  const createProcessController = () => {
+    let pauseResolve = null;
+    let pausePromise = null;
+    const ctrl = {
+      isPaused: false,
+      isCancelled: false,
+      pause() {
+        if (this.isPaused || this.isCancelled) return;
+        this.isPaused = true;
+        setIsProcessPaused(true);
+        pausePromise = new Promise((r) => {
+          pauseResolve = r;
+        });
+      },
+      resume() {
+        if (!this.isPaused) return;
+        this.isPaused = false;
+        setIsProcessPaused(false);
+        if (pauseResolve) {
+          const r = pauseResolve;
+          pauseResolve = null;
+          pausePromise = null;
+          r();
+        }
+      },
+      cancel() {
+        this.isCancelled = true;
+        this.isPaused = false;
+        setIsProcessPaused(false);
+        if (pauseResolve) {
+          const r = pauseResolve;
+          pauseResolve = null;
+          pausePromise = null;
+          r();
+        }
+      },
+      async waitIfPaused() {
+        while (this.isPaused && pausePromise && !this.isCancelled) {
+          await pausePromise;
+        }
+      },
+    };
+    processControlRef.current = ctrl;
+    setIsProcessPaused(false);
+    return ctrl;
+  };
   // Selección múltiple con toque prolongado
   const [selectedIds, setSelectedIds] = useState({});
 
@@ -228,26 +279,78 @@ export default function FolderBrowser({
 
     Alert.alert(
       'Comprimir fotos de la carpeta',
-      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas sin perder resolución?\n\nSe mantendrá el 100% del tamaño original en píxeles (mismo ancho y alto) y se reducirá notablemente el peso en memoria.`,
+      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas sin perder resolución?\n\n• Las fotos que ya estén en Verde (≤ 2 MB) se omitirán automáticamente.\n• Solo se comprimirán las que estén en Naranja o Rojo manteniendo el 100% de su resolución.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir fotos',
           onPress: async () => {
+            const ctrl = createProcessController();
             setIsCompressingFolder(true);
-            setCompressProgress({ current: 0, total: targetPhotos.length, percent: 0, savedFormatted: '0 B' });
+            setCompressProgress({ current: 0, total: targetPhotos.length, percent: 0, skippedGreenCount: 0, savedFormatted: '0 B' });
             try {
               const res = await compressionService.compressFolderPhotos(
                 targetPhotos,
-                (prog) => setCompressProgress(prog)
+                (prog) => setCompressProgress(prog),
+                ctrl
               );
+              const skippedMsg =
+                res.skippedGreenCount > 0
+                  ? `\nOmitidas por estar en Verde: ${res.skippedGreenCount}`
+                  : '';
               Alert.alert(
-                '¡Compresión finalizada!',
-                `Se procesaron ${res.compressedCount || res.processed} de ${targetPhotos.length} fotos con éxito manteniendo el 100% de su resolución.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+                res.cancelled ? 'Proceso cancelado' : '¡Compresión finalizada!',
+                `Fotos comprimidas (Naranja/Rojo): ${res.compressedCount || 0} de ${targetPhotos.length}${skippedMsg}\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
               );
               handleRefresh();
             } catch (e) {
               Alert.alert('Error', 'Ocurrió un problema durante la compresión: ' + (e?.message || String(e)));
+            } finally {
+              setIsCompressingFolder(false);
+              setCompressProgress(null);
+              processControlRef.current = null;
+              setIsProcessPaused(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // Comprimir videos de la carpeta manteniendo el 100% de la resolución original
+  const handleCompressVideosFolder = () => {
+    if (folderVideos.length === 0) {
+      Alert.alert('Sin videos', 'No hay videos en esta vista para comprimir.');
+      return;
+    }
+
+    Alert.alert(
+      'Comprimir videos (100% Resolución)',
+      `¿Deseas comprimir los ${folderVideos.length} videos de esta carpeta manteniendo el 100% de su resolución original y reemplazando cada original sin duplicados?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Comprimir videos',
+          onPress: async () => {
+            setIsCompressingFolder(true);
+            setCompressProgress({
+              current: 0,
+              total: folderVideos.length,
+              percent: 0,
+              savedFormatted: '0 B',
+            });
+            try {
+              const res = await videoEngineService.compressVideosBatch(folderVideos, {
+                presetId: 'balanced',
+                onProgress: (prog) => setCompressProgress(prog),
+              });
+              Alert.alert(
+                '¡Videos comprimidos!',
+                `Se optimizaron ${res.compressedCount} de ${folderVideos.length} videos al 100% de su resolución original.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+              );
+              handleRefresh();
+            } catch (e) {
+              Alert.alert('Aviso', 'Ocurrió un problema al comprimir videos: ' + (e?.message || String(e)));
             } finally {
               setIsCompressingFolder(false);
               setCompressProgress(null);
@@ -258,11 +361,12 @@ export default function FolderBrowser({
     );
   };
 
-  // Organizar cámara físicamente por meses
+  // Organizar cámara físicamente por meses (dejando el mes activo en la carpeta raíz)
   const handleOrganizeCamera = async () => {
     setShowOrganizeConfirmModal(false);
     if (!currentFolder?.uri) return;
 
+    const ctrl = createProcessController();
     setIsOrganizingCamera(true);
     setOrganizeProgress({ current: 0, total: currentFolderAssets.length, percent: 0, currentFile: '', currentMonth: '' });
 
@@ -270,19 +374,34 @@ export default function FolderBrowser({
       const res = await cameraOrganizerService.physicallyOrganizeFolder({
         targetDirUri: currentFolder.uri,
         assets: currentFolderAssets,
+        keepActiveMonthInRoot: true,
         onProgress: (prog) => setOrganizeProgress(prog),
+        control: ctrl,
       });
 
-      Alert.alert(
-        '¡Cámara organizada con éxito!',
-        `Se crearon físicamente ${res.monthsCreated} carpetas por mes con división de Fotos y Videos.\nSe movieron ${res.moved} archivos para descongestionar la cámara.`
-      );
+      if (res.moved === 0 && res.keptInRoot > 0) {
+        Alert.alert(
+          'Mes activo en raíz',
+          `Los ${res.keptInRoot} archivos de esta carpeta pertenecen al mes activo (${res.activeMonthName || 'mes actual'}), por lo que se dejaron en la carpeta raíz tal como configuraste.`
+        );
+      } else {
+        const rootMsg =
+          res.keptInRoot > 0
+            ? `\n\n📌 Se dejaron ${res.keptInRoot} archivos del mes activo (${res.activeMonthName}) en la carpeta raíz.`
+            : '';
+        Alert.alert(
+          res.cancelled ? 'Organización detenida' : '¡Carpeta organizada por meses!',
+          `Se movieron ${res.moved} archivos de meses anteriores en ${res.monthsCreated || 0} carpetas por mes con división de Fotos y Videos.${rootMsg}`
+        );
+      }
       handleRefresh();
     } catch (e) {
       Alert.alert('Aviso', 'No se pudo completar la organización: ' + (e?.message || String(e)));
     } finally {
       setIsOrganizingCamera(false);
       setOrganizeProgress(null);
+      processControlRef.current = null;
+      setIsProcessPaused(false);
     }
   };
 
@@ -373,34 +492,59 @@ export default function FolderBrowser({
 
   const handleCompressSelected = () => {
     const selectedPhotos = selectedAssets.filter((a) => a.mediaType === 'photo');
-    if (selectedPhotos.length === 0) {
-      Alert.alert('Sin fotos', 'Selecciona al menos una fotografía para comprimir.');
+    const selectedVideos = selectedAssets.filter((a) => a.mediaType === 'video');
+    if (selectedPhotos.length === 0 && selectedVideos.length === 0) {
+      Alert.alert('Sin archivos', 'Selecciona al menos una fotografía o un video para comprimir.');
       return;
     }
+    const totalSel = selectedPhotos.length + selectedVideos.length;
     Alert.alert(
-      'Comprimir seleccionadas',
-      `¿Optimizar ${selectedPhotos.length} ${selectedPhotos.length === 1 ? 'foto seleccionada' : 'fotos seleccionadas'} manteniendo el 100% de su resolución original?`,
+      'Comprimir seleccionados (100% Resolución)',
+      `¿Optimizar ${selectedPhotos.length} foto(s) y ${selectedVideos.length} video(s) manteniendo el 100% de su resolución?\n\nLas fotos en Verde se omitirán y solo se comprimirán las que estén en Naranja o Rojo.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir',
           onPress: async () => {
+            const ctrl = createProcessController();
             setIsCompressingFolder(true);
             setCompressProgress({
               current: 0,
-              total: selectedPhotos.length,
+              total: totalSel,
               percent: 0,
+              skippedGreenCount: 0,
               savedFormatted: '0 B',
             });
             try {
-              const res = await compressionService.compressFolderPhotos(
-                selectedPhotos,
-                (prog) => setCompressProgress(prog)
-              );
+              let totalSaved = 0;
+              let totalDone = 0;
+              let skippedGreen = 0;
+              if (selectedPhotos.length > 0) {
+                const res = await compressionService.compressFolderPhotos(
+                  selectedPhotos,
+                  (prog) => setCompressProgress(prog),
+                  ctrl
+                );
+                totalSaved += res.totalSavedBytes || 0;
+                totalDone += res.compressedCount || 0;
+                skippedGreen += res.skippedGreenCount || 0;
+              }
+              if (selectedVideos.length > 0 && !ctrl.cancelled) {
+                const resVid = await videoEngineService.compressVideosBatch(selectedVideos, {
+                  presetId: 'balanced',
+                  onProgress: (prog) => setCompressProgress(prog),
+                });
+                totalSaved += resVid.totalSavedBytes || 0;
+                totalDone += resVid.compressedCount || 0;
+              }
               clearSelection();
+              const skippedMsg =
+                skippedGreen > 0
+                  ? `\nOmitidas por estar en Verde: ${skippedGreen}`
+                  : '';
               Alert.alert(
-                '¡Compresión finalizada!',
-                `Se optimizaron ${res.compressedCount || res.processed} de ${selectedPhotos.length} fotos.\n\nEspacio ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+                ctrl.cancelled ? 'Proceso cancelado' : '¡Compresión finalizada!',
+                `Archivos comprimidos al 100% de resolución: ${totalDone} de ${totalSel}${skippedMsg}\n\nEspacio ahorrado: ${compressionService.formatBytes(totalSaved)}.`
               );
               handleRefresh();
             } catch (e) {
@@ -408,6 +552,8 @@ export default function FolderBrowser({
             } finally {
               setIsCompressingFolder(false);
               setCompressProgress(null);
+              processControlRef.current = null;
+              setIsProcessPaused(false);
             }
           },
         },
@@ -839,7 +985,21 @@ export default function FolderBrowser({
                     </TouchableOpacity>
                   )}
 
-                  {viewMode === 'folders' && currentFolderAssets.length > 5 && (
+                  {folderVideos.length > 0 && (
+                    <TouchableOpacity
+                      style={styles.actionToolButton}
+                      onPress={handleCompressVideosFolder}
+                      disabled={isCompressingFolder}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="videocam" size={14} color="#38bdf8" />
+                      <Text style={styles.actionToolButtonText}>
+                        Comprimir videos ({folderVideos.length})
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+
+                  {viewMode === 'folders' && currentFolderAssets.length > 0 && (
                     <TouchableOpacity
                       style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
                       onPress={() => setShowOrganizeConfirmModal(true)}
@@ -847,7 +1007,7 @@ export default function FolderBrowser({
                     >
                       <Ionicons name="calendar" size={14} color={theme.colors.warning} />
                       <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
-                        Organizar por meses (físico)
+                        Organizar por meses (mes actual en raíz)
                       </Text>
                     </TouchableOpacity>
                   )}
@@ -1033,10 +1193,18 @@ export default function FolderBrowser({
       >
         <View style={styles.progressModalBackdrop}>
           <View style={styles.progressModalCard}>
-            <Ionicons name="sparkles" size={36} color="#38bdf8" />
-            <Text style={styles.progressModalTitle}>Comprimiendo fotos...</Text>
+            <Ionicons
+              name={isProcessPaused ? 'pause-circle' : 'sparkles'}
+              size={36}
+              color={isProcessPaused ? theme.colors.warning : '#38bdf8'}
+            />
+            <Text style={styles.progressModalTitle}>
+              {isProcessPaused ? 'Compresión en pausa' : 'Comprimiendo fotos...'}
+            </Text>
             <Text style={styles.progressModalSubtitle}>
-              Manteniendo el 100% de la resolución original sin pérdida
+              {isProcessPaused
+                ? 'Puedes reanudar cuando quieras o cancelar el proceso'
+                : 'Manteniendo el 100% de la resolución original sin pérdida'}
             </Text>
 
             {compressProgress && (
@@ -1045,18 +1213,56 @@ export default function FolderBrowser({
                   <View
                     style={[
                       styles.progressBarFill,
-                      { width: `${Math.round((compressProgress.percent || 0) * 100)}%` },
+                      {
+                        width: `${Math.round((compressProgress.percent || 0) * 100)}%`,
+                        backgroundColor: isProcessPaused ? theme.colors.warning : '#38bdf8',
+                      },
                     ]}
                   />
                 </View>
                 <Text style={styles.progressPercentText}>
                   {compressProgress.current} de {compressProgress.total} fotos ({Math.round((compressProgress.percent || 0) * 100)}%)
+                  {compressProgress.skippedGreenCount > 0
+                    ? ` · ${compressProgress.skippedGreenCount} en verde omitidas`
+                    : ''}
                 </Text>
                 <Text style={styles.progressSavedText}>
                   Espacio ahorrado: {compressProgress.savedFormatted}
                 </Text>
               </View>
             )}
+
+            <View style={styles.processModalBtnRow}>
+              <TouchableOpacity
+                style={[styles.processPauseBtn, isProcessPaused && styles.processResumeBtn]}
+                onPress={() => {
+                  if (!processControlRef.current) return;
+                  if (isProcessPaused) processControlRef.current.resume();
+                  else processControlRef.current.pause();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={isProcessPaused ? 'play' : 'pause'}
+                  size={16}
+                  color={isProcessPaused ? '#ffffff' : theme.colors.warning}
+                />
+                <Text style={[styles.processPauseBtnText, isProcessPaused && { color: '#ffffff' }]}>
+                  {isProcessPaused ? 'Reanudar' : 'Pausar'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.processCancelBtn}
+                onPress={() => {
+                  if (processControlRef.current) processControlRef.current.cancel();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="close-circle-outline" size={16} color={theme.colors.danger} />
+                <Text style={styles.processCancelBtnText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1072,9 +1278,9 @@ export default function FolderBrowser({
         <View style={styles.progressModalBackdrop}>
           <View style={[styles.progressModalCard, { maxWidth: 360 }]}>
             <Ionicons name="calendar" size={40} color={theme.colors.warning} />
-            <Text style={styles.progressModalTitle}>Organizar Cámara por Meses</Text>
+            <Text style={styles.progressModalTitle}>Organizar por Meses (Mes Activo en Raíz)</Text>
             <Text style={styles.progressModalSubtitle}>
-              Esta opción creará físicamente en tu almacenamiento carpetas para cada mes (ej. 2024-05 Mayo) y separará dentro las carpetas Fotos y Videos para descongestionar la cámara.
+              Las fotos y videos del mes actual se quedarán en la carpeta raíz para acceso inmediato. Solo los archivos de meses anteriores se moverán a sus carpetas por mes (ej. 2026-09 Septiembre/Fotos y Videos).
             </Text>
             <View style={{ width: '100%', gap: 10, marginTop: 16 }}>
               <TouchableOpacity
@@ -1106,10 +1312,18 @@ export default function FolderBrowser({
       >
         <View style={styles.progressModalBackdrop}>
           <View style={styles.progressModalCard}>
-            <ActivityIndicator size="large" color={theme.colors.warning} />
-            <Text style={styles.progressModalTitle}>Organizando carpetas físicas...</Text>
+            {isProcessPaused ? (
+              <Ionicons name="pause-circle" size={40} color={theme.colors.warning} />
+            ) : (
+              <ActivityIndicator size="large" color={theme.colors.warning} />
+            )}
+            <Text style={styles.progressModalTitle}>
+              {isProcessPaused ? 'Organización en pausa' : 'Organizando carpetas físicas...'}
+            </Text>
             <Text style={styles.progressModalSubtitle}>
-              Moviendo fotos y videos a sus respectivas carpetas de mes
+              {isProcessPaused
+                ? 'Puedes reanudar cuando quieras o cancelar el proceso'
+                : 'Moviendo fotos y videos a sus respectivas carpetas de mes'}
             </Text>
 
             {organizeProgress && (
@@ -1135,6 +1349,38 @@ export default function FolderBrowser({
                 ) : null}
               </View>
             )}
+
+            <View style={styles.processModalBtnRow}>
+              <TouchableOpacity
+                style={[styles.processPauseBtn, isProcessPaused && styles.processResumeBtn]}
+                onPress={() => {
+                  if (!processControlRef.current) return;
+                  if (isProcessPaused) processControlRef.current.resume();
+                  else processControlRef.current.pause();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={isProcessPaused ? 'play' : 'pause'}
+                  size={16}
+                  color={isProcessPaused ? '#ffffff' : theme.colors.warning}
+                />
+                <Text style={[styles.processPauseBtnText, isProcessPaused && { color: '#ffffff' }]}>
+                  {isProcessPaused ? 'Reanudar' : 'Pausar'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.processCancelBtn}
+                onPress={() => {
+                  if (processControlRef.current) processControlRef.current.cancel();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="close-circle-outline" size={16} color={theme.colors.danger} />
+                <Text style={styles.processCancelBtnText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1833,5 +2079,49 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     fontSize: 13,
     fontWeight: '600',
+  },
+  processModalBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+    marginTop: 18,
+  },
+  processPauseBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.4)',
+  },
+  processResumeBtn: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  processPauseBtnText: {
+    color: theme.colors.warning,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  processCancelBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.4)',
+  },
+  processCancelBtnText: {
+    color: theme.colors.danger,
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

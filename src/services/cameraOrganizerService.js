@@ -6,7 +6,55 @@ const MONTH_NAMES = [
   'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
 ];
 
+/**
+ * Convierte una ruta SAF content:// (ej. primary:DCIM/Camera) a su ruta física file:///storage/emulated/0/...
+ * para permitir crear carpetas y mover archivos por mes sin fallos en Android.
+ */
+function toPhysicalFileUri(uri) {
+  if (!uri || typeof uri !== 'string') return uri;
+  if (uri.startsWith('file://')) {
+    try {
+      return decodeURIComponent(uri);
+    } catch (e) {
+      return uri;
+    }
+  }
+  if (uri.startsWith('content://')) {
+    try {
+      const docMatch = uri.match(/\/document\/([^/?#]+)/i) || uri.match(/\/tree\/([^/?#]+)/i);
+      if (docMatch && docMatch[1]) {
+        const docId = decodeURIComponent(docMatch[1]);
+        if (/^primary:/i.test(docId)) {
+          const rel = docId.replace(/^primary:/i, '').replace(/^\/+/, '');
+          return `file:///storage/emulated/0/${rel}`;
+        }
+        const sdMatch = docId.match(/^([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}):(.+)$/);
+        if (sdMatch) {
+          return `file:///storage/${sdMatch[1]}/${sdMatch[2].replace(/^\/+/, '')}`;
+        }
+      }
+    } catch (e) {
+      // continuar
+    }
+  }
+  return uri;
+}
+
 export const cameraOrganizerService = {
+  /**
+   * Devuelve la clave del mes activo actual (ej. "2026-10") y su nombre legible (ej. "2026-10 Octubre")
+   */
+  getCurrentMonthInfo() {
+    const now = new Date();
+    const year = String(now.getFullYear());
+    const monthIndex = now.getMonth();
+    const monthPadded = String(monthIndex + 1).padStart(2, '0');
+    const monthName = MONTH_NAMES[monthIndex];
+    return {
+      key: `${year}-${monthPadded}`,
+      folderName: `${year}-${monthPadded} ${monthName}`,
+    };
+  },
   /**
    * Determina el año y mes de un archivo a partir de su nombre o fecha de creación.
    */
@@ -96,33 +144,37 @@ export const cameraOrganizerService = {
   },
 
   /**
-   * Crea FÍSICAMENTE en el almacenamiento las carpetas por mes con separación
-   * de fotos y videos, y mueve físicamente los archivos para descongestionar la cámara.
+   * Crea FÍSICAMENTE en el almacenamiento las carpetas por mes para los meses anteriores,
+   * dejando todas las fotos y videos del MES ACTIVO en la carpeta raíz.
    */
   async physicallyOrganizeFolder({
     targetDirUri,
     assets = [],
+    keepActiveMonthInRoot = true,
     onProgress,
+    control,
   }) {
     if (!targetDirUri) throw new Error('Ruta de carpeta no válida');
 
-    const cleanBaseUri = targetDirUri.endsWith('/')
-      ? targetDirUri.slice(0, -1)
-      : targetDirUri;
+    const physicalBase = toPhysicalFileUri(targetDirUri);
+    const cleanBaseUri = physicalBase.endsWith('/')
+      ? physicalBase.slice(0, -1)
+      : physicalBase;
 
     // Solo organizamos archivos directos (sin meterse en subcarpetas ya creadas)
     const filesToOrganize = assets.filter((a) => !a.isDirectory);
     const total = filesToOrganize.length;
 
     if (total === 0) {
-      return { success: true, moved: 0, monthsCreated: 0 };
+      return { success: true, moved: 0, keptInRoot: 0, monthsCreated: 0 };
     }
 
     // Completar fecha de modificación real del archivo cuando el nombre no contenga fecha
     for (const item of filesToOrganize) {
       if (!item.creationTime && cameraOrganizerService.getFileDate(item).key === 'Varios' && item.uri) {
+        const physItemUri = toPhysicalFileUri(item.uri);
         try {
-          const info = await FileSystem.getInfoAsync(item.uri);
+          const info = await FileSystem.getInfoAsync(physItemUri);
           if (info && info.modificationTime) {
             item.creationTime = info.modificationTime > 1e11 ? info.modificationTime : info.modificationTime * 1000;
           }
@@ -132,8 +184,35 @@ export const cameraOrganizerService = {
       }
     }
 
-    const groups = cameraOrganizerService.groupAssetsByMonth(filesToOrganize);
+    const currentMonth = cameraOrganizerService.getCurrentMonthInfo();
+    const allGroups = cameraOrganizerService.groupAssetsByMonth(filesToOrganize);
+    const groups = {};
+    let keptInRoot = 0;
+
+    for (const [monthFolderName, grp] of Object.entries(allGroups)) {
+      if (keepActiveMonthInRoot && grp.key === currentMonth.key) {
+        // Las fotos y videos del mes activo se quedan en la carpeta raíz
+        keptInRoot += grp.all.length;
+      } else {
+        groups[monthFolderName] = grp;
+      }
+    }
+
     const monthFolderNames = Object.keys(groups);
+    const totalToMove = filesToOrganize.length - keptInRoot;
+
+    if (totalToMove <= 0) {
+      return {
+        success: true,
+        moved: 0,
+        keptInRoot,
+        total,
+        monthsCreated: 0,
+        monthFolderNames: [],
+        activeMonthName: currentMonth.folderName,
+        errorsCount: 0,
+      };
+    }
 
     let moved = 0;
     const errors = [];
@@ -148,10 +227,18 @@ export const cameraOrganizerService = {
       // Crear carpetas físicas si tienen archivos
       try {
         if (group.photos.length > 0) {
-          await FileSystem.makeDirectoryAsync(photosDirPath, { intermediates: true });
+          try {
+            await FileSystem.makeDirectoryAsync(photosDirPath, { intermediates: true });
+          } catch (e1) {
+            new Directory(photosDirPath).create({ intermediates: true, idempotent: true });
+          }
         }
         if (group.videos.length > 0) {
-          await FileSystem.makeDirectoryAsync(videosDirPath, { intermediates: true });
+          try {
+            await FileSystem.makeDirectoryAsync(videosDirPath, { intermediates: true });
+          } catch (e1) {
+            new Directory(videosDirPath).create({ intermediates: true, idempotent: true });
+          }
         }
       } catch (errDir) {
         console.warn('Error al crear directorio físico:', errDir);
@@ -159,14 +246,30 @@ export const cameraOrganizerService = {
 
       // Mover fotos físicamente a su carpeta de mes
       for (const photo of group.photos) {
+        if (control?.waitIfPaused) await control.waitIfPaused();
+        if (control?.isCancelled) {
+          return {
+            success: true,
+            cancelled: true,
+            moved,
+            keptInRoot,
+            total,
+            monthsCreated: monthFolderNames.length,
+            monthFolderNames,
+            activeMonthName: currentMonth.folderName,
+            errorsCount: errors.length,
+          };
+        }
         const filename = photo.filename || `foto_${Date.now()}.jpg`;
         const dest = `${photosDirPath}/${filename}`;
+        const srcPhys = toPhysicalFileUri(photo.uri);
         try {
-          if (photo.uri !== dest) {
-            await FileSystem.moveAsync({
-              from: photo.uri,
-              to: dest,
-            });
+          if (srcPhys !== dest) {
+            try {
+              await FileSystem.moveAsync({ from: srcPhys, to: dest });
+            } catch (moveErr1) {
+              await new File(srcPhys).move(new File(dest));
+            }
             photo.uri = dest;
           }
           moved++;
@@ -177,8 +280,8 @@ export const cameraOrganizerService = {
         if (onProgress) {
           onProgress({
             current: moved,
-            total,
-            percent: moved / total,
+            total: totalToMove,
+            percent: totalToMove > 0 ? moved / totalToMove : 1,
             currentFile: filename,
             currentMonth: monthName,
           });
@@ -187,14 +290,30 @@ export const cameraOrganizerService = {
 
       // Mover videos físicamente a su carpeta de mes
       for (const video of group.videos) {
+        if (control?.waitIfPaused) await control.waitIfPaused();
+        if (control?.isCancelled) {
+          return {
+            success: true,
+            cancelled: true,
+            moved,
+            keptInRoot,
+            total,
+            monthsCreated: monthFolderNames.length,
+            monthFolderNames,
+            activeMonthName: currentMonth.folderName,
+            errorsCount: errors.length,
+          };
+        }
         const filename = video.filename || `video_${Date.now()}.mp4`;
         const dest = `${videosDirPath}/${filename}`;
+        const srcPhys = toPhysicalFileUri(video.uri);
         try {
-          if (video.uri !== dest) {
-            await FileSystem.moveAsync({
-              from: video.uri,
-              to: dest,
-            });
+          if (srcPhys !== dest) {
+            try {
+              await FileSystem.moveAsync({ from: srcPhys, to: dest });
+            } catch (moveErr1) {
+              await new File(srcPhys).move(new File(dest));
+            }
             video.uri = dest;
           }
           moved++;
@@ -205,8 +324,8 @@ export const cameraOrganizerService = {
         if (onProgress) {
           onProgress({
             current: moved,
-            total,
-            percent: moved / total,
+            total: totalToMove,
+            percent: totalToMove > 0 ? moved / totalToMove : 1,
             currentFile: filename,
             currentMonth: monthName,
           });
@@ -217,9 +336,11 @@ export const cameraOrganizerService = {
     return {
       success: true,
       moved,
+      keptInRoot,
       total,
       monthsCreated: monthFolderNames.length,
       monthFolderNames,
+      activeMonthName: currentMonth.folderName,
       errorsCount: errors.length,
     };
   },

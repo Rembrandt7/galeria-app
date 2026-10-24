@@ -1,3 +1,4 @@
+import { NativeModules } from 'react-native';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { File, Paths } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -217,6 +218,17 @@ async function overwriteOriginalFile(sourceTempUri, targetUri, expectedSize = 0,
   const physicalCandidates = getCandidateFileUris(targetUri).filter((u) => u.startsWith('file://'));
 
   for (const candidate of physicalCandidates) {
+    // Intento 0 (Nativo Kotlin directo): FileOutputStream(destFile, false) + channel.truncate(0) + MediaScanner
+    if (NativeModules?.VideoEngineModule?.overwriteFileNative) {
+      try {
+        await NativeModules.VideoEngineModule.overwriteFileNative(sourceTempUri, candidate);
+        const verifyDiskSize = await readRawSizeFromUri(candidate);
+        if (isSizeVerified(verifyDiskSize)) return true;
+      } catch (eNative) {
+        // continuar con siguiente método
+      }
+    }
+
     // Intento 1A: FileHandle en modo 'wt' (RandomAccessFile + channel.truncate(0) + writeBytes)
     try {
       const bytes = await getBytes();
@@ -278,6 +290,15 @@ async function overwriteOriginalFile(sourceTempUri, targetUri, expectedSize = 0,
 
   // 2. Si es ruta content:// (SAF o MediaProvider)
   if (targetUri.startsWith('content://')) {
+    if (NativeModules?.VideoEngineModule?.overwriteFileNative) {
+      try {
+        await NativeModules.VideoEngineModule.overwriteFileNative(sourceTempUri, targetUri);
+        return true;
+      } catch (eNativeSaf) {
+        // continuar
+      }
+    }
+
     // Intento 2A: FileHandle en modo 'wt' (usa contentResolver.openFileDescriptor(uri, "wt") que fuerza MODE_TRUNCATE en SAF)
     try {
       const bytes = await getBytes();
@@ -498,6 +519,21 @@ export const compressionService = {
     }
 
     let oldSize = await compressionService.getFileSize(asset, { forceFresh: true });
+
+    // Si la imagen ya está en Verde (<= 2 MB, nivel 'light'), omitir sin comprimir
+    if (oldSize > 0 && compressionService.getSizeLevel(oldSize).level === 'light') {
+      asset.fileSize = oldSize;
+      return {
+        success: true,
+        skippedGreen: true,
+        alreadyOptimized: true,
+        uri: asset.uri,
+        oldSize,
+        newSize: oldSize,
+        savedBytes: 0,
+      };
+    }
+
     let tempInputFile = null;
     let workUri = uri;
 
@@ -507,6 +543,19 @@ export const compressionService = {
       workUri = tempInputFile.uri;
       if (!oldSize || oldSize <= 0) {
         oldSize = await compressionService.getFileSize(workUri, { forceFresh: true });
+      }
+      if (oldSize > 0 && compressionService.getSizeLevel(oldSize).level === 'light') {
+        FileSystem.deleteAsync(tempInputFile.uri, { idempotent: true }).catch(() => {});
+        asset.fileSize = oldSize;
+        return {
+          success: true,
+          skippedGreen: true,
+          alreadyOptimized: true,
+          uri: asset.uri,
+          oldSize,
+          newSize: oldSize,
+          savedBytes: 0,
+        };
       }
     }
 
@@ -667,23 +716,57 @@ export const compressionService = {
 
   /**
    * Comprime todas las fotos de una carpeta o lista en lote sin perder resolución.
+   * Omite automáticamente las fotos que ya están en Verde (<= 2 MB) y solo comprime Naranja o Rojo.
+   * Soporta pausa y cancelación mediante `control`.
    */
-  async compressFolderPhotos(assets = [], onProgress) {
+  async compressFolderPhotos(assets = [], onProgress, control) {
     const photoAssets = assets.filter((a) => a && a.mediaType === 'photo');
     const total = photoAssets.length;
-    if (total === 0) return { processed: 0, compressedCount: 0, totalSavedBytes: 0, errorsCount: 0 };
+    if (total === 0) {
+      return {
+        processed: 0,
+        compressedCount: 0,
+        skippedGreenCount: 0,
+        totalSavedBytes: 0,
+        errorsCount: 0,
+        cancelled: false,
+      };
+    }
 
     let processed = 0;
     let compressedCount = 0;
+    let skippedGreenCount = 0;
     let errorsCount = 0;
     let totalSavedBytes = 0;
 
     for (const photo of photoAssets) {
+      if (control?.waitIfPaused) {
+        await control.waitIfPaused();
+      }
+      if (control?.isCancelled) {
+        return {
+          processed,
+          compressedCount,
+          skippedGreenCount,
+          totalSavedBytes,
+          errorsCount,
+          cancelled: true,
+        };
+      }
+
       try {
-        const res = await compressionService.compressPhoto(photo);
-        if (res && res.success) {
-          compressedCount++;
-          totalSavedBytes += res.savedBytes || 0;
+        // Revisar peso antes de comprimir: si está en Verde ('light'), omitir
+        const currentSize = await compressionService.getFileSize(photo, { forceFresh: true });
+        if (currentSize > 0 && compressionService.getSizeLevel(currentSize).level === 'light') {
+          skippedGreenCount++;
+        } else {
+          const res = await compressionService.compressPhoto(photo);
+          if (res?.skippedGreen) {
+            skippedGreenCount++;
+          } else if (res && res.success) {
+            compressedCount++;
+            totalSavedBytes += res.savedBytes || 0;
+          }
         }
       } catch (e) {
         errorsCount++;
@@ -695,6 +778,7 @@ export const compressionService = {
           current: processed,
           total,
           compressedCount,
+          skippedGreenCount,
           errorsCount,
           percent: processed / total,
           savedBytes: totalSavedBytes,
@@ -703,6 +787,13 @@ export const compressionService = {
       }
     }
 
-    return { processed, compressedCount, totalSavedBytes, errorsCount };
+    return {
+      processed,
+      compressedCount,
+      skippedGreenCount,
+      totalSavedBytes,
+      errorsCount,
+      cancelled: Boolean(control?.isCancelled),
+    };
   },
 };

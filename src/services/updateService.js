@@ -6,8 +6,8 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.1.5';
-export const CURRENT_BUILD_NUMBER = 23;
+export const CURRENT_VERSION = 'v1.1.6';
+export const CURRENT_BUILD_NUMBER = 24;
 
 export const updateService = {
   /**
