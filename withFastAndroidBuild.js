@@ -22,6 +22,7 @@ class VideoEnginePackage : ReactPackage {
 
 const VIDEO_ENGINE_MODULE_KT = `package com.rembrant.galeriaapp
 
+import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -315,16 +316,27 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         executor.execute {
             val retriever = MediaMetadataRetriever()
             try {
-                val path = cleanFilePath(sourcePath)
-                val file = File(path)
-                retriever.setDataSource(path)
+                var sizeBytes = 0L
+                if (sourcePath.startsWith("content://")) {
+                    val uri = Uri.parse(sourcePath)
+                    retriever.setDataSource(reactContext, uri)
+                    try {
+                        reactContext.contentResolver.openAssetFileDescriptor(uri, "r")?.use { afd ->
+                            if (afd.length > 0L) sizeBytes = afd.length
+                        }
+                    } catch (_: Exception) {}
+                } else {
+                    val path = cleanFilePath(sourcePath)
+                    val file = File(path)
+                    retriever.setDataSource(path)
+                    if (file.exists()) sizeBytes = file.length()
+                }
 
                 val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
                 val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
                 val rotation = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
                 val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
                 val bitrate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_BITRATE)?.toLongOrNull() ?: 0L
-                val sizeBytes = if (file.exists()) file.length() else 0L
 
                 val map = Arguments.createMap().apply {
                     putInt("width", width)
@@ -337,6 +349,89 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 promise.resolve(map)
             } catch (e: Exception) {
                 promise.reject("METADATA_ERROR", e.message ?: "No se pudo leer metadatos del video", e)
+            } finally {
+                try {
+                    retriever.release()
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    @ReactMethod
+    fun extractFilmstripNative(sourcePath: String, count: Int, promise: Promise) {
+        executor.execute {
+            val retriever = MediaMetadataRetriever()
+            try {
+                if (sourcePath.startsWith("content://")) {
+                    retriever.setDataSource(reactContext, Uri.parse(sourcePath))
+                } else {
+                    retriever.setDataSource(cleanFilePath(sourcePath))
+                }
+                val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                val safeCount = count.coerceIn(4, 10)
+                val outArray = Arguments.createArray()
+                if (durationMs <= 100L) {
+                    promise.resolve(outArray)
+                    return@execute
+                }
+                val cacheDir = File(reactContext.cacheDir, "filmstrip_thumbs")
+                if (!cacheDir.exists()) cacheDir.mkdirs()
+                val batchPrefix = "fs_" + System.currentTimeMillis() + "_"
+
+                for (i in 0 until safeCount) {
+                    val timeUs = (((i + 0.5) / safeCount.toDouble()) * durationMs.toDouble() * 1000.0).toLong()
+                    val bmp = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    if (bmp != null) {
+                        val targetH = 110
+                        val ratio = bmp.width.toFloat() / bmp.height.coerceAtLeast(1).toFloat()
+                        val targetW = (targetH * ratio).toInt().coerceIn(60, 220)
+                        val scaled = Bitmap.createScaledBitmap(bmp, targetW, targetH, true)
+                        if (scaled != bmp) bmp.recycle()
+                        val thumbFile = File(cacheDir, batchPrefix + i + ".jpg")
+                        FileOutputStream(thumbFile, false).use { out ->
+                            scaled.compress(Bitmap.CompressFormat.JPEG, 70, out)
+                            out.flush()
+                        }
+                        scaled.recycle()
+                        outArray.pushString("file://" + thumbFile.absolutePath)
+                    }
+                }
+                promise.resolve(outArray)
+            } catch (e: Exception) {
+                promise.resolve(Arguments.createArray())
+            } finally {
+                try {
+                    retriever.release()
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    @ReactMethod
+    fun captureFrameNative(sourcePath: String, timeMs: Double, destPath: String, promise: Promise) {
+        executor.execute {
+            val retriever = MediaMetadataRetriever()
+            try {
+                if (sourcePath.startsWith("content://")) {
+                    retriever.setDataSource(reactContext, Uri.parse(sourcePath))
+                } else {
+                    retriever.setDataSource(cleanFilePath(sourcePath))
+                }
+                val timeUs = (timeMs.coerceAtLeast(0.0) * 1000.0).toLong()
+                val bmp = retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST)
+                    ?: retriever.getFrameAtTime(timeUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?: throw IllegalStateException("No se pudo extraer el fotograma seleccionado")
+
+                val destFile = File(cleanFilePath(destPath))
+                destFile.parentFile?.mkdirs()
+                FileOutputStream(destFile, false).use { out ->
+                    bmp.compress(Bitmap.CompressFormat.JPEG, 96, out)
+                    out.flush()
+                }
+                bmp.recycle()
+                promise.resolve("file://" + destFile.absolutePath)
+            } catch (e: Exception) {
+                promise.reject("FRAME_ERROR", e.message ?: "Error al capturar cuadro", e)
             } finally {
                 try {
                     retriever.release()

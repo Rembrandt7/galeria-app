@@ -52,6 +52,8 @@ export default function FullScreenViewer({
   const { width: screenWidth } = useWindowDimensions();
   const [internalIndex, setInternalIndex] = useState(initialIndex);
   const [playerAsset, setPlayerAsset] = useState(null);
+  const [playerInitialMode, setPlayerInitialMode] = useState('play');
+  const [openedDirectlyAsVideo, setOpenedDirectlyAsVideo] = useState(false);
   const [cropAsset, setCropAsset] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
   const [showControls, setShowControls] = useState(true);
@@ -164,6 +166,19 @@ export default function FullScreenViewer({
       setShowInfo(false);
       setShowControls(true);
       translateX.setValue(0);
+
+      const firstItem = assets?.[valid];
+      if (firstItem && firstItem.mediaType === 'video') {
+        setPlayerInitialMode('play');
+        setPlayerAsset(firstItem);
+        setOpenedDirectlyAsVideo(true);
+      } else {
+        setPlayerAsset(null);
+        setOpenedDirectlyAsVideo(false);
+      }
+    } else {
+      setPlayerAsset(null);
+      setOpenedDirectlyAsVideo(false);
     }
   }, [visible, initialIndex]);
 
@@ -558,58 +573,65 @@ export default function FullScreenViewer({
                 ) : null}
               </View>
 
-              {/* Botón Comprimir sin perder resolución (desactivado cuando está en Verde) */}
-              {!isVideo && (
-                <TouchableOpacity
-                  style={[
-                    styles.compressBtn,
-                    isGreenSize
-                      ? styles.compressBtnDisabled
-                      : sizeInfo.isHeavy
-                      ? styles.compressBtnHeavy
-                      : { borderColor: sizeInfo.color },
-                  ]}
-                  onPress={handleCompressCurrentPhoto}
-                  disabled={isCompressing || isGreenSize}
-                  activeOpacity={0.75}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  {isCompressing ? (
-                    <ActivityIndicator
-                      size="small"
-                      color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
+              {/* Botón Comprimir sin perder resolución (desactivado cuando está en Verde en fotos; abre compresor en videos) */}
+              <TouchableOpacity
+                style={[
+                  styles.compressBtn,
+                  !isVideo && isGreenSize
+                    ? styles.compressBtnDisabled
+                    : sizeInfo.isHeavy
+                    ? styles.compressBtnHeavy
+                    : { borderColor: sizeInfo.color },
+                ]}
+                onPress={() => {
+                  if (isVideo) {
+                    setOpenedDirectlyAsVideo(false);
+                    setPlayerInitialMode('compress');
+                    setPlayerAsset(currentAsset);
+                  } else {
+                    handleCompressCurrentPhoto();
+                  }
+                }}
+                disabled={!isVideo && (isCompressing || isGreenSize)}
+                activeOpacity={0.75}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                {isCompressing ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
+                  />
+                ) : (
+                  <>
+                    <Ionicons
+                      name={!isVideo && isGreenSize ? 'checkmark-circle-outline' : 'sparkles'}
+                      size={14}
+                      color={
+                        !isVideo && isGreenSize
+                          ? theme.colors.textMuted
+                          : sizeInfo.isHeavy
+                          ? '#ffffff'
+                          : sizeInfo.color
+                      }
                     />
-                  ) : (
-                    <>
-                      <Ionicons
-                        name={isGreenSize ? 'checkmark-circle-outline' : 'sparkles'}
-                        size={14}
-                        color={
-                          isGreenSize
-                            ? theme.colors.textMuted
-                            : sizeInfo.isHeavy
-                            ? '#ffffff'
-                            : sizeInfo.color
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.compressBtnText,
-                          {
-                            color: isGreenSize
+                    <Text
+                      style={[
+                        styles.compressBtnText,
+                        {
+                          color:
+                            !isVideo && isGreenSize
                               ? theme.colors.textMuted
                               : sizeInfo.isHeavy
                               ? '#ffffff'
                               : sizeInfo.color,
-                          },
-                        ]}
-                      >
-                        {isGreenSize ? 'Omitido (Verde)' : 'Comprimir'}
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              )}
+                        },
+                      ]}
+                    >
+                      {!isVideo && isGreenSize ? 'Omitido (Verde)' : 'Comprimir'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -658,7 +680,11 @@ export default function FullScreenViewer({
                   <TouchableOpacity
                     style={styles.centerVideoOverlay}
                     activeOpacity={0.8}
-                    onPress={() => setPlayerAsset(currentAsset)}
+                    onPress={() => {
+                      setOpenedDirectlyAsVideo(false);
+                      setPlayerInitialMode('play');
+                      setPlayerAsset(currentAsset);
+                    }}
                   >
                     <Ionicons name="play-circle" size={72} color="rgba(255,255,255,0.9)" />
                   </TouchableOpacity>
@@ -771,38 +797,44 @@ export default function FullScreenViewer({
               </Text>
             </TouchableOpacity>
 
-            {/* Comprimir foto sin perder resolución (desactivado si está en Verde) */}
-            {!isVideo && (
-              <TouchableOpacity
-                style={[styles.actionItem, isGreenSize && { opacity: 0.38 }]}
-                onPress={handleCompressCurrentPhoto}
-                disabled={isCompressing || isGreenSize}
-                activeOpacity={0.7}
-              >
-                {isCompressing ? (
-                  <ActivityIndicator size="small" color="#38bdf8" />
-                ) : (
-                  <>
-                    <Ionicons
-                      name="sparkles-outline"
-                      size={24}
-                      color={isGreenSize ? theme.colors.textMuted : '#38bdf8'}
-                    />
-                    <Text
-                      style={[
-                        styles.actionLabel,
-                        { color: isGreenSize ? theme.colors.textMuted : '#38bdf8' },
-                      ]}
-                    >
-                      Comprimir
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            )}
+            {/* Comprimir foto o video sin perder resolución (en fotos desactivado si está en Verde) */}
+            <TouchableOpacity
+              style={[styles.actionItem, !isVideo && isGreenSize && { opacity: 0.38 }]}
+              onPress={() => {
+                if (isVideo) {
+                  setOpenedDirectlyAsVideo(false);
+                  setPlayerInitialMode('compress');
+                  setPlayerAsset(currentAsset);
+                } else {
+                  handleCompressCurrentPhoto();
+                }
+              }}
+              disabled={!isVideo && (isCompressing || isGreenSize)}
+              activeOpacity={0.7}
+            >
+              {isCompressing ? (
+                <ActivityIndicator size="small" color="#38bdf8" />
+              ) : (
+                <>
+                  <Ionicons
+                    name="sparkles-outline"
+                    size={24}
+                    color={!isVideo && isGreenSize ? theme.colors.textMuted : '#38bdf8'}
+                  />
+                  <Text
+                    style={[
+                      styles.actionLabel,
+                      { color: !isVideo && isGreenSize ? theme.colors.textMuted : '#38bdf8' },
+                    ]}
+                  >
+                    Comprimir
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
 
-            {/* Girar 90° rápido (solo fotos) */}
-            {!isVideo && (
+            {/* Girar 90° rápido (solo fotos) o Recortar (en videos) */}
+            {!isVideo ? (
               <TouchableOpacity
                 style={styles.actionItem}
                 onPress={handleQuickRotate}
@@ -818,14 +850,33 @@ export default function FullScreenViewer({
                   </>
                 )}
               </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => {
+                  setOpenedDirectlyAsVideo(false);
+                  setPlayerInitialMode('trim');
+                  setPlayerAsset(currentAsset);
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="cut-outline" size={24} color="#f59e0b" />
+                <Text style={[styles.actionLabel, { color: '#f59e0b' }]}>Recortar</Text>
+              </TouchableOpacity>
             )}
 
-            {/* Recortar / Reproducir */}
+            {/* Recortar (foto) / Reproducir (video) */}
             <TouchableOpacity
               style={styles.actionItem}
-              onPress={() =>
-                isVideo ? setPlayerAsset(currentAsset) : setCropAsset(currentAsset)
-              }
+              onPress={() => {
+                if (isVideo) {
+                  setOpenedDirectlyAsVideo(false);
+                  setPlayerInitialMode('play');
+                  setPlayerAsset(currentAsset);
+                } else {
+                  setCropAsset(currentAsset);
+                }
+              }}
               activeOpacity={0.7}
             >
               <Ionicons
@@ -852,8 +903,37 @@ export default function FullScreenViewer({
         {playerAsset && (
           <VideoPlayerScreen
             asset={playerAsset}
-            onClose={() => setPlayerAsset(null)}
+            initialMode={playerInitialMode}
+            onClose={() => {
+              setPlayerAsset(null);
+              if (openedDirectlyAsVideo && onClose) {
+                setOpenedDirectlyAsVideo(false);
+                onClose();
+              }
+            }}
             onSaved={onMediaSaved}
+            onShare={onShare ? () => onShare(playerAsset) : undefined}
+            onDelete={
+              onDelete
+                ? () => {
+                    Alert.alert(
+                      '¿Eliminar video?',
+                      'Esta acción solicitará permiso al sistema para eliminar este video de tu teléfono.',
+                      [
+                        { text: 'Cancelar', style: 'cancel' },
+                        {
+                          text: 'Eliminar',
+                          style: 'destructive',
+                          onPress: () => {
+                            setPlayerAsset(null);
+                            onDelete(playerAsset);
+                          },
+                        },
+                      ]
+                    );
+                  }
+                : undefined
+            }
           />
         )}
         {cropAsset && (

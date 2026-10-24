@@ -43,10 +43,27 @@ export const VIDEO_QUALITY_PRESETS = [
   },
 ];
 
+function normalizeFileUri(uri) {
+  if (!uri || typeof uri !== 'string') return uri;
+  if (!uri.startsWith('file://')) return uri;
+  const rawPath = uri.replace(/^file:\/+/i, '');
+  const segments = rawPath
+    .split('/')
+    .filter(Boolean)
+    .map((seg) => {
+      try {
+        return encodeURIComponent(decodeURIComponent(seg));
+      } catch (_e) {
+        return encodeURIComponent(seg);
+      }
+    });
+  return `file:///${segments.join('/')}`;
+}
+
 function extractPhysicalFilePath(uri) {
   if (!uri || typeof uri !== 'string') return null;
-  if (uri.startsWith('file://')) return uri;
-  if (uri.startsWith('/')) return `file://${uri}`;
+  if (uri.startsWith('file://')) return normalizeFileUri(uri);
+  if (uri.startsWith('/')) return normalizeFileUri(`file://${uri}`);
   if (uri.startsWith('content://')) {
     try {
       const docMatch = uri.match(/\/document\/([^/?#]+)/i);
@@ -54,11 +71,11 @@ function extractPhysicalFilePath(uri) {
         const docId = decodeURIComponent(docMatch[1]);
         if (/^primary:/i.test(docId)) {
           const relPath = docId.replace(/^primary:/i, '').replace(/^\/+/, '');
-          return `file:///storage/emulated/0/${relPath}`;
+          return normalizeFileUri(`file:///storage/emulated/0/${relPath}`);
         }
         const sdMatch = docId.match(/^([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}):(.+)$/);
         if (sdMatch) {
-          return `file:///storage/${sdMatch[1]}/${sdMatch[2].replace(/^\/+/, '')}`;
+          return normalizeFileUri(`file:///storage/${sdMatch[1]}/${sdMatch[2].replace(/^\/+/, '')}`);
         }
       }
     } catch (e) {
@@ -115,9 +132,47 @@ export const videoEngineService = {
     return VIDEO_QUALITY_PRESETS.find((p) => p.id === id) || VIDEO_QUALITY_PRESETS[1];
   },
 
+  /**
+   * Obtiene el URI óptimo y más rápido para reproducir el video en ExoPlayer sin tirones ni bloqueos SAF
+   */
+  getPlayableVideoUri(asset) {
+    if (!asset?.uri) return null;
+    const rawUri = asset.uri;
+    if (rawUri.startsWith('file://')) {
+      return normalizeFileUri(rawUri);
+    }
+    // Si es un URI SAF (content://.../document/primary:...), preferir la ruta física file:// para lectura directa de kernel
+    if (rawUri.startsWith('content://') && rawUri.includes('/document/')) {
+      const phys = extractPhysicalFilePath(rawUri);
+      if (phys) {
+        try {
+          if (new File(phys).exists) {
+            return phys;
+          }
+        } catch (_e) {
+          // usar rawUri
+        }
+      }
+    }
+    return rawUri;
+  },
+
+  /**
+   * Respaldo automático si un URI SAF o especial falla al abrirse en ExoPlayer: prepara copia temporal limpia
+   */
+  async preparePlayableFallbackUri(asset) {
+    if (!asset?.uri) return null;
+    try {
+      const res = await resolveVideoInputFile(asset.uri);
+      return res?.path || null;
+    } catch (_e) {
+      return null;
+    }
+  },
+
   async getVideoMetadata(asset) {
     if (!asset?.uri) return null;
-    const diskSize = await compressionService.getFileSize(asset, { forceFresh: true });
+    const diskSize = await compressionService.getFileSize(asset, { forceFresh: false });
     let meta = {
       width: asset.width || 0,
       height: asset.height || 0,
@@ -128,10 +183,9 @@ export const videoEngineService = {
     };
 
     if (VideoEngineModule?.getVideoMetadata) {
-      let inputObj = null;
       try {
-        inputObj = await resolveVideoInputFile(asset.uri);
-        const nativeMeta = await VideoEngineModule.getVideoMetadata(inputObj.path);
+        const directTarget = extractPhysicalFilePath(asset.uri) || asset.uri;
+        const nativeMeta = await VideoEngineModule.getVideoMetadata(directTarget);
         if (nativeMeta) {
           meta = {
             width: nativeMeta.width || meta.width,
@@ -139,18 +193,32 @@ export const videoEngineService = {
             rotation: nativeMeta.rotation || 0,
             durationMs: nativeMeta.durationMs || meta.durationMs,
             bitrate: nativeMeta.bitrate || 0,
-            sizeBytes: diskSize || nativeMeta.sizeBytes || meta.sizeBytes,
+            sizeBytes: nativeMeta.sizeBytes || diskSize || meta.sizeBytes,
           };
         }
       } catch (e) {
-        // usar metadatos base
-      } finally {
-        if (inputObj?.isTemp && inputObj.path) {
+        // Si falló con ruta física, intentar con el URI original (content:// soportado nativamente)
+        if (asset.uri.startsWith('content://')) {
           try {
-            new File(inputObj.path).delete();
-          } catch (_e) {}
+            const nativeMeta = await VideoEngineModule.getVideoMetadata(asset.uri);
+            if (nativeMeta) {
+              meta = {
+                width: nativeMeta.width || meta.width,
+                height: nativeMeta.height || meta.height,
+                rotation: nativeMeta.rotation || 0,
+                durationMs: nativeMeta.durationMs || meta.durationMs,
+                bitrate: nativeMeta.bitrate || 0,
+                sizeBytes: nativeMeta.sizeBytes || diskSize || meta.sizeBytes,
+              };
+            }
+          } catch (_e2) {}
         }
       }
+    }
+
+    if (!meta.sizeBytes) {
+      const freshSize = await compressionService.getFileSize(asset, { forceFresh: true });
+      if (freshSize > 0) meta.sizeBytes = freshSize;
     }
 
     const displayW = meta.rotation === 90 || meta.rotation === 270 ? meta.height : meta.width;
@@ -163,6 +231,42 @@ export const videoEngineService = {
       resolutionBadge: getResolutionBadge(displayW, displayH),
       resolutionText: displayW > 0 && displayH > 0 ? `${displayW}×${displayH}` : '100% Original',
     };
+  },
+
+  /**
+   * Extrae miniaturas para la línea de tiempo usando un hilo nativo independiente sin interrumpir ExoPlayer
+   */
+  async extractFilmstrip(asset, count = 7) {
+    if (!asset?.uri || !VideoEngineModule?.extractFilmstripNative) return [];
+    try {
+      const target = extractPhysicalFilePath(asset.uri) || asset.uri;
+      const thumbs = await VideoEngineModule.extractFilmstripNative(target, count);
+      if (Array.isArray(thumbs) && thumbs.length > 0) return thumbs;
+      if (target !== asset.uri) {
+        const fallbackThumbs = await VideoEngineModule.extractFilmstripNative(asset.uri, count);
+        if (Array.isArray(fallbackThumbs)) return fallbackThumbs;
+      }
+    } catch (_e) {
+      // retornar vacío si falla para mostrar barra limpia
+    }
+    return [];
+  },
+
+  /**
+   * Captura un fotograma en alta definición en el segundo indicado sin trabar el reproductor
+   */
+  async captureFrame(asset, timeSec = 0) {
+    if (!asset?.uri || !VideoEngineModule?.captureFrameNative) return null;
+    const outTemp = new File(Paths.cache, `snap_${Date.now()}.jpg`);
+    const target = extractPhysicalFilePath(asset.uri) || asset.uri;
+    try {
+      return await VideoEngineModule.captureFrameNative(target, Math.max(0, timeSec * 1000), outTemp.uri);
+    } catch (_e) {
+      if (target !== asset.uri) {
+        return await VideoEngineModule.captureFrameNative(asset.uri, Math.max(0, timeSec * 1000), outTemp.uri);
+      }
+      return null;
+    }
   },
 
   /**
