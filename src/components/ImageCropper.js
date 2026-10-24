@@ -17,6 +17,7 @@ import { File, Paths } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
+import { compressionService } from '../services/compressionService';
 import { theme } from '../constants/theme';
 
 const MIN = 40; // tamaño mínimo del recorte (px en pantalla)
@@ -171,7 +172,7 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
     };
   }, [asset?.uri]);
 
-  const handleSave = async () => {
+  const handleSave = async (replaceOriginal = false) => {
     if (!rect || !disp.w || !disp.h) return;
     setBusy(true);
     try {
@@ -213,6 +214,26 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
         } else {
           throw firstErr;
         }
+      }
+
+      if (replaceOriginal) {
+        const replaced = await compressionService.overwriteOriginalFile(out.uri, asset.uri, 0, 0);
+        if (!replaced) {
+          throw new Error(
+            'No se pudo sobrescribir la foto original. Verifica el permiso de Acceso a Todos los Archivos.'
+          );
+        }
+        const newDiskSize = await compressionService.getFileSize(asset.uri, { forceFresh: true });
+        if (newDiskSize > 0) asset.fileSize = newDiskSize;
+        if (out.width && out.height) {
+          asset.width = out.width;
+          asset.height = out.height;
+        }
+        setBusy(false);
+        Alert.alert('¡Foto original actualizada!', 'Se recortó la foto original directamente sin crear duplicados.');
+        if (onSaved) onSaved();
+        onClose();
+        return;
       }
 
       try {
@@ -326,6 +347,38 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
             </TouchableOpacity>
           ))}
         </View>
+
+        <View style={styles.bottomActionsRow}>
+          <TouchableOpacity
+            style={[styles.saveCopyBtn, busy && { opacity: 0.5 }]}
+            onPress={() => handleSave(false)}
+            disabled={busy}
+          >
+            {busy ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="copy-outline" size={18} color="#fff" />
+                <Text style={styles.actionBtnText}>Guardar copia</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.replaceOrigBtn, busy && { opacity: 0.5 }]}
+            onPress={() => handleSave(true)}
+            disabled={busy}
+          >
+            {busy ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="crop" size={18} color="#fff" />
+                <Text style={styles.actionBtnText}>Reemplazar original</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
       </SafeAreaView>
     </View>
   );
@@ -391,4 +444,37 @@ const styles = StyleSheet.create({
   },
   chipActive: { backgroundColor: theme.colors.primary, borderColor: theme.colors.primary },
   chipText: { color: theme.colors.textSecondary, fontWeight: '600' },
+  bottomActionsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 14,
+  },
+  saveCopyBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#1e293b',
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  replaceOrigBtn: {
+    flex: 1.25,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.primary,
+    paddingVertical: 12,
+    borderRadius: 10,
+  },
+  actionBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
 });

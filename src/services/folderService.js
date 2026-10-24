@@ -1,6 +1,6 @@
 import { Directory, File } from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform, Linking, Alert } from 'react-native';
+import { Platform, Linking, Alert, NativeModules } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as LegacyFS from 'expo-file-system/legacy';
 
@@ -390,6 +390,88 @@ export const folderService = {
     await walk(uri, 0);
     out.sort(byFilenameDesc);
     return out;
+  },
+
+  toPhysicalUri(uri) {
+    if (!uri || typeof uri !== 'string') return '';
+    if (uri.startsWith('file://')) return uri.replace(/\/+$/, '');
+    if (uri.startsWith('/')) return `file://${uri.replace(/\/+$/, '')}`;
+    if (uri.startsWith('content://')) {
+      try {
+        const docMatch = uri.match(/\/document\/([^/?#]+)/i);
+        const treeMatch = uri.match(/\/tree\/([^/?#]+)/i);
+        const rawId = (docMatch && docMatch[1]) || (treeMatch && treeMatch[1]);
+        if (rawId) {
+          const decoded = decodeURIComponent(rawId);
+          if (/^primary:/i.test(decoded)) {
+            const rel = decoded.replace(/^primary:/i, '').replace(/^\/+|\/+$/g, '');
+            return rel ? `file:///storage/emulated/0/${rel}` : 'file:///storage/emulated/0';
+          }
+          const sdMatch = decoded.match(/^([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}):(.*)$/);
+          if (sdMatch) {
+            const vol = sdMatch[1];
+            const rel = sdMatch[2].replace(/^\/+|\/+$/g, '');
+            return rel ? `file:///storage/${vol}/${rel}` : `file:///storage/${vol}`;
+          }
+        }
+      } catch (_e) {}
+    }
+    return uri.replace(/\/+$/, '');
+  },
+
+  async createSubfolder(parentDirUri, subName) {
+    const cleanName = (subName || '').trim().replace(/[\\/:*?"<>|]/g, '_');
+    if (!cleanName) throw new Error('Ingresa un nombre válido para la carpeta.');
+    const basePhys = folderService.toPhysicalUri(parentDirUri);
+    if (NativeModules?.VideoEngineModule?.ensureSubfolderNative) {
+      return await NativeModules.VideoEngineModule.ensureSubfolderNative(basePhys, cleanName);
+    }
+    const targetUri = `${basePhys}/${cleanName}`;
+    try {
+      await LegacyFS.makeDirectoryAsync(targetUri, { intermediates: true });
+    } catch (_e) {
+      new Directory(targetUri).create({ intermediates: true, idempotent: true });
+    }
+    return targetUri;
+  },
+
+  async moveAssetsToFolder(assets, targetDirUri, relativeSubfolder = '') {
+    if (!assets || assets.length === 0) return { moved: 0, total: 0 };
+    const basePhys = folderService.toPhysicalUri(targetDirUri);
+    const sub = (relativeSubfolder || '').trim();
+    const finalDirPhys = sub ? `${basePhys}/${sub}` : basePhys;
+
+    let moved = 0;
+    for (const item of assets) {
+      if (!item?.uri) continue;
+      const fileName = item.filename || nameFromUri(item.uri) || `media_${Date.now()}.jpg`;
+      try {
+        if (NativeModules?.VideoEngineModule?.moveFileToSubfolderNative) {
+          await NativeModules.VideoEngineModule.moveFileToSubfolderNative(
+            item.uri,
+            basePhys,
+            sub,
+            fileName
+          );
+          moved++;
+        } else {
+          const srcPhys = folderService.toPhysicalUri(item.uri);
+          const destUri = `${finalDirPhys}/${fileName}`;
+          try {
+            await LegacyFS.makeDirectoryAsync(finalDirPhys, { intermediates: true });
+          } catch (_e) {}
+          try {
+            await LegacyFS.moveAsync({ from: srcPhys, to: destUri });
+          } catch (_mErr) {
+            await new File(srcPhys).move(new File(destUri));
+          }
+          moved++;
+        }
+      } catch (e) {
+        console.warn('Error moviendo archivo:', fileName, e);
+      }
+    }
+    return { moved, total: assets.length };
   },
 
   async deleteFile(uri) {

@@ -23,7 +23,9 @@ class VideoEnginePackage : ReactPackage {
 const VIDEO_ENGINE_MODULE_KT = `package com.rembrant.galeriaapp
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.SurfaceTexture
+import android.media.ExifInterface
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaExtractor
@@ -436,6 +438,216 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 try {
                     retriever.release()
                 } catch (_: Exception) {}
+            }
+        }
+    }
+
+    @ReactMethod
+    fun applyCloneStampStrokes(sourcePath: String, outputPath: String, strokes: ReadableArray, promise: Promise) {
+        executor.execute {
+            try {
+                val cleanOut = cleanFilePath(outputPath)
+                val destFile = File(cleanOut)
+                destFile.parentFile?.mkdirs()
+
+                var rawBmp: Bitmap? = null
+                var exifOrientation = ExifInterface.ORIENTATION_NORMAL
+
+                if (sourcePath.startsWith("content://")) {
+                    val uri = Uri.parse(sourcePath)
+                    reactContext.contentResolver.openInputStream(uri)?.use { s ->
+                        val exif = ExifInterface(s)
+                        exifOrientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                    }
+                    reactContext.contentResolver.openInputStream(uri)?.use { s ->
+                        rawBmp = BitmapFactory.decodeStream(s)
+                    }
+                } else {
+                    val inPath = cleanFilePath(sourcePath)
+                    try {
+                        val exif = ExifInterface(inPath)
+                        exifOrientation = exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)
+                    } catch (_: Exception) {}
+                    rawBmp = BitmapFactory.decodeFile(inPath)
+                }
+
+                val decoded = rawBmp ?: throw IllegalStateException("No se pudo decodificar la imagen para clonar.")
+                val rotMatrix = android.graphics.Matrix()
+                when (exifOrientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> rotMatrix.postRotate(90f)
+                    ExifInterface.ORIENTATION_ROTATE_180 -> rotMatrix.postRotate(180f)
+                    ExifInterface.ORIENTATION_ROTATE_270 -> rotMatrix.postRotate(270f)
+                }
+
+                val orientedBmp = if (!rotMatrix.isIdentity) {
+                    val r = Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, rotMatrix, true)
+                    if (r != decoded) decoded.recycle()
+                    r
+                } else {
+                    decoded
+                }
+
+                // Limitar lado máximo a 3200px si fuera gigantesca para evitar OOM manteniendo alta definición
+                val maxSide = maxOf(orientedBmp.width, orientedBmp.height)
+                val workingBmp = if (maxSide > 3200) {
+                    val scale = 3200f / maxSide.toFloat()
+                    val sw = (orientedBmp.width * scale).toInt().coerceAtLeast(1)
+                    val sh = (orientedBmp.height * scale).toInt().coerceAtLeast(1)
+                    val scaled = Bitmap.createScaledBitmap(orientedBmp, sw, sh, true)
+                    if (scaled != orientedBmp) orientedBmp.recycle()
+                    scaled.copy(Bitmap.Config.ARGB_8888, true)
+                } else {
+                    val copy = orientedBmp.copy(Bitmap.Config.ARGB_8888, true)
+                    if (copy != orientedBmp) orientedBmp.recycle()
+                    copy
+                }
+
+                val w = workingBmp.width
+                val h = workingBmp.height
+                val currentPixels = IntArray(w * h)
+                workingBmp.getPixels(currentPixels, 0, w, 0, 0, w, h)
+
+                for (sIdx in 0 until strokes.size()) {
+                    val strokeMap = strokes.getMap(sIdx) ?: continue
+                    val mode = if (strokeMap.hasKey("mode")) (strokeMap.getString("mode") ?: "clone") else "clone"
+                    val sourceX = if (strokeMap.hasKey("sourceX")) strokeMap.getDouble("sourceX") else 0.5
+                    val sourceY = if (strokeMap.hasKey("sourceY")) strokeMap.getDouble("sourceY") else 0.5
+                    val startX = if (strokeMap.hasKey("startX")) strokeMap.getDouble("startX") else sourceX
+                    val startY = if (strokeMap.hasKey("startY")) strokeMap.getDouble("startY") else sourceY
+                    val radiusRatio = if (strokeMap.hasKey("radiusRatio")) strokeMap.getDouble("radiusRatio") else 0.045
+                    val feather = if (strokeMap.hasKey("feather")) strokeMap.getDouble("feather") else 0.65
+                    val pointsArr = if (strokeMap.hasKey("points")) strokeMap.getArray("points") else null
+                    if (pointsArr == null || pointsArr.size() == 0) continue
+
+                    val snapshotPixels = currentPixels.clone()
+                    val rPx = (radiusRatio * w.toDouble()).toInt().coerceIn(4, maxOf(w, h) / 3)
+                    val rSq = rPx * rPx
+                    val innerRatio = (1.0 - feather.coerceIn(0.05, 0.95)).toFloat()
+                    val dx = ((sourceX - startX) * w.toDouble()).toInt()
+                    val dy = ((sourceY - startY) * h.toDouble()).toInt()
+
+                    val dabCenters = mutableListOf<Pair<Int, Int>>()
+                    var prevX = -1f
+                    var prevY = -1f
+                    val stepDist = (rPx.toFloat() * 0.25f).coerceAtLeast(2f)
+
+                    for (pIdx in 0 until pointsArr.size()) {
+                        val pt = pointsArr.getMap(pIdx) ?: continue
+                        val px = ((if (pt.hasKey("x")) pt.getDouble("x") else 0.5) * w.toDouble()).toFloat()
+                        val py = ((if (pt.hasKey("y")) pt.getDouble("y") else 0.5) * h.toDouble()).toFloat()
+                        if (prevX < 0f) {
+                            dabCenters.add(Pair(px.toInt().coerceIn(0, w - 1), py.toInt().coerceIn(0, h - 1)))
+                            prevX = px
+                            prevY = py
+                        } else {
+                            val dist = kotlin.math.hypot(px - prevX, py - prevY)
+                            val steps = (dist / stepDist).toInt().coerceAtLeast(1)
+                            for (st in 1..steps) {
+                                val t = st.toFloat() / steps.toFloat()
+                                val ix = (prevX + (px - prevX) * t).toInt().coerceIn(0, w - 1)
+                                val iy = (prevY + (py - prevY) * t).toInt().coerceIn(0, h - 1)
+                                dabCenters.add(Pair(ix, iy))
+                            }
+                            prevX = px
+                            prevY = py
+                        }
+                    }
+
+                    for ((cx, cy) in dabCenters) {
+                        val minY = (cy - rPx).coerceAtLeast(0)
+                        val maxY = (cy + rPx).coerceAtMost(h - 1)
+                        val minX = (cx - rPx).coerceAtLeast(0)
+                        val maxX = (cx + rPx).coerceAtMost(w - 1)
+                        val ringR = (rPx * 1.32f).toInt().coerceAtLeast(rPx + 2)
+
+                        for (y in minY..maxY) {
+                            val dyCenter = y - cy
+                            val rowOffset = y * w
+                            for (x in minX..maxX) {
+                                val dxCenter = x - cx
+                                val dSq = dxCenter * dxCenter + dyCenter * dyCenter
+                                if (dSq > rSq) continue
+
+                                val distNorm = kotlin.math.sqrt(dSq.toFloat()) / rPx.toFloat()
+                                val alpha = if (distNorm <= innerRatio) {
+                                    1f
+                                } else {
+                                    val t = ((distNorm - innerRatio) / (1f - innerRatio).coerceAtLeast(0.01f)).coerceIn(0f, 1f)
+                                    1f - t * t * (3f - 2f * t)
+                                }
+
+                                val srcColor: Int = if (mode == "heal") {
+                                    // Muestreo inteligente del anillo exterior limpio con preservación de textura
+                                    val lx = (cx - ringR).coerceIn(0, w - 1)
+                                    val rx = (cx + ringR).coerceIn(0, w - 1)
+                                    val ty = (cy - ringR).coerceIn(0, h - 1)
+                                    val by = (cy + ringR).coerceIn(0, h - 1)
+                                    val cL = snapshotPixels[y * w + lx]
+                                    val cR = snapshotPixels[y * w + rx]
+                                    val cT = snapshotPixels[ty * w + x]
+                                    val cB = snapshotPixels[by * w + x]
+
+                                    val wx = ((x - (cx - rPx)).toFloat() / (2f * rPx.toFloat())).coerceIn(0f, 1f)
+                                    val wy = ((y - (cy - rPx)).toFloat() / (2f * rPx.toFloat())).coerceIn(0f, 1f)
+
+                                    val rHoriz = ((cL shr 16 and 0xFF) * (1f - wx) + (cR shr 16 and 0xFF) * wx)
+                                    val gHoriz = ((cL shr 8 and 0xFF) * (1f - wx) + (cR shr 8 and 0xFF) * wx)
+                                    val bHoriz = ((cL and 0xFF) * (1f - wx) + (cR and 0xFF) * wx)
+
+                                    val rVert = ((cT shr 16 and 0xFF) * (1f - wy) + (cB shr 16 and 0xFF) * wy)
+                                    val gVert = ((cT shr 8 and 0xFF) * (1f - wy) + (cB shr 8 and 0xFF) * wy)
+                                    val bVert = ((cT and 0xFF) * (1f - wy) + (cB and 0xFF) * wy)
+
+                                    val sr = ((rHoriz + rVert) * 0.5f).toInt().coerceIn(0, 255)
+                                    val sg = ((gHoriz + gVert) * 0.5f).toInt().coerceIn(0, 255)
+                                    val sb = ((bHoriz + bVert) * 0.5f).toInt().coerceIn(0, 255)
+                                    (0xFF shl 24) or (sr shl 16) or (sg shl 8) or sb
+                                } else {
+                                    val sx = (x + dx).coerceIn(0, w - 1)
+                                    val sy = (y + dy).coerceIn(0, h - 1)
+                                    snapshotPixels[sy * w + sx]
+                                }
+
+                                val dstColor = currentPixels[rowOffset + x]
+                                val dr = dstColor shr 16 and 0xFF
+                                val dg = dstColor shr 8 and 0xFF
+                                val db = dstColor and 0xFF
+
+                                val sr = srcColor shr 16 and 0xFF
+                                val sg = srcColor shr 8 and 0xFF
+                                val sb = srcColor and 0xFF
+
+                                val outR = (dr + (sr - dr) * alpha).toInt().coerceIn(0, 255)
+                                val outG = (dg + (sg - dg) * alpha).toInt().coerceIn(0, 255)
+                                val outB = (db + (sb - db) * alpha).toInt().coerceIn(0, 255)
+
+                                currentPixels[rowOffset + x] = (0xFF shl 24) or (outR shl 16) or (outG shl 8) or outB
+                            }
+                        }
+                    }
+                }
+
+                workingBmp.setPixels(currentPixels, 0, w, 0, 0, w, h)
+                val isPng = cleanOut.lowercase().endsWith(".png")
+                FileOutputStream(destFile, false).use { out ->
+                    workingBmp.compress(
+                        if (isPng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG,
+                        95,
+                        out
+                    )
+                    out.flush()
+                }
+                workingBmp.recycle()
+
+                val res = Arguments.createMap().apply {
+                    putString("outputPath", "file://" + destFile.absolutePath)
+                    putInt("width", w)
+                    putInt("height", h)
+                    putDouble("sizeBytes", destFile.length().toDouble())
+                }
+                promise.resolve(res)
+            } catch (e: Exception) {
+                promise.reject("CLONE_STAMP_ERROR", e.message ?: "Error al aplicar tapón de clonar", e)
             }
         }
     }

@@ -44,6 +44,16 @@ export default function PhotoGrid({
   const [isCompressingBatch, setIsCompressingBatch] = useState(false);
   const [compressProgress, setCompressProgress] = useState(null);
   const [selectedIds, setSelectedIds] = useState({});
+  const [numColumns, setNumColumns] = useState(NUM_COLUMNS);
+
+  const itemSize = useMemo(
+    () => Math.floor((SCREEN_WIDTH - ITEM_MARGIN * (numColumns * 2)) / numColumns),
+    [numColumns]
+  );
+
+  const cycleColumns = () => {
+    setNumColumns((prev) => (prev === 3 ? 4 : prev === 4 ? 2 : 3));
+  };
 
   const selectedCount = useMemo(() => Object.keys(selectedIds).length, [selectedIds]);
   const isSelecting = selectedCount > 0;
@@ -252,7 +262,7 @@ export default function PhotoGrid({
       return (
         <PhotoThumbnail
           asset={item}
-          size={ITEM_SIZE}
+          size={itemSize}
           onPress={handlePress}
           onLongPress={handleLongPress}
           isFavorite={isFav}
@@ -261,17 +271,17 @@ export default function PhotoGrid({
         />
       );
     },
-    [favorites, handlePress, handleLongPress, isSelecting, selectedIds]
+    [favorites, handlePress, handleLongPress, isSelecting, selectedIds, itemSize]
   );
 
   // Con numColumns, FlatList pide el layout por FILA (no por elemento)
   const getItemLayout = useCallback(
     (_, index) => ({
-      length: ITEM_SIZE + ITEM_MARGIN * 2,
-      offset: (ITEM_SIZE + ITEM_MARGIN * 2) * index,
+      length: itemSize + ITEM_MARGIN * 2,
+      offset: (itemSize + ITEM_MARGIN * 2) * index,
       index,
     }),
-    []
+    [itemSize]
   );
 
   const renderFooter = () => {
@@ -328,30 +338,45 @@ export default function PhotoGrid({
           </View>
         </View>
       ) : (
-        photoAssets.length > 0 && (
+        assets.length > 0 && (
           <View style={styles.toolsBar}>
-            <Text style={styles.toolsInfoText}>
-              {photoAssets.length} {photoAssets.length === 1 ? 'foto' : 'fotos'} · Mantén presionado para seleccionar
+            <Text style={styles.toolsInfoText} numberOfLines={1}>
+              {assets.length} archivos · Mantén presionado para elegir
             </Text>
-            <TouchableOpacity
-              style={styles.compressBatchBtn}
-              onPress={handleCompressAll}
-              disabled={isCompressingBatch}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="sparkles" size={14} color="#38bdf8" />
-              <Text style={styles.compressBatchBtnText}>
-                Comprimir ({photoAssets.length})
-              </Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <TouchableOpacity
+                style={styles.compressBatchBtn}
+                onPress={cycleColumns}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="grid-outline" size={13} color={theme.colors.textSecondary} />
+                <Text style={[styles.compressBatchBtnText, { color: theme.colors.textSecondary }]}>
+                  {numColumns} col
+                </Text>
+              </TouchableOpacity>
+              {photoAssets.length > 0 && (
+                <TouchableOpacity
+                  style={styles.compressBatchBtn}
+                  onPress={handleCompressAll}
+                  disabled={isCompressingBatch}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="sparkles" size={14} color="#38bdf8" />
+                  <Text style={styles.compressBatchBtnText}>
+                    Comprimir ({photoAssets.length})
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
         )
       )}
       <FlatList
+        key={`photo_grid_${numColumns}`}
         data={assets}
         renderItem={renderItem}
         keyExtractor={(item) => item.id}
-        numColumns={NUM_COLUMNS}
+        numColumns={numColumns}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         initialNumToRender={24}

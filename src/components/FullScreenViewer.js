@@ -24,6 +24,7 @@ import { compressionService } from '../services/compressionService';
 import { folderService } from '../services/folderService';
 import VideoPlayerScreen from './VideoPlayerScreen';
 import ImageCropper from './ImageCropper';
+import CloneStampEditor from './CloneStampEditor';
 
 function formatDate(timestamp) {
   if (!timestamp) return 'Fecha desconocida';
@@ -55,6 +56,7 @@ export default function FullScreenViewer({
   const [playerInitialMode, setPlayerInitialMode] = useState('play');
   const [openedDirectlyAsVideo, setOpenedDirectlyAsVideo] = useState(false);
   const [cropAsset, setCropAsset] = useState(null);
+  const [cloneAsset, setCloneAsset] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [zoomScale, setZoomScale] = useState(1);
@@ -187,6 +189,10 @@ export default function FullScreenViewer({
     if (!visible) return;
 
     const onBackPress = () => {
+      if (cloneAsset) {
+        setCloneAsset(null);
+        return true;
+      }
       if (cropAsset) {
         setCropAsset(null);
         return true;
@@ -212,7 +218,7 @@ export default function FullScreenViewer({
 
     const backSub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => backSub.remove();
-  }, [visible, cropAsset, playerAsset, showInfo, zoomScale, onClose]);
+  }, [visible, cloneAsset, cropAsset, playerAsset, showInfo, zoomScale, onClose]);
 
   // Cálculo del elemento actual y actualización de referencias
   const validIndex =
@@ -423,6 +429,10 @@ export default function FullScreenViewer({
   };
 
   const handleCloseViewer = () => {
+    if (cloneAsset) {
+      setCloneAsset(null);
+      return;
+    }
     if (cropAsset) {
       setCropAsset(null);
       return;
@@ -890,6 +900,18 @@ export default function FullScreenViewer({
               <Text style={styles.actionLabel}>{isVideo ? 'Reproducir' : 'Recortar'}</Text>
             </TouchableOpacity>
 
+            {/* Tapón de Clonar / Borrador de objetos (solo fotos) */}
+            {!isVideo && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => setCloneAsset(currentAsset)}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="color-wand-outline" size={24} color="#f59e0b" />
+                <Text style={[styles.actionLabel, { color: '#f59e0b' }]}>Clonar</Text>
+              </TouchableOpacity>
+            )}
+
             {/* Eliminar */}
             <TouchableOpacity
               style={styles.actionItem}
@@ -943,7 +965,22 @@ export default function FullScreenViewer({
           <ImageCropper
             asset={cropAsset}
             onClose={() => setCropAsset(null)}
-            onSaved={onMediaSaved}
+            onSaved={() => {
+              setImageRev((r) => r + 1);
+              if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
+              if (onMediaSaved) onMediaSaved();
+            }}
+          />
+        )}
+        {cloneAsset && (
+          <CloneStampEditor
+            asset={cloneAsset}
+            onClose={() => setCloneAsset(null)}
+            onSaved={() => {
+              setImageRev((r) => r + 1);
+              if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
+              if (onMediaSaved) onMediaSaved();
+            }}
           />
         )}
       </SafeAreaView>
