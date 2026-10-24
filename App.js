@@ -34,6 +34,7 @@ import DuplicatesScreen from './src/components/DuplicatesScreen';
 import SettingsModal from './src/components/SettingsModal';
 import CameraScreen from './src/components/CameraScreen';
 import VideoDownloaderModal from './src/components/VideoDownloaderModal';
+import TiendaRembModal from './src/components/TiendaRembModal';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
@@ -67,6 +68,7 @@ export default function App() {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
   const [downloaderVisible, setDownloaderVisible] = useState(false);
+  const [storeVisible, setStoreVisible] = useState(false);
 
   // Carpetas ocultas y modo todo visible
   const [hiddenFolders, setHiddenFolders] = useState({});
@@ -571,6 +573,7 @@ export default function App() {
               : null
           }
           onOpenDownloader={() => setDownloaderVisible(true)}
+          onOpenStore={() => setStoreVisible(true)}
           onOpenCamera={() => setCameraVisible(true)}
           onOpenSettings={() => setSettingsVisible(true)}
         />
@@ -673,6 +676,13 @@ export default function App() {
         <SettingsModal
           visible={settingsVisible}
           onClose={() => setSettingsVisible(false)}
+          onOpenStore={() => setStoreVisible(true)}
+        />
+
+        {/* Tienda Remb: Buscador e Instalador de Apps de tu GitHub */}
+        <TiendaRembModal
+          visible={storeVisible}
+          onClose={() => setStoreVisible(false)}
         />
 
         {/* Modal de Cámara y Grabación Discreta */}

@@ -17,6 +17,7 @@ export default function Header({
   onOpenSettings,
   onOpenCamera,
   onOpenDownloader,
+  onOpenStore,
 }) {
   return (
     <View style={styles.headerContainer}>
@@ -110,6 +111,16 @@ export default function Header({
               activeOpacity={0.7}
             >
               <Ionicons name="cloud-download-outline" size={21} color={theme.colors.textPrimary} />
+            </TouchableOpacity>
+          )}
+
+          {onOpenStore && (
+            <TouchableOpacity
+              onPress={onOpenStore}
+              style={[styles.actionButton, { borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.35)' }]}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="bag-handle-outline" size={20} color="#38bdf8" />
             </TouchableOpacity>
           )}
 

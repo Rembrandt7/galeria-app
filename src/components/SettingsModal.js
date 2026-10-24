@@ -19,7 +19,7 @@ import { updateService, CURRENT_VERSION, CURRENT_BUILD_NUMBER } from '../service
 import { folderService } from '../services/folderService';
 import { storageService } from '../services/storageService';
 
-export default function SettingsModal({ visible, onClose }) {
+export default function SettingsModal({ visible, onClose, onOpenStore }) {
   const [checking, setChecking] = useState(false);
   const [updateInfo, setUpdateInfo] = useState(null);
   const [downloading, setDownloading] = useState(false);
@@ -201,6 +201,28 @@ export default function SettingsModal({ visible, onClose }) {
                 </>
               )}
             </TouchableOpacity>
+
+            {onOpenStore && (
+              <TouchableOpacity
+                style={[
+                  styles.primaryButton,
+                  {
+                    backgroundColor: '#0284c7',
+                    marginTop: 10,
+                  },
+                ]}
+                onPress={() => {
+                  onClose();
+                  setTimeout(() => onOpenStore(), 150);
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="bag-handle" size={18} color="#ffffff" />
+                <Text style={styles.primaryButtonText}>
+                  Abrir Tienda Remb (Mis Apps de GitHub)
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {/* Resultado de la búsqueda */}
             {updateInfo && (
