@@ -32,6 +32,7 @@ import PermissionScreen from './src/components/PermissionScreen';
 import DuplicatesScreen from './src/components/DuplicatesScreen';
 import SettingsModal from './src/components/SettingsModal';
 import CameraScreen from './src/components/CameraScreen';
+import VideoDownloaderModal from './src/components/VideoDownloaderModal';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
@@ -64,6 +65,7 @@ export default function App() {
   const [dupVisible, setDupVisible] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
+  const [downloaderVisible, setDownloaderVisible] = useState(false);
 
   // Carpetas ocultas y modo todo visible
   const [hiddenFolders, setHiddenFolders] = useState({});
@@ -474,6 +476,7 @@ export default function App() {
               ? () => setDupVisible(true)
               : null
           }
+          onOpenDownloader={() => setDownloaderVisible(true)}
           onOpenCamera={() => setCameraVisible(true)}
           onOpenSettings={() => setSettingsVisible(true)}
         />
@@ -575,6 +578,13 @@ export default function App() {
           visible={cameraVisible}
           onClose={() => setCameraVisible(false)}
           onVideoSaved={() => handleRefresh()}
+        />
+
+        {/* Modal para Descargar Videos desde Internet mediante enlace */}
+        <VideoDownloaderModal
+          visible={downloaderVisible}
+          onClose={() => setDownloaderVisible(false)}
+          onVideoDownloaded={() => handleRefresh()}
         />
 
         {/* Modal de PIN para desbloquear carpetas ocultas */}

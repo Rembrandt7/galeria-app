@@ -386,9 +386,9 @@ export const videoEngineService = {
   /**
    * Comprime un lote de videos manteniendo 100% su resolución original y reemplazando cada original en su sitio
    */
-  async compressVideosBatch(videos, { presetId = 'balanced', onProgress } = {}) {
+  async compressVideosBatch(videos, { presetId = 'balanced', onProgress, control } = {}) {
     if (!videos || videos.length === 0) {
-      return { processed: 0, compressedCount: 0, totalSavedBytes: 0 };
+      return { processed: 0, compressedCount: 0, totalSavedBytes: 0, cancelled: false };
     }
 
     let totalSavedBytes = 0;
@@ -396,7 +396,17 @@ export const videoEngineService = {
     let compressedCount = 0;
     const total = videos.length;
 
+    const waitIfPaused = async () => {
+      while (control?.isPaused && !control?.isCancelled) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    };
+
     for (const video of videos) {
+      if (control?.isCancelled) break;
+      await waitIfPaused();
+      if (control?.isCancelled) break;
+
       try {
         const res = await videoEngineService.compressVideo({
           asset: video,
@@ -439,6 +449,7 @@ export const videoEngineService = {
       processed,
       compressedCount,
       totalSavedBytes,
+      cancelled: !!control?.isCancelled,
     };
   },
 };

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   Modal,
   View,
@@ -41,14 +41,59 @@ async function deleteItems(items) {
 
 export default function DuplicatesScreen({ visible, sourceAssets, onClose, onChanged }) {
   const [scanning, setScanning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [progress, setProgress] = useState('');
   const [groups, setGroups] = useState([]);
   const [keep, setKeep] = useState({}); // groupKey -> id a conservar
   const [preview, setPreview] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [scanned, setScanned] = useState(false);
+  const scanControlRef = useRef(null);
 
   const scan = useCallback(async () => {
+    let pauseResolve = null;
+    let pausePromise = null;
+    const ctrl = {
+      isPaused: false,
+      isCancelled: false,
+      pause() {
+        if (this.isPaused || this.isCancelled) return;
+        this.isPaused = true;
+        setIsPaused(true);
+        pausePromise = new Promise((r) => {
+          pauseResolve = r;
+        });
+      },
+      resume() {
+        if (!this.isPaused) return;
+        this.isPaused = false;
+        setIsPaused(false);
+        if (pauseResolve) {
+          const r = pauseResolve;
+          pauseResolve = null;
+          pausePromise = null;
+          r();
+        }
+      },
+      cancel() {
+        this.isCancelled = true;
+        this.isPaused = false;
+        setIsPaused(false);
+        if (pauseResolve) {
+          const r = pauseResolve;
+          pauseResolve = null;
+          pausePromise = null;
+          r();
+        }
+      },
+      async waitIfPaused() {
+        while (this.isPaused && pausePromise && !this.isCancelled) {
+          await pausePromise;
+        }
+      },
+    };
+    scanControlRef.current = ctrl;
+    setIsPaused(false);
     setScanning(true);
     setScanned(false);
     setGroups([]);
@@ -56,13 +101,26 @@ export default function DuplicatesScreen({ visible, sourceAssets, onClose, onCha
       const photos =
         sourceAssets && sourceAssets.length
           ? sourceAssets
-          : await duplicateService.loadAllPhotos(({ done }) =>
-              setProgress(`Leyendo galería… ${done} fotos`)
+          : await duplicateService.loadAllPhotos(
+              ({ done }) => setProgress(`Leyendo galería… ${done} fotos`),
+              ctrl
             );
-      const found = await duplicateService.findDuplicates(photos, ({ phase, done, total }) => {
-        if (phase === 'sizes') setProgress(`Analizando tamaños… ${done}/${total}`);
-        else setProgress(`Comparando contenido… ${done}/${total}`);
-      });
+      if (ctrl.isCancelled) {
+        setScanning(false);
+        return;
+      }
+      const found = await duplicateService.findDuplicates(
+        photos,
+        ({ phase, done, total }) => {
+          if (phase === 'sizes') setProgress(`Analizando tamaños… ${done}/${total}`);
+          else setProgress(`Comparando contenido… ${done}/${total}`);
+        },
+        ctrl
+      );
+      if (ctrl.isCancelled) {
+        setScanning(false);
+        return;
+      }
       const defaults = {};
       found.forEach((g) => {
         defaults[g.key] = g.items[0].id;
@@ -73,6 +131,7 @@ export default function DuplicatesScreen({ visible, sourceAssets, onClose, onCha
       Alert.alert('Error', 'No se pudo buscar fotos duplicadas.');
     }
     setScanning(false);
+    setIsPaused(false);
     setScanned(true);
   }, [sourceAssets]);
 
@@ -209,8 +268,45 @@ export default function DuplicatesScreen({ visible, sourceAssets, onClose, onCha
 
         {scanning ? (
           <View style={styles.center}>
-            <ActivityIndicator size="large" color={theme.colors.primary} />
-            <Text style={styles.info}>{progress || 'Buscando…'}</Text>
+            {isPaused ? (
+              <Ionicons name="pause-circle" size={48} color={theme.colors.warning} />
+            ) : (
+              <ActivityIndicator size="large" color={theme.colors.primary} />
+            )}
+            <Text style={styles.info}>
+              {isPaused ? `En pausa (${progress || 'Análisis detenido'})` : progress || 'Buscando…'}
+            </Text>
+            <View style={styles.scanControlsRow}>
+              <TouchableOpacity
+                style={[styles.scanPauseBtn, isPaused && styles.scanResumeBtn]}
+                onPress={() => {
+                  if (!scanControlRef.current) return;
+                  if (isPaused) scanControlRef.current.resume();
+                  else scanControlRef.current.pause();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons
+                  name={isPaused ? 'play' : 'pause'}
+                  size={16}
+                  color={isPaused ? '#fff' : theme.colors.warning}
+                />
+                <Text style={[styles.scanPauseText, isPaused && { color: '#fff' }]}>
+                  {isPaused ? 'Reanudar' : 'Pausar'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.scanCancelBtn}
+                onPress={() => {
+                  if (scanControlRef.current) scanControlRef.current.cancel();
+                  onClose();
+                }}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="close-circle-outline" size={16} color={theme.colors.danger} />
+                <Text style={styles.scanCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         ) : scanned && groups.length === 0 ? (
           <View style={styles.center}>
@@ -357,6 +453,51 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     zIndex: 50,
   },
-  previewImage: { width: '100%', height: '90%' },
-  previewHint: { color: theme.colors.textSecondary, fontSize: 12, marginTop: 6 },
-});
+    previewImage: { width: '100%', height: '90%' },
+    previewHint: { color: theme.colors.textSecondary, fontSize: 12, marginTop: 6 },
+    scanControlsRow: {
+      flexDirection: 'row',
+      gap: 12,
+      marginTop: 22,
+      width: '100%',
+      maxWidth: 280,
+    },
+    scanPauseBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      paddingVertical: 11,
+      borderRadius: 10,
+      backgroundColor: 'rgba(245, 158, 11, 0.14)',
+      borderWidth: 1,
+      borderColor: 'rgba(245, 158, 11, 0.4)',
+    },
+    scanResumeBtn: {
+      backgroundColor: theme.colors.primary,
+      borderColor: theme.colors.primary,
+    },
+    scanPauseText: {
+      color: theme.colors.warning,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+    scanCancelBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      paddingVertical: 11,
+      borderRadius: 10,
+      backgroundColor: 'rgba(239, 68, 68, 0.14)',
+      borderWidth: 1,
+      borderColor: 'rgba(239, 68, 68, 0.4)',
+    },
+    scanCancelText: {
+      color: theme.colors.danger,
+      fontSize: 13,
+      fontWeight: '700',
+    },
+  });

@@ -332,6 +332,7 @@ export default function FolderBrowser({
         {
           text: 'Comprimir videos',
           onPress: async () => {
+            const ctrl = createProcessController();
             setIsCompressingFolder(true);
             setCompressProgress({
               current: 0,
@@ -343,15 +344,18 @@ export default function FolderBrowser({
               const res = await videoEngineService.compressVideosBatch(folderVideos, {
                 presetId: 'balanced',
                 onProgress: (prog) => setCompressProgress(prog),
+                control: ctrl,
               });
               Alert.alert(
-                '¡Videos comprimidos!',
+                res.cancelled ? 'Proceso cancelado' : '¡Videos comprimidos!',
                 `Se optimizaron ${res.compressedCount} de ${folderVideos.length} videos al 100% de su resolución original.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
               );
               handleRefresh();
             } catch (e) {
               Alert.alert('Aviso', 'Ocurrió un problema al comprimir videos: ' + (e?.message || String(e)));
             } finally {
+              processControlRef.current = null;
+              setIsProcessPaused(false);
               setIsCompressingFolder(false);
               setCompressProgress(null);
             }
@@ -361,8 +365,8 @@ export default function FolderBrowser({
     );
   };
 
-  // Organizar cámara físicamente por meses (dejando el mes activo en la carpeta raíz)
-  const handleOrganizeCamera = async () => {
+  // Organizar cámara físicamente por meses
+  const handleOrganizeCamera = async (keepActiveInRoot = false) => {
     setShowOrganizeConfirmModal(false);
     if (!currentFolder?.uri) return;
 
@@ -374,15 +378,19 @@ export default function FolderBrowser({
       const res = await cameraOrganizerService.physicallyOrganizeFolder({
         targetDirUri: currentFolder.uri,
         assets: currentFolderAssets,
-        keepActiveMonthInRoot: true,
+        keepActiveMonthInRoot: Boolean(keepActiveInRoot),
         onProgress: (prog) => setOrganizeProgress(prog),
         control: ctrl,
       });
 
+      setViewMode('folders');
+      setFolderCategory('all');
+      await handleRefresh();
+
       if (res.moved === 0 && res.keptInRoot > 0) {
         Alert.alert(
           'Mes activo en raíz',
-          `Los ${res.keptInRoot} archivos de esta carpeta pertenecen al mes activo (${res.activeMonthName || 'mes actual'}), por lo que se dejaron en la carpeta raíz tal como configuraste.`
+          `Los ${res.keptInRoot} archivos de esta carpeta pertenecen al mes activo (${res.activeMonthName || 'mes actual'}). Si deseas meterlos también en su carpeta de mes, elige "Organizar TODOS los meses".`
         );
       } else {
         const rootMsg =
@@ -391,12 +399,25 @@ export default function FolderBrowser({
             : '';
         Alert.alert(
           res.cancelled ? 'Organización detenida' : '¡Carpeta organizada por meses!',
-          `Se movieron ${res.moved} archivos de meses anteriores en ${res.monthsCreated || 0} carpetas por mes con división de Fotos y Videos.${rootMsg}`
+          `Se crearon ${res.monthsCreated || 0} carpetas por mes con división de Fotos y Videos y se movieron ${res.moved} archivos.${rootMsg}`
         );
       }
-      handleRefresh();
     } catch (e) {
-      Alert.alert('Aviso', 'No se pudo completar la organización: ' + (e?.message || String(e)));
+      if (e?.code === 'PERMISSION_REQUIRED') {
+        Alert.alert(
+          'Permiso requerido',
+          e.message,
+          [
+            { text: 'Cancelar', style: 'cancel' },
+            {
+              text: 'Activar en Ajustes',
+              onPress: () => folderService.openAllFilesAccessSettings(),
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Aviso', 'No se pudo completar la organización: ' + (e?.message || String(e)));
+      }
     } finally {
       setIsOrganizingCamera(false);
       setOrganizeProgress(null);
@@ -999,7 +1020,7 @@ export default function FolderBrowser({
                     </TouchableOpacity>
                   )}
 
-                  {viewMode === 'folders' && currentFolderAssets.length > 0 && (
+                  {currentFolderAssets.length > 0 && (
                     <TouchableOpacity
                       style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
                       onPress={() => setShowOrganizeConfirmModal(true)}
@@ -1007,7 +1028,7 @@ export default function FolderBrowser({
                     >
                       <Ionicons name="calendar" size={14} color={theme.colors.warning} />
                       <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
-                        Organizar por meses (mes actual en raíz)
+                        Dividir y organizar por meses
                       </Text>
                     </TouchableOpacity>
                   )}
@@ -1278,18 +1299,26 @@ export default function FolderBrowser({
         <View style={styles.progressModalBackdrop}>
           <View style={[styles.progressModalCard, { maxWidth: 360 }]}>
             <Ionicons name="calendar" size={40} color={theme.colors.warning} />
-            <Text style={styles.progressModalTitle}>Organizar por Meses (Mes Activo en Raíz)</Text>
+            <Text style={styles.progressModalTitle}>Dividir y Organizar por Meses</Text>
             <Text style={styles.progressModalSubtitle}>
-              Las fotos y videos del mes actual se quedarán en la carpeta raíz para acceso inmediato. Solo los archivos de meses anteriores se moverán a sus carpetas por mes (ej. 2026-09 Septiembre/Fotos y Videos).
+              Creará físicamente una carpeta para cada mes (ej. 2026-10_Octubre) y dentro de ella dividirá automáticamente las subcarpetas "Fotos" y "Videos".
             </Text>
             <View style={{ width: '100%', gap: 10, marginTop: 16 }}>
               <TouchableOpacity
                 style={styles.confirmOrganizeBtn}
-                onPress={handleOrganizeCamera}
+                onPress={() => handleOrganizeCamera(false)}
                 activeOpacity={0.8}
               >
                 <Ionicons name="folder" size={18} color="#ffffff" />
-                <Text style={styles.confirmOrganizeBtnText}>Crear carpetas y mover archivos</Text>
+                <Text style={styles.confirmOrganizeBtnText}>Organizar TODOS los meses en carpetas</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.confirmOrganizeBtn, { backgroundColor: theme.colors.primary }]}
+                onPress={() => handleOrganizeCamera(true)}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="calendar-outline" size={18} color="#ffffff" />
+                <Text style={styles.confirmOrganizeBtnText}>Dejar mes actual en raíz y mover anteriores</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.cancelOrganizeBtn}

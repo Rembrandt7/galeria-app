@@ -200,6 +200,117 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun ensureSubfolderNative(baseDirPath: String, relativeSubdir: String, promise: Promise) {
+        executor.execute {
+            try {
+                val baseDir = File(cleanFilePath(baseDirPath))
+                val targetDir = File(baseDir, relativeSubdir)
+                if (!targetDir.exists()) {
+                    targetDir.mkdirs()
+                }
+                if (!targetDir.exists() || !targetDir.isDirectory) {
+                    throw IllegalStateException("No se pudo crear la carpeta: " + targetDir.absolutePath)
+                }
+                promise.resolve("file://" + targetDir.absolutePath)
+            } catch (e: Exception) {
+                promise.reject("MKDIR_ERROR", e.message ?: "Error al crear carpeta", e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun moveFileToSubfolderNative(sourceUriOrPath: String, baseDirPath: String, relativeSubdir: String, fileName: String, promise: Promise) {
+        executor.execute {
+            try {
+                val baseDir = File(cleanFilePath(baseDirPath))
+                val targetDir = File(baseDir, relativeSubdir)
+                if (!targetDir.exists()) {
+                    targetDir.mkdirs()
+                }
+                if (!targetDir.exists() || !targetDir.isDirectory) {
+                    throw IllegalStateException("No se pudo crear la carpeta destino: " + targetDir.absolutePath)
+                }
+
+                val safeName = fileName.ifBlank { "media_" + System.currentTimeMillis() }
+                var destFile = File(targetDir, safeName)
+                val srcFile = if (!sourceUriOrPath.startsWith("content://")) File(cleanFilePath(sourceUriOrPath)) else null
+
+                if (srcFile != null && srcFile.exists()) {
+                    if (srcFile.absolutePath == destFile.absolutePath) {
+                        promise.resolve("file://" + destFile.absolutePath)
+                        return@execute
+                    }
+                    if (destFile.exists()) {
+                        val dot = safeName.lastIndexOf('.')
+                        val base = if (dot > 0) safeName.substring(0, dot) else safeName
+                        val ext = if (dot > 0) safeName.substring(dot) else ""
+                        destFile = File(targetDir, base + "_" + (System.currentTimeMillis() % 10000) + ext)
+                    }
+                    var moved = srcFile.renameTo(destFile)
+                    if (!moved) {
+                        FileInputStream(srcFile).use { input ->
+                            FileOutputStream(destFile, false).use { output ->
+                                val buf = ByteArray(64 * 1024)
+                                var len: Int
+                                while (input.read(buf).also { len = it } > 0) {
+                                    output.write(buf, 0, len)
+                                }
+                                output.flush()
+                                output.fd.sync()
+                            }
+                        }
+                        if (destFile.exists() && destFile.length() > 0L) {
+                            srcFile.delete()
+                            moved = true
+                        }
+                    }
+                    if (!moved) {
+                        throw IllegalStateException("No se pudo mover el archivo a " + destFile.absolutePath)
+                    }
+                    try {
+                        MediaScannerConnection.scanFile(
+                            reactContext,
+                            arrayOf(srcFile.absolutePath, destFile.absolutePath),
+                            null,
+                            null
+                        )
+                    } catch (_: Exception) {}
+                    promise.resolve("file://" + destFile.absolutePath)
+                } else {
+                    val uri = Uri.parse(sourceUriOrPath)
+                    val inputStream = reactContext.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("No se pudo abrir el archivo origen")
+                    inputStream.use { input ->
+                        FileOutputStream(destFile, false).use { output ->
+                            val buf = ByteArray(64 * 1024)
+                            var len: Int
+                            while (input.read(buf).also { len = it } > 0) {
+                                output.write(buf, 0, len)
+                            }
+                            output.flush()
+                            output.fd.sync()
+                        }
+                    }
+                    try {
+                        reactContext.contentResolver.delete(uri, null, null)
+                    } catch (_: Exception) {}
+                    try {
+                        MediaScannerConnection.scanFile(
+                            reactContext,
+                            arrayOf(destFile.absolutePath),
+                            null,
+                            null
+                        )
+                    } catch (_: Exception) {}
+                    promise.resolve("file://" + destFile.absolutePath)
+                }
+            } catch (e: Exception) {
+                promise.reject("MOVE_ERROR", e.message ?: "Error al mover archivo", e)
+            }
+        }
+    }
+
+    @ReactMethod
     fun getVideoMetadata(sourcePath: String, promise: Promise) {
         executor.execute {
             val retriever = MediaMetadataRetriever()

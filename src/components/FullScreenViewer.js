@@ -234,15 +234,16 @@ export default function FullScreenViewer({
   }, [visible, currentAsset?.id, currentAsset?.uri]);
 
   const sizeInfo = compressionService.getSizeLevel(assetSize);
+  const isGreenSize = sizeInfo.level === 'light';
 
   // Si no está visible o no hay archivos, no mostrar nada (TODOS los hooks ya se ejecutaron)
   if (!visible || !currentAsset) {
     return null;
   }
 
-  // Comprimir foto actual sin perder resolución
+  // Comprimir foto actual sin perder resolución (solo Naranja o Rojo; omite Verde)
   const handleCompressCurrentPhoto = async () => {
-    if (isCompressing || !currentAsset) return;
+    if (isCompressing || !currentAsset || isGreenSize) return;
     setIsCompressing(true);
     try {
       const res = await compressionService.compressPhoto(currentAsset);
@@ -557,17 +558,19 @@ export default function FullScreenViewer({
                 ) : null}
               </View>
 
-              {/* Botón Comprimir sin perder resolución */}
+              {/* Botón Comprimir sin perder resolución (desactivado cuando está en Verde) */}
               {!isVideo && (
                 <TouchableOpacity
                   style={[
                     styles.compressBtn,
-                    sizeInfo.isHeavy
+                    isGreenSize
+                      ? styles.compressBtnDisabled
+                      : sizeInfo.isHeavy
                       ? styles.compressBtnHeavy
                       : { borderColor: sizeInfo.color },
                   ]}
                   onPress={handleCompressCurrentPhoto}
-                  disabled={isCompressing}
+                  disabled={isCompressing || isGreenSize}
                   activeOpacity={0.75}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
@@ -579,21 +582,29 @@ export default function FullScreenViewer({
                   ) : (
                     <>
                       <Ionicons
-                        name="sparkles"
+                        name={isGreenSize ? 'checkmark-circle-outline' : 'sparkles'}
                         size={14}
-                        color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
+                        color={
+                          isGreenSize
+                            ? theme.colors.textMuted
+                            : sizeInfo.isHeavy
+                            ? '#ffffff'
+                            : sizeInfo.color
+                        }
                       />
                       <Text
                         style={[
                           styles.compressBtnText,
                           {
-                            color: sizeInfo.isHeavy
+                            color: isGreenSize
+                              ? theme.colors.textMuted
+                              : sizeInfo.isHeavy
                               ? '#ffffff'
                               : sizeInfo.color,
                           },
                         ]}
                       >
-                        Comprimir
+                        {isGreenSize ? 'Omitido (Verde)' : 'Comprimir'}
                       </Text>
                     </>
                   )}
@@ -760,20 +771,31 @@ export default function FullScreenViewer({
               </Text>
             </TouchableOpacity>
 
-            {/* Comprimir foto sin perder resolución */}
+            {/* Comprimir foto sin perder resolución (desactivado si está en Verde) */}
             {!isVideo && (
               <TouchableOpacity
-                style={styles.actionItem}
+                style={[styles.actionItem, isGreenSize && { opacity: 0.38 }]}
                 onPress={handleCompressCurrentPhoto}
-                disabled={isCompressing}
+                disabled={isCompressing || isGreenSize}
                 activeOpacity={0.7}
               >
                 {isCompressing ? (
                   <ActivityIndicator size="small" color="#38bdf8" />
                 ) : (
                   <>
-                    <Ionicons name="sparkles-outline" size={24} color="#38bdf8" />
-                    <Text style={[styles.actionLabel, { color: '#38bdf8' }]}>Comprimir</Text>
+                    <Ionicons
+                      name="sparkles-outline"
+                      size={24}
+                      color={isGreenSize ? theme.colors.textMuted : '#38bdf8'}
+                    />
+                    <Text
+                      style={[
+                        styles.actionLabel,
+                        { color: isGreenSize ? theme.colors.textMuted : '#38bdf8' },
+                      ]}
+                    >
+                      Comprimir
+                    </Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -962,6 +984,11 @@ const styles = StyleSheet.create({
   compressBtnHeavy: {
     backgroundColor: 'rgba(0, 0, 0, 0.4)',
     borderColor: '#ffffff',
+  },
+  compressBtnDisabled: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderColor: 'rgba(148, 163, 184, 0.35)',
+    opacity: 0.55,
   },
   compressBtnText: {
     fontSize: 11,

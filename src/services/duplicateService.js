@@ -13,11 +13,13 @@ const toHex = (buffer) =>
 
 export const duplicateService = {
   /** Trae todas las fotos de la galería del teléfono. */
-  async loadAllPhotos(onProgress) {
+  async loadAllPhotos(onProgress, control) {
     const all = [];
     let after = null;
     let hasNext = true;
     while (hasNext) {
+      if (control?.waitIfPaused) await control.waitIfPaused();
+      if (control?.isCancelled) return all;
       const page = await MediaLibrary.getAssetsAsync({
         first: 500,
         after: after || undefined,
@@ -37,13 +39,15 @@ export const duplicateService = {
    * Primero agrupa por tamaño y solo calcula el hash de los candidatos.
    * Devuelve grupos de 2 o más copias.
    */
-  async findDuplicates(photos, onProgress) {
+  async findDuplicates(photos, onProgress, control) {
     const images = photos.filter((a) => a.mediaType === 'photo');
 
     // 1) Agrupar por tamaño (compatible con file:// y content:// SAF)
     const bySize = new Map();
     let i = 0;
     for (const asset of images) {
+      if (control?.waitIfPaused) await control.waitIfPaused();
+      if (control?.isCancelled) return [];
       let size = 0;
       try {
         size = new File(asset.uri).size || 0;
@@ -78,6 +82,8 @@ export const duplicateService = {
     const byHash = new Map();
     let j = 0;
     for (const asset of candidates) {
+      if (control?.waitIfPaused) await control.waitIfPaused();
+      if (control?.isCancelled) break;
       try {
         let hexHash = null;
         try {

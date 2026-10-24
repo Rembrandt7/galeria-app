@@ -6,8 +6,8 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.1.6';
-export const CURRENT_BUILD_NUMBER = 24;
+export const CURRENT_VERSION = 'v1.1.7';
+export const CURRENT_BUILD_NUMBER = 25;
 
 export const updateService = {
   /**
@@ -88,7 +88,7 @@ export const updateService = {
           latestRun?.html_url ||
           `https://github.com/${REPO_OWNER}/${REPO_NAME}/actions`,
         notes: hasUpdate
-          ? `Compresión directa con truncamiento 'wt' sin error de permisos y compilación ARM acelerada.${buildingMsg}`
+          ? `Descarga de videos por enlace, controles de Pausa/Cancelar en procesos, omisión de fotos en Verde al comprimir y creación física de carpetas por mes (Fotos/Videos).${buildingMsg}`
           : `Tu aplicación está actualizada con la última versión compilada.${buildingMsg}`,
         message: hasUpdate
           ? `Nueva compilación #${remoteRunNumber} disponible en GitHub.${buildingMsg}`

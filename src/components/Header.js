@@ -16,6 +16,7 @@ export default function Header({
   onFindDuplicates,
   onOpenSettings,
   onOpenCamera,
+  onOpenDownloader,
 }) {
   return (
     <View style={styles.headerContainer}>
@@ -99,6 +100,16 @@ export default function Header({
                 size={22}
                 color={isRefreshing ? theme.colors.primary : theme.colors.textPrimary}
               />
+            </TouchableOpacity>
+          )}
+
+          {onOpenDownloader && (
+            <TouchableOpacity
+              onPress={onOpenDownloader}
+              style={styles.actionButton}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="cloud-download-outline" size={21} color={theme.colors.textPrimary} />
             </TouchableOpacity>
           )}
 
