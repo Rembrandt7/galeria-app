@@ -1,4 +1,9 @@
-const { withGradleProperties, withDangerousMod, withMainApplication } = require('expo/config-plugins');
+const {
+  withGradleProperties,
+  withDangerousMod,
+  withMainApplication,
+  withAndroidManifest,
+} = require('expo/config-plugins');
 const fs = require('fs');
 const path = require('path');
 
@@ -22,9 +27,17 @@ class VideoEnginePackage : ReactPackage {
 
 const VIDEO_ENGINE_MODULE_KT = `package com.rembrant.galeriaapp
 
+import android.app.Activity
+import android.app.Dialog
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Color
 import android.graphics.SurfaceTexture
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.media.ExifInterface
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
@@ -45,13 +58,30 @@ import android.opengl.GLES20
 import android.opengl.Matrix
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
+import android.util.TypedValue
+import android.view.Gravity
 import android.view.Surface
+import android.view.ViewGroup
+import android.view.Window
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
+import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.bridge.UiThreadUtil
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.BufferedReader
 import java.io.File
@@ -64,13 +94,91 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class VideoEngineModule(private val reactContext: ReactApplicationContext) :
-    ReactContextBaseJavaModule(reactContext) {
+    ReactContextBaseJavaModule(reactContext), ActivityEventListener {
 
     private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    init {
+        reactContext.addActivityEventListener(this)
+    }
 
     override fun getName(): String = "VideoEngineModule"
+
+    override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+        // No-op
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        try {
+            reactContext.currentActivity?.intent = intent
+            if (intent.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true) {
+                val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ?: intent.getStringExtra(Intent.EXTRA_SUBJECT)
+                if (!sharedText.isNullOrBlank()) {
+                    val params = Arguments.createMap().apply {
+                        putString("text", sharedText)
+                    }
+                    reactContext
+                        .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                        .emit("SharedVideoLinkReceived", params)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    @ReactMethod
+    fun getSharedTextNative(clearAfterRead: Boolean, promise: Promise) {
+        try {
+            val act = reactContext.currentActivity
+            val intent = act?.intent
+            if (intent != null && intent.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true) {
+                val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+                    ?: intent.getStringExtra(Intent.EXTRA_SUBJECT)
+                if (clearAfterRead) {
+                    intent.removeExtra(Intent.EXTRA_TEXT)
+                    intent.removeExtra(Intent.EXTRA_SUBJECT)
+                    intent.action = Intent.ACTION_MAIN
+                }
+                promise.resolve(sharedText ?: "")
+                return
+            }
+            promise.resolve("")
+        } catch (e: Exception) {
+            promise.resolve("")
+        }
+    }
+
+    @ReactMethod
+    fun getClipboardTextNative(promise: Promise) {
+        UiThreadUtil.runOnUiThread {
+            try {
+                val cm = reactContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                val clip = cm?.primaryClip
+                if (clip != null && clip.itemCount > 0) {
+                    val txt = clip.getItemAt(0).coerceToText(reactContext)?.toString() ?: ""
+                    promise.resolve(txt)
+                } else {
+                    promise.resolve("")
+                }
+            } catch (e: Exception) {
+                promise.resolve("")
+            }
+        }
+    }
+
+    @ReactMethod
+    fun getCookiesForUrlNative(targetUrl: String, promise: Promise) {
+        try {
+            val cookie = CookieManager.getInstance().getCookie(targetUrl) ?: ""
+            promise.resolve(cookie)
+        } catch (e: Exception) {
+            promise.resolve("")
+        }
+    }
 
     private fun cleanFilePath(uriOrPath: String): String {
         var clean = uriOrPath.trim()
@@ -116,9 +224,17 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 var redirects = 0
                 var finalHtml = ""
                 var finalStatus = 0
+                val cookieMgr = try { CookieManager.getInstance() } catch (_: Exception) { null }
 
-                while (redirects < 7) {
+                while (redirects < 8) {
                     val urlObj = URL(currentUrl)
+                    val savedCookies = try {
+                        cookieMgr?.getCookie(currentUrl)
+                            ?: if (currentUrl.contains("facebook.com") || currentUrl.contains("fb.watch")) {
+                                cookieMgr?.getCookie("https://www.facebook.com")
+                            } else null
+                    } catch (_: Exception) { null }
+
                     val conn = (urlObj.openConnection() as HttpURLConnection).apply {
                         instanceFollowRedirects = false
                         connectTimeout = 12000
@@ -133,6 +249,9 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         setRequestProperty("Sec-Fetch-Site", "none")
                         setRequestProperty("Sec-Fetch-User", "?1")
                         setRequestProperty("Upgrade-Insecure-Requests", "1")
+                        if (!savedCookies.isNullOrBlank()) {
+                            setRequestProperty("Cookie", savedCookies)
+                        }
                     }
 
                     val code = conn.responseCode
@@ -145,18 +264,20 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         } catch (_: Exception) {
                             loc
                         }
-                        // Si Facebook redirige a /login/?next=..., desenvolver el parámetro next real sin pasar por login
                         if (resolvedLoc.contains("/login") && resolvedLoc.contains("next=")) {
                             val parsedUri = Uri.parse(resolvedLoc)
                             val nextParam = parsedUri.getQueryParameter("next")
-                            if (!nextParam.isNullOrBlank() && nextParam.startsWith("http")) {
+                            if (!nextParam.isNullOrBlank() && nextParam.startsWith("http") && nextParam != currentUrl) {
                                 resolvedLoc = nextParam
+                            } else {
+                                break
                             }
                         }
-                        resolvedLoc = resolvedLoc
-                            .replace("://m.facebook.com/", "://www.facebook.com/")
-                            .replace("://mbasic.facebook.com/", "://www.facebook.com/")
-                            .replace("://web.facebook.com/", "://www.facebook.com/")
+                        if (!userAgent.contains("Mobile") && !resolvedLoc.contains("mbasic.facebook.com")) {
+                            resolvedLoc = resolvedLoc
+                                .replace("://m.facebook.com/", "://www.facebook.com/")
+                                .replace("://web.facebook.com/", "://www.facebook.com/")
+                        }
                         currentUrl = resolvedLoc
                         redirects++
                         continue
@@ -170,7 +291,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             var read: Int
                             while (reader.read(buf).also { read = it } != -1) {
                                 sb.append(buf, 0, read)
-                                if (sb.length > 4_000_000) break
+                                if (sb.length > 4_500_000) break
                             }
                             finalHtml = sb.toString()
                         }
@@ -187,6 +308,291 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 promise.resolve(map)
             } catch (e: Exception) {
                 promise.reject("FETCH_CLEAN_ERR", e.message ?: "Error al consultar página", e)
+            }
+        }
+    }
+
+    /**
+     * Extractor con WebView nativo de Android (soporta modo silencioso en 2do plano e interactivo para Historias de Facebook/Instagram con sesión)
+     */
+    @ReactMethod
+    fun sniffVideoWithWebViewNative(targetUrl: String, interactive: Boolean, promise: Promise) {
+        UiThreadUtil.runOnUiThread {
+            val resolved = AtomicBoolean(false)
+            var dialog: Dialog? = null
+            var webView: WebView? = null
+            var detectedVideoUrl: String? = null
+            var statusLabel: TextView? = null
+            var actionButton: TextView? = null
+
+            val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            val mobileUA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            val chosenUA = if (interactive) mobileUA else desktopUA
+
+            fun cleanExtractedUrl(raw: String): String {
+                return raw
+                    .replace("\\\\u0026", "&")
+                    .replace("\\\\u002F", "/")
+                    .replace("\\\\u002f", "/")
+                    .replace("\\\\u003D", "=")
+                    .replace("\\\\u003C", "<")
+                    .replace("\\\\/", "/")
+                    .replace("&amp;", "&")
+                    .trim()
+                    .trim('"', '\\'')
+            }
+
+            fun isValidVideoStream(u: String): Boolean {
+                val low = u.lowercase()
+                if (!low.startsWith("http")) return false
+                if (low.startsWith("blob:")) return false
+                if (low.contains(".jpg") || low.contains(".png") || low.contains(".webp") || low.contains(".gif") || low.contains(".svg") || low.contains(".css") || low.contains(".js")) return false
+                if (low.contains("rsrc.php") || low.contains("static.xx.fbcdn.net")) return false
+                return (low.contains(".mp4") ||
+                    (low.contains("fbcdn.net") && (low.contains("/v/") || low.contains("bytestart") || low.contains("efg="))) ||
+                    (low.contains("cdninstagram.com") && low.contains("/v/")) ||
+                    low.contains("video.twimg.com") ||
+                    low.contains("googlevideo.com/videoplayback"))
+            }
+
+            fun cleanupAndResolve(videoUrl: String?, errorMsg: String? = null) {
+                if (!resolved.compareAndSet(false, true)) return
+                UiThreadUtil.runOnUiThread {
+                    try {
+                        CookieManager.getInstance().flush()
+                    } catch (_: Exception) {}
+                    val cookies = try {
+                        CookieManager.getInstance().getCookie(targetUrl) ?: ""
+                    } catch (_: Exception) { "" }
+                    try {
+                        webView?.stopLoading()
+                        webView?.loadUrl("about:blank")
+                        webView?.destroy()
+                    } catch (_: Exception) {}
+                    webView = null
+                    try {
+                        dialog?.dismiss()
+                    } catch (_: Exception) {}
+                    dialog = null
+
+                    if (!videoUrl.isNullOrBlank()) {
+                        val map = Arguments.createMap().apply {
+                            putString("downloadUrl", videoUrl)
+                            putString("cookies", cookies)
+                            putString("userAgent", chosenUA)
+                        }
+                        promise.resolve(map)
+                    } else {
+                        promise.reject("SNIFF_EMPTY", errorMsg ?: "No se detectó video en la página")
+                    }
+                }
+            }
+
+            fun onCandidateFound(rawCandidate: String) {
+                val clean = cleanExtractedUrl(rawCandidate)
+                if (!isValidVideoStream(clean)) return
+                detectedVideoUrl = clean
+                if (!interactive) {
+                    cleanupAndResolve(clean, null)
+                } else {
+                    UiThreadUtil.runOnUiThread {
+                        statusLabel?.text = "✅ ¡Video de la historia detectado! Toca el botón verde para descargarlo"
+                        actionButton?.text = "⬇ Descargar Video Detectado Ahora"
+                        actionButton?.setBackgroundColor(Color.parseColor("#10B981"))
+                    }
+                }
+            }
+
+            try {
+                val context = reactContext.currentActivity ?: reactContext
+                val wv = WebView(context)
+                webView = wv
+
+                val cm = CookieManager.getInstance()
+                cm.setAcceptCookie(true)
+                cm.setAcceptThirdPartyCookies(wv, true)
+
+                wv.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    mediaPlaybackRequiresUserGesture = false
+                    loadsImagesAutomatically = interactive
+                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    userAgentString = chosenUA
+                }
+
+                wv.webChromeClient = WebChromeClient()
+                wv.webViewClient = object : WebViewClient() {
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                        val reqUrl = request?.url?.toString() ?: ""
+                        if (isValidVideoStream(reqUrl)) {
+                            onCandidateFound(reqUrl)
+                        }
+                        return super.shouldInterceptRequest(view, request)
+                    }
+                }
+
+                val jsProbe = """
+                    (function() {
+                      try {
+                        var vids = document.querySelectorAll('video, video source');
+                        for (var i = 0; i < vids.length; i++) {
+                          var s = vids[i].currentSrc || vids[i].src || '';
+                          if (s && s.indexOf('http') === 0 && s.indexOf('blob:') !== 0) return s;
+                        }
+                        var html = document.documentElement.innerHTML || '';
+                        var regexes = [
+                          /"progressive_url"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"browser_native_hd_url"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"playable_url_quality_hd"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"hd_src_no_ratelimit"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"hd_src"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"browser_native_sd_url"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"playable_url"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"sd_src"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /"video_url"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /(https?:\\\\/\\\\/video[^"'\\s<>\\\\]+\\.mp4[^"'\\s<>\\\\]*)/i,
+                          /(https?:\\/\\/video[^"'\\s<>\\\\]+\\.mp4[^"'\\s<>\\\\]*)/i
+                        ];
+                        for (var j = 0; j < regexes.length; j++) {
+                          var m = html.match(regexes[j]);
+                          if (m && m[1]) return m[1];
+                        }
+                      } catch (e) {}
+                      return '';
+                    })();
+                """.trimIndent()
+
+                fun scheduleProbe(iteration: Int) {
+                    if (resolved.get()) return
+                    if (!interactive && iteration > 10) {
+                        cleanupAndResolve(detectedVideoUrl, "Tiempo agotado buscando flujo de video")
+                        return
+                    }
+                    mainHandler.postDelayed({
+                        if (resolved.get()) return@postDelayed
+                        try {
+                            wv.evaluateJavascript(jsProbe) { res ->
+                                val trimmedRes = res?.trim()?.trim('"') ?: ""
+                                if (trimmedRes.isNotEmpty() && trimmedRes != "null") {
+                                    onCandidateFound(trimmedRes)
+                                }
+                            }
+                        } catch (_: Exception) {}
+                        scheduleProbe(iteration + 1)
+                    }, 850L)
+                }
+
+                if (interactive && reactContext.currentActivity != null) {
+                    val act = reactContext.currentActivity!!
+                    val dlg = Dialog(act, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+                    dialog = dlg
+                    dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+                    val root = LinearLayout(act).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setBackgroundColor(Color.parseColor("#0F172A"))
+                        layoutParams = ViewGroup.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                        )
+                    }
+
+                    val header = LinearLayout(act).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setBackgroundColor(Color.parseColor("#1E293B"))
+                        setPadding(32, 36, 32, 24)
+                    }
+
+                    val topRow = LinearLayout(act).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+
+                    val titleTv = TextView(act).apply {
+                        text = "Extractor de Historias y Videos"
+                        setTextColor(Color.WHITE)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                        typeface = Typeface.DEFAULT_BOLD
+                        layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    }
+
+                    val closeBtn = TextView(act).apply {
+                        text = "✕ Cerrar"
+                        setTextColor(Color.parseColor("#F87171"))
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                        typeface = Typeface.DEFAULT_BOLD
+                        setPadding(24, 12, 12, 12)
+                        setOnClickListener {
+                            cleanupAndResolve(null, "CANCELLED")
+                        }
+                    }
+
+                    topRow.addView(titleTv)
+                    topRow.addView(closeBtn)
+
+                    val subTv = TextView(act).apply {
+                        text = "Si es una historia de Facebook/Instagram, inicia sesión una vez y abre la historia. El video se detectará automáticamente."
+                        setTextColor(Color.parseColor("#94A3B8"))
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                        setPadding(0, 8, 0, 14)
+                    }
+                    statusLabel = subTv
+
+                    val captureBtn = TextView(act).apply {
+                        text = "🔍 Buscando video en la página... (Toca al ver el video)"
+                        setTextColor(Color.WHITE)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                        typeface = Typeface.DEFAULT_BOLD
+                        gravity = Gravity.CENTER
+                        setPadding(24, 24, 24, 24)
+                        background = GradientDrawable().apply {
+                            cornerRadius = 24f
+                            setColor(Color.parseColor("#3B82F6"))
+                        }
+                        setOnClickListener {
+                            if (!detectedVideoUrl.isNullOrBlank()) {
+                                cleanupAndResolve(detectedVideoUrl, null)
+                            } else {
+                                wv.evaluateJavascript(jsProbe) { res ->
+                                    val trimmedRes = res?.trim()?.trim('"') ?: ""
+                                    if (trimmedRes.isNotEmpty() && trimmedRes != "null") {
+                                        onCandidateFound(trimmedRes)
+                                        if (!detectedVideoUrl.isNullOrBlank()) {
+                                            cleanupAndResolve(detectedVideoUrl, null)
+                                        }
+                                    } else {
+                                        statusLabel?.text = "⚠️ Reproduce el video en pantalla primero para que cargue el archivo MP4."
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    actionButton = captureBtn
+
+                    header.addView(topRow)
+                    header.addView(subTv)
+                    header.addView(captureBtn)
+
+                    val webParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        0,
+                        1f
+                    )
+                    root.addView(header)
+                    root.addView(wv, webParams)
+
+                    dlg.setContentView(root)
+                    dlg.setOnCancelListener {
+                        cleanupAndResolve(null, "CANCELLED")
+                    }
+                    dlg.show()
+                }
+
+                wv.loadUrl(targetUrl)
+                scheduleProbe(0)
+            } catch (e: Exception) {
+                cleanupAndResolve(null, e.message ?: "Error en WebView extractor")
             }
         }
     }
@@ -1598,6 +2004,35 @@ module.exports = function withFastAndroidBuild(config) {
       appConfig.modResults.contents = contents;
     }
     return appConfig;
+  });
+
+  // 4. Registrar Intent Filter ACTION_SEND (text/plain) en MainActivity para recibir enlaces compartidos desde cualquier app
+  config = withAndroidManifest(config, (manifestConfig) => {
+    const app = manifestConfig.modResults.manifest.application?.[0];
+    if (app && Array.isArray(app.activity)) {
+      const mainAct = app.activity.find(
+        (a) =>
+          a.$?.['android:name'] === '.MainActivity' ||
+          a.$?.['android:name']?.endsWith('.MainActivity')
+      );
+      if (mainAct) {
+        mainAct.$['android:launchMode'] = 'singleTask';
+        if (!Array.isArray(mainAct['intent-filter'])) {
+          mainAct['intent-filter'] = [];
+        }
+        const alreadyHasSend = mainAct['intent-filter'].some((f) =>
+          f.action?.some((act) => act.$?.['android:name'] === 'android.intent.action.SEND')
+        );
+        if (!alreadyHasSend) {
+          mainAct['intent-filter'].push({
+            action: [{ $: { 'android:name': 'android.intent.action.SEND' } }],
+            category: [{ $: { 'android:name': 'android.intent.category.DEFAULT' } }],
+            data: [{ $: { 'android:mimeType': 'text/plain' } }],
+          });
+        }
+      }
+    }
+    return manifestConfig;
   });
 
   return config;

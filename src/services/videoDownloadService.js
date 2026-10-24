@@ -349,7 +349,13 @@ function isValidDirectVideoCandidate(url) {
     lower.includes('lookaside.fbsbx.com') ||
     lower.includes('facebook.com/plugins/') ||
     lower.includes('facebook.com/login') ||
-    lower.includes('/rsrc.php/')
+    lower.includes('/rsrc.php/') ||
+    lower.includes('static.xx.fbcdn.net') ||
+    lower.endsWith('.jpg') ||
+    lower.endsWith('.png') ||
+    lower.endsWith('.webp') ||
+    lower.endsWith('.js') ||
+    lower.endsWith('.css')
   ) {
     return false;
   }
@@ -359,6 +365,21 @@ function isValidDirectVideoCandidate(url) {
 function extractFacebookVideoFromHtml(html) {
   if (!html || typeof html !== 'string') return null;
 
+  // 0. Enlaces mbasic / mobile redirect: /video_redirect/?src=https%3A%2F%2F...
+  const redirMatch = html.match(/\/video_redirect\/\?src=([^"'\s&<>]+)/i);
+  if (redirMatch && redirMatch[1]) {
+    try {
+      const decoded = decodeURIComponent(unescapeUrl(redirMatch[1]));
+      if (isValidDirectVideoCandidate(decoded)) {
+        return {
+          downloadUrl: decoded,
+          title: 'facebook_story_video',
+          source: 'Facebook Mobile',
+        };
+      }
+    } catch (_e) {}
+  }
+
   const fbPatterns = [
     { regex: /"browser_native_hd_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
     { regex: /"playable_url_quality_hd"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
@@ -366,16 +387,20 @@ function extractFacebookVideoFromHtml(html) {
     { regex: /"hd_src"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
     { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"[^}]{0,220}"quality"\s*:\s*"HD"/gi, label: 'Facebook HD' },
     { regex: /"quality"\s*:\s*"HD"[^}]{0,220}"progressive_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
-    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook Video' },
+    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook Story / Reel' },
     { regex: /"browser_native_sd_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
     { regex: /"playable_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
     { regex: /"sd_src_no_ratelimit"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
     { regex: /"sd_src"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
     { regex: /"video_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook Video' },
+    { regex: /<BaseURL[^>]*>(https?:[^<]+\.mp4[^<]*)<\/BaseURL>/gi, label: 'Facebook StoryStream' },
+    { regex: /\\u003CBaseURL[^>]*>(https?:[^\\<]+\.mp4[^\\<]*)\\u003C\\\/BaseURL>/gi, label: 'Facebook StoryStream' },
     { regex: /<meta[^>]+property=["']og:video:secure_url["'][^>]+content=["'](https?:[^"']+)["']/gi, label: 'Facebook Video' },
     { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video:secure_url["']/gi, label: 'Facebook Video' },
     { regex: /<meta[^>]+property=["']og:video["'][^>]+content=["'](https?:[^"']+)["']/gi, label: 'Facebook Video' },
     { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video["']/gi, label: 'Facebook Video' },
+    { regex: /(https?:\\\/\\\/video[^"'\s<>\\]+\.mp4[^"'\s<>\\]*)/gi, label: 'Facebook CDN' },
+    { regex: /(https?:\/\/video[^"'\s<>\\]+\.mp4[^"'\s<>\\]*)/gi, label: 'Facebook CDN' },
   ];
 
   for (const item of fbPatterns) {
@@ -383,7 +408,8 @@ function extractFacebookVideoFromHtml(html) {
     for (const match of matches) {
       if (match && match[1]) {
         const clean = unescapeUrl(match[1]);
-        if (isValidDirectVideoCandidate(clean)) {
+        // Evitar pistas de solo audio (en DASH de Facebook las pistas de audio suelen contener /v/t42.1790-2/ o mime=audio o efg con audio)
+        if (isValidDirectVideoCandidate(clean) && !/mime=audio|audio_only/i.test(clean)) {
           const titleMatch =
             html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
             html.match(/<title[^>]*>([^<]+)<\/title>/i);
@@ -417,6 +443,7 @@ function extractCanonicalAndVideoIdFromFacebook(url, html = '') {
 
   const combined = `${canonical || ''} ${url || ''} ${(html || '').slice(0, 120000)}`;
   const idMatch =
+    combined.match(/\/stories\/(?:[^/?#]+\/)?(\d{8,25})/i) ||
     combined.match(/media_id=(\d{8,25})/i) ||
     combined.match(/\/reel\/(\d{8,25})/i) ||
     combined.match(/\/videos\/(?:[^/?#]+\/)?(\d{8,25})/i) ||
@@ -471,15 +498,52 @@ async function fetchCleanHtmlPage(targetUrl, userAgent, signal) {
   };
 }
 
+/**
+ * Extractor auxiliar vía FDown para videos, reels e historias públicas de Facebook
+ */
+async function resolveFacebookViaFDown(url, signal) {
+  const formBody = `URLz=${encodeURIComponent(url)}`;
+  const res = await fetch('https://fdown.net/download.php', {
+    method: 'POST',
+    headers: {
+      'User-Agent': DESKTOP_USER_AGENT,
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Origin: 'https://fdown.net',
+      Referer: 'https://fdown.net/',
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    },
+    body: formBody,
+    signal,
+  });
+  if (!res.ok) throw new Error('FDown no disponible');
+  const html = await res.text();
+  const hdMatch =
+    html.match(/id=["']hdlink["'][^>]+href=["'](https?:[^"']+)["']/i) ||
+    html.match(/href=["'](https?:[^"']+)["'][^>]+id=["']hdlink["']/i);
+  const sdMatch =
+    html.match(/id=["']sdlink["'][^>]+href=["'](https?:[^"']+)["']/i) ||
+    html.match(/href=["'](https?:[^"']+)["'][^>]+id=["']sdlink["']/i);
+  const chosen = (hdMatch && hdMatch[1]) || (sdMatch && sdMatch[1]);
+  if (chosen) {
+    return {
+      downloadUrl: unescapeUrl(chosen),
+      title: 'facebook_video',
+      source: hdMatch ? 'Facebook HD' : 'Facebook SD',
+    };
+  }
+  throw new Error('Sin enlaces en FDown');
+}
+
 async function resolveFacebook(url, signal) {
   let targetUrl = normalizeFacebookUrl(url);
+  const isStoryUrl = /\/stories\/|story_fbid=/i.test(targetUrl);
   const initialInfo = extractCanonicalAndVideoIdFromFacebook(targetUrl, '');
   let discoveredVideoId = initialInfo.videoId;
   let discoveredCanonical = initialInfo.canonicalUrl;
 
   const isShareOrShortLink = /\/share\/|fb\.watch|\/l\.php/i.test(targetUrl);
 
-  // Etapa 1: Si es un enlace corto (/share/v/, /share/r/, fb.watch), desenvolverlo primero con el crawler de Facebook
+  // Etapa 1: Si es un enlace corto (/share/v/, /share/r/, /share/s/, fb.watch), desenvolverlo primero
   if (isShareOrShortLink) {
     try {
       const crawlerPage = await fetchCleanHtmlPage(targetUrl, FB_CRAWLER_USER_AGENT, signal);
@@ -497,7 +561,7 @@ async function resolveFacebook(url, signal) {
     }
   }
 
-  // Etapa 2: Consultar con navegador Chrome de Escritorio (Entrega el stream real de fbcdn.net en browser_native_hd_url / sd_url)
+  // Etapa 2: Consultar con navegador Chrome de Escritorio (incluye cookies guardadas si el usuario ya inició sesión)
   const urlForDesktop = discoveredCanonical || targetUrl;
   try {
     const desktopPage = await fetchCleanHtmlPage(urlForDesktop, DESKTOP_USER_AGENT, signal);
@@ -511,32 +575,30 @@ async function resolveFacebook(url, signal) {
     if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
   }
 
-  // Etapa 2B: Si aún no teníamos canonical/videoId y no habíamos consultado al crawler, consultarlo para obtener media_id y og:url
-  if (!isShareOrShortLink && (!discoveredVideoId || !discoveredCanonical)) {
+  // Etapa 2B: Consultar con el User-Agent Crawler y mbasic.facebook.com (muy efectivo para historias y videos móviles)
+  for (const candidateVariant of [
+    { u: targetUrl, ua: FB_CRAWLER_USER_AGENT },
+    { u: targetUrl.replace('://www.facebook.com/', '://mbasic.facebook.com/'), ua: USER_AGENT },
+  ]) {
+    if (signal?.aborted) throw new Error('CANCELLED');
     try {
-      const crawlerPage = await fetchCleanHtmlPage(targetUrl, FB_CRAWLER_USER_AGENT, signal);
-      const foundCrawler = extractFacebookVideoFromHtml(crawlerPage.html);
-      if (foundCrawler) return foundCrawler;
-
-      const infoCrawler = extractCanonicalAndVideoIdFromFacebook(crawlerPage.finalUrl, crawlerPage.html);
-      if (!discoveredVideoId && infoCrawler.videoId) discoveredVideoId = infoCrawler.videoId;
-      if (!discoveredCanonical && infoCrawler.canonicalUrl) {
-        discoveredCanonical = infoCrawler.canonicalUrl;
-        // Probar esa URL canónica recién descubierta con Chrome Desktop
-        const canonicalPage = await fetchCleanHtmlPage(discoveredCanonical, DESKTOP_USER_AGENT, signal);
-        const foundCanonical = extractFacebookVideoFromHtml(canonicalPage.html);
-        if (foundCanonical) return foundCanonical;
-      }
+      const page = await fetchCleanHtmlPage(candidateVariant.u, candidateVariant.ua, signal);
+      const found = extractFacebookVideoFromHtml(page.html);
+      if (found) return found;
+      const info = extractCanonicalAndVideoIdFromFacebook(page.finalUrl, page.html);
+      if (!discoveredVideoId && info.videoId) discoveredVideoId = info.videoId;
+      if (!discoveredCanonical && info.canonicalUrl) discoveredCanonical = info.canonicalUrl;
     } catch (e) {
       if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
     }
   }
 
-  // Etapa 3: Si descubrimos el ID numérico del video/reel, consultar directamente /watch/?v={id} y /reel/{id} con Chrome Desktop
+  // Etapa 3: Si descubrimos el ID numérico del video/reel/historia, consultar directamente /watch/?v={id} y /reel/{id}
   if (discoveredVideoId) {
     for (const directUrl of [
       `https://www.facebook.com/watch/?v=${discoveredVideoId}`,
       `https://www.facebook.com/reel/${discoveredVideoId}/`,
+      `https://mbasic.facebook.com/watch/?v=${discoveredVideoId}`,
     ]) {
       if (signal?.aborted) throw new Error('CANCELLED');
       try {
@@ -549,7 +611,7 @@ async function resolveFacebook(url, signal) {
     }
   }
 
-  // Etapa 4: Reproductor Embed Oficial de Facebook (plugins/video.php) — entrega hd_src / sd_src directo en fbcdn.net
+  // Etapa 4: Reproductor Embed Oficial de Facebook (plugins/video.php)
   const urlsToTryInEmbed = [];
   if (discoveredCanonical) urlsToTryInEmbed.push(discoveredCanonical);
   if (targetUrl && !urlsToTryInEmbed.includes(targetUrl)) urlsToTryInEmbed.push(targetUrl);
@@ -572,7 +634,243 @@ async function resolveFacebook(url, signal) {
     }
   }
 
-  throw new Error('No se encontró un flujo de video público en este enlace de Facebook');
+  // Etapa 5: Extractor externo FDown
+  for (const fdownCandidate of [discoveredCanonical || targetUrl, url]) {
+    if (!fdownCandidate) continue;
+    if (signal?.aborted) throw new Error('CANCELLED');
+    try {
+      const foundFdown = await resolveFacebookViaFDown(fdownCandidate, signal);
+      if (foundFdown) return foundFdown;
+    } catch (e) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+
+  // Etapa 6: Sniffer WebView Nativo silencioso en 2do plano (ejecuta el JS de Facebook e intercepta el MP4)
+  if (NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative) {
+    try {
+      const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(
+        discoveredCanonical || targetUrl,
+        false
+      );
+      if (sniffed && sniffed.downloadUrl) {
+        return {
+          downloadUrl: sniffed.downloadUrl,
+          cookies: sniffed.cookies || '',
+          userAgent: sniffed.userAgent || DESKTOP_USER_AGENT,
+          title: isStoryUrl ? 'facebook_historia' : 'facebook_video',
+          source: 'Facebook WebView',
+        };
+      }
+    } catch (_e) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+
+  throw new Error(
+    isStoryUrl
+      ? 'Esta historia de Facebook es privada o requiere sesión. Toca "Capturar Historia con Sesión" abajo para iniciar sesión una sola vez y descargarla.'
+      : 'No se encontró un flujo de video público en este enlace de Facebook'
+  );
+}
+
+/**
+ * 5B. Extractor especializado para Instagram (Reels, Historias, Publicaciones y enlaces cortos)
+ */
+async function resolveInstagram(url, signal) {
+  let cleanUrl = url.trim();
+  const isStory = /\/stories\//i.test(cleanUrl);
+
+  // Etapa 1: Probar proxies OpenGraph directos (ddinstagram / kkinstagram) para Reels y Posts
+  const scMatch = cleanUrl.match(/instagram\.com\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
+  if (scMatch && scMatch[1]) {
+    const shortcode = scMatch[1];
+    for (const proxyDomain of ['https://www.ddinstagram.com', 'https://kkinstagram.com']) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+      try {
+        const page = await fetchCleanHtmlPage(`${proxyDomain}/reel/${shortcode}/`, FB_CRAWLER_USER_AGENT, signal);
+        const ogVideo =
+          page.html.match(/<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["'](https?:[^"']+)["']/i) ||
+          page.html.match(/<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video(?::secure_url)?["']/i);
+        if (ogVideo && ogVideo[1]) {
+          const candidate = unescapeUrl(ogVideo[1]);
+          if (candidate.startsWith('http')) {
+            return {
+              downloadUrl: candidate,
+              title: `instagram_${shortcode}`,
+              source: 'Instagram HD',
+            };
+          }
+        }
+      } catch (_e) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+      }
+    }
+
+    // Etapa 2: Endpoint /embed/captioned/ oficial de Instagram
+    try {
+      const embedPage = await fetchCleanHtmlPage(
+        `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
+        DESKTOP_USER_AGENT,
+        signal
+      );
+      const vidMatch =
+        embedPage.html.match(/"video_url"\s*:\s*"(https?:[^"]+)"/i) ||
+        embedPage.html.match(/\\"video_url\\"\s*:\s*\\"(https?:[^"\\]+)\\"/i) ||
+        embedPage.html.match(/<video[^>]+src=["'](https?:[^"']+)["']/i);
+      if (vidMatch && vidMatch[1]) {
+        return {
+          downloadUrl: unescapeUrl(vidMatch[1]),
+          title: `instagram_${shortcode}`,
+          source: 'Instagram Embed',
+        };
+      }
+    } catch (_e) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+
+  // Etapa 3: Consultar con cookies nativas guardadas (permite extraer Historias de Instagram si ya inició sesión)
+  try {
+    const directPage = await fetchCleanHtmlPage(cleanUrl, DESKTOP_USER_AGENT, signal);
+    const matchJson =
+      directPage.html.match(/"video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"(https?:[^"]+)"/i) ||
+      directPage.html.match(/"video_url"\s*:\s*"(https?:[^"]+)"/i) ||
+      directPage.html.match(/<meta[^>]+property=["']og:video["'][^>]+content=["'](https?:[^"']+)["']/i);
+    if (matchJson && matchJson[1]) {
+      return {
+        downloadUrl: unescapeUrl(matchJson[1]),
+        title: isStory ? 'instagram_historia' : 'instagram_video',
+        source: 'Instagram Directo',
+      };
+    }
+  } catch (_e) {
+    if (signal?.aborted) throw new Error('CANCELLED');
+  }
+
+  // Etapa 4: Sniffer WebView Nativo silencioso
+  if (NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative) {
+    try {
+      const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(cleanUrl, false);
+      if (sniffed && sniffed.downloadUrl) {
+        return {
+          downloadUrl: sniffed.downloadUrl,
+          cookies: sniffed.cookies || '',
+          userAgent: sniffed.userAgent || USER_AGENT,
+          title: isStory ? 'instagram_historia' : 'instagram_video',
+          source: 'Instagram WebView',
+        };
+      }
+    } catch (_e) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+
+  throw new Error(
+    isStory
+      ? 'Las historias de Instagram requieren sesión activa. Toca "Capturar Historia con Sesión" abajo para descargarla.'
+      : 'No se pudo extraer el video de Instagram automáticamente'
+  );
+}
+
+/**
+ * 5C. Extractor directo para YouTube y YouTube Shorts (vía Innertube Player API)
+ */
+async function resolveYouTube(url, signal) {
+  const idMatch =
+    url.match(/(?:youtube\.com\/(?:watch\?.*v=|shorts\/|embed\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i) ||
+    url.match(/[?&]v=([A-Za-z0-9_-]{11})/i);
+  if (!idMatch || !idMatch[1]) {
+    throw new Error('No se encontró un ID de video de YouTube válido');
+  }
+  const videoId = idMatch[1];
+
+  const clients = [
+    {
+      name: 'ANDROID_VR',
+      context: {
+        client: {
+          clientName: 'ANDROID_VR',
+          clientVersion: '1.60.19',
+          androidSdkVersion: 34,
+          osName: 'Android',
+          osVersion: '14',
+          hl: 'es',
+          gl: 'MX',
+        },
+      },
+      ua: 'com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 14; en_US; Quest 3; Build/UP1A.231005.007.A1; Cronet/132.0.6808.3)',
+    },
+    {
+      name: 'IOS',
+      context: {
+        client: {
+          clientName: 'IOS',
+          clientVersion: '19.45.4',
+          deviceMake: 'Apple',
+          deviceModel: 'iPhone16,2',
+          osName: 'iPhone',
+          osVersion: '18.1.0.22B83',
+          hl: 'es',
+          gl: 'MX',
+        },
+      },
+      ua: 'com.google.ios.youtube/19.45.4 (iPhone16,2; U; CPU iOS 18_1_0 like Mac OS X;)',
+    },
+  ];
+
+  for (const c of clients) {
+    if (signal?.aborted) throw new Error('CANCELLED');
+    try {
+      const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': c.ua,
+          'X-YouTube-Client-Name': c.name === 'IOS' ? '5' : '28',
+          'X-YouTube-Client-Version': c.context.client.clientVersion,
+        },
+        body: JSON.stringify({
+          videoId,
+          context: c.context,
+          contentCheckOk: true,
+          racyCheckOk: true,
+        }),
+        signal,
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const formats = data?.streamingData?.formats || [];
+      const adaptive = data?.streamingData?.adaptiveFormats || [];
+      // Preferir formatos muxed (con audio y video en MP4) ordenados por mayor resolución
+      const muxedMp4 = formats
+        .filter((f) => f.url && /video\/mp4/i.test(f.mimeType || ''))
+        .sort((a, b) => (b.height || 0) - (a.height || 0));
+      if (muxedMp4.length > 0) {
+        return {
+          downloadUrl: muxedMp4[0].url,
+          title: data?.videoDetails?.title || `youtube_${videoId}`,
+          userAgent: c.ua,
+          source: `YouTube ${muxedMp4[0].qualityLabel || 'MP4'}`,
+        };
+      }
+      const adaptiveMp4 = adaptive
+        .filter((f) => f.url && /video\/mp4/i.test(f.mimeType || ''))
+        .sort((a, b) => (b.height || 0) - (a.height || 0));
+      if (adaptiveMp4.length > 0) {
+        return {
+          downloadUrl: adaptiveMp4[0].url,
+          title: data?.videoDetails?.title || `youtube_${videoId}`,
+          userAgent: c.ua,
+          source: 'YouTube Video',
+        };
+      }
+    } catch (_e) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+
+  throw new Error('No se pudo extraer stream directo de YouTube');
 }
 
 /**
@@ -693,13 +991,29 @@ export const videoDownloadService = {
   /**
    * Resuelve cualquier enlace de internet a un URL directo de video MP4/multimedia.
    */
-  async resolveVideoUrl(rawInput, signal) {
+  async resolveVideoUrl(rawInput, signal, { interactive = false } = {}) {
     const url = extractUrlFromText(rawInput);
     if (!url || !/^https?:\/\//i.test(url)) {
       throw new Error('Por favor ingresa un enlace válido que comience con http:// o https://');
     }
 
     const platform = detectPlatform(url);
+
+    // Si el usuario solicitó captura interactiva con sesión (para Historias de Facebook/Instagram o sitios con login)
+    if (interactive && NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative) {
+      const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(url, true);
+      if (sniffed && sniffed.downloadUrl) {
+        return {
+          downloadUrl: sniffed.downloadUrl,
+          cookies: sniffed.cookies || '',
+          userAgent: sniffed.userAgent || USER_AGENT,
+          title: `${platform.id}_historia`,
+          platform,
+          source: `${platform.name} (Sesión)`,
+        };
+      }
+      throw new Error('No se detectó video en la ventana interactiva.');
+    }
 
     if (platform.id === 'direct') {
       return {
@@ -710,9 +1024,31 @@ export const videoDownloadService = {
       };
     }
 
+    let specificError = null;
+
     if (platform.id === 'facebook') {
       try {
         const res = await resolveFacebook(url, signal);
+        return { ...res, platform };
+      } catch (e) {
+        if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+        specificError = e?.message;
+      }
+    }
+
+    if (platform.id === 'instagram') {
+      try {
+        const res = await resolveInstagram(url, signal);
+        return { ...res, platform };
+      } catch (e) {
+        if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+        specificError = e?.message;
+      }
+    }
+
+    if (platform.id === 'youtube') {
+      try {
+        const res = await resolveYouTube(url, signal);
         return { ...res, platform };
       } catch (e) {
         if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
@@ -769,15 +1105,39 @@ export const videoDownloadService = {
       if (signal?.aborted) throw new Error('CANCELLED');
     }
 
+    // Respaldo universal: Sniffer WebView Nativo silencioso para cualquier sitio web
+    if (
+      platform.id !== 'facebook' &&
+      platform.id !== 'instagram' &&
+      NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative
+    ) {
+      try {
+        const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(url, false);
+        if (sniffed && sniffed.downloadUrl) {
+          return {
+            downloadUrl: sniffed.downloadUrl,
+            cookies: sniffed.cookies || '',
+            userAgent: sniffed.userAgent || DESKTOP_USER_AGENT,
+            title: `${platform.id}_video`,
+            platform,
+            source: 'Extractor Web Nativo',
+          };
+        }
+      } catch (_e) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+      }
+    }
+
     throw new Error(
-      'No se pudo extraer el video automáticamente. Verifica que el enlace sea público o utiliza un enlace directo al video.'
+      specificError ||
+        'No se pudo extraer el video automáticamente. Si es una historia privada, usa el botón "Capturar Historia con Sesión".'
     );
   },
 
   /**
    * Descarga el video desde su URL con soporte completo para PAUSAR, REANUDAR y CANCELAR.
    */
-  async downloadVideoFromUrl(rawInput, { onStatus, onProgress, onController } = {}) {
+  async downloadVideoFromUrl(rawInput, { onStatus, onProgress, onController, interactive = false } = {}) {
     const abortController = new AbortController();
     let isCancelled = false;
     let isPaused = false;
@@ -843,9 +1203,17 @@ export const videoDownloadService = {
       onController(controller);
     }
 
-    if (onStatus) onStatus('Analizando enlace y buscando video…');
+    if (onStatus) {
+      onStatus(
+        interactive
+          ? 'Abriendo extractor con sesión…'
+          : 'Analizando enlace y buscando video…'
+      );
+    }
 
-    const resolved = await videoDownloadService.resolveVideoUrl(rawInput, abortController.signal);
+    const resolved = await videoDownloadService.resolveVideoUrl(rawInput, abortController.signal, {
+      interactive,
+    });
     if (isCancelled) throw new Error('CANCELLED');
 
     // Si el usuario pausó mientras se analizaba el enlace, esperar aquí antes de iniciar la descarga
@@ -855,7 +1223,7 @@ export const videoDownloadService = {
       if (isCancelled) throw new Error('CANCELLED');
     }
 
-    const { downloadUrl, title, platform, source } = resolved;
+    const { downloadUrl, title, platform, source, cookies, userAgent } = resolved;
 
     if (onStatus) onStatus(`Descargando video (${source || platform.name})…`);
 
@@ -877,14 +1245,26 @@ export const videoDownloadService = {
       // ignorar
     }
 
+    let cookieHeader = cookies || '';
+    if (!cookieHeader && NativeModules?.VideoEngineModule?.getCookiesForUrlNative) {
+      try {
+        cookieHeader = (await NativeModules.VideoEngineModule.getCookiesForUrlNative(downloadUrl)) || '';
+      } catch (_e) {}
+    }
+
+    const requestHeaders = {
+      'User-Agent': userAgent || DESKTOP_USER_AGENT,
+      Accept: '*/*',
+    };
+    if (cookieHeader) {
+      requestHeaders.Cookie = cookieHeader;
+    }
+
     downloadResumable = FileSystem.createDownloadResumable(
       downloadUrl,
       targetPath,
       {
-        headers: {
-          'User-Agent': DESKTOP_USER_AGENT,
-          Accept: '*/*',
-        },
+        headers: requestHeaders,
       },
       (dp) => {
         if (onProgress && !isCancelled) {

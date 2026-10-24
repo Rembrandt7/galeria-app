@@ -12,6 +12,8 @@ import {
   TextInput,
   TouchableOpacity,
   BackHandler,
+  NativeModules,
+  DeviceEventEmitter,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as MediaLibrary from 'expo-media-library/legacy';
@@ -68,6 +70,7 @@ export default function App() {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
   const [downloaderVisible, setDownloaderVisible] = useState(false);
+  const [sharedIncomingUrl, setSharedIncomingUrl] = useState(null);
   const [storeVisible, setStoreVisible] = useState(false);
 
   // Carpetas ocultas y modo todo visible
@@ -115,6 +118,45 @@ export default function App() {
       // Quitar pantalla de carga INMEDIATAMENTE (< 1 segundo)
       setInitialLoading(false);
     })();
+  }, []);
+
+  // Detectar enlaces compartidos hacia "Mi Galería" desde cualquier app (Facebook, Instagram, TikTok, X, YouTube, Navegador, WhatsApp, etc.)
+  useEffect(() => {
+    const checkSharedIntent = async () => {
+      try {
+        if (NativeModules?.VideoEngineModule?.getSharedTextNative) {
+          const sharedText = await NativeModules.VideoEngineModule.getSharedTextNative(true);
+          if (sharedText && typeof sharedText === 'string' && sharedText.trim().length > 0) {
+            setSharedIncomingUrl(sharedText.trim());
+            setDownloaderVisible(true);
+          }
+        }
+      } catch (_e) {}
+    };
+
+    checkSharedIntent();
+
+    const subEvent = DeviceEventEmitter.addListener('SharedVideoLinkReceived', (evt) => {
+      const txt = evt?.text;
+      if (txt && typeof txt === 'string' && txt.trim().length > 0) {
+        if (NativeModules?.VideoEngineModule?.getSharedTextNative) {
+          NativeModules.VideoEngineModule.getSharedTextNative(true).catch(() => {});
+        }
+        setSharedIncomingUrl(txt.trim());
+        setDownloaderVisible(true);
+      }
+    });
+
+    const subAppState = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        checkSharedIntent();
+      }
+    });
+
+    return () => {
+      subEvent.remove();
+      subAppState.remove();
+    };
   }, []);
 
   // Elegir o agregar una nueva carpeta del sistema
@@ -695,6 +737,8 @@ export default function App() {
         {/* Modal para Descargar Videos desde Internet mediante enlace */}
         <VideoDownloaderModal
           visible={downloaderVisible}
+          initialSharedUrl={sharedIncomingUrl}
+          onClearSharedUrl={() => setSharedIncomingUrl(null)}
           onClose={() => setDownloaderVisible(false)}
           onReopen={() => setDownloaderVisible(true)}
           onVideoDownloaded={async () => {

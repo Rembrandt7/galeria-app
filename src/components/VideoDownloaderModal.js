@@ -16,6 +16,7 @@ import {
   Animated,
   PanResponder,
   Platform,
+  NativeModules,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
@@ -42,6 +43,8 @@ export default function VideoDownloaderModal({
   onVideoDownloaded,
   onOpenDownloadedFolder,
   onPlayDownloadedAsset,
+  initialSharedUrl,
+  onClearSharedUrl,
 }) {
   const [urlInput, setUrlInput] = useState('');
   const [downloadItems, setDownloadItems] = useState([]);
@@ -116,11 +119,13 @@ export default function VideoDownloaderModal({
   };
 
   // Ejecutar la descarga de una fila en la hilera
-  const startDownloadForItem = async (itemId, cleanUrl, platformInfo) => {
+  const startDownloadForItem = async (itemId, cleanUrl, platformInfo, interactive = false) => {
     setFloatingDismissed(false);
     updateItemById(itemId, {
       status: 'downloading',
-      statusText: 'Analizando enlace y preparando descarga…',
+      statusText: interactive
+        ? 'Abriendo ventana con sesión para capturar historia/video…'
+        : 'Analizando enlace y preparando descarga…',
       percent: 0.04,
       writtenBytes: 0,
       totalBytes: 0,
@@ -129,6 +134,7 @@ export default function VideoDownloaderModal({
 
     try {
       const result = await videoDownloadService.downloadVideoFromUrl(cleanUrl, {
+        interactive,
         onStatus: (msg) => {
           updateItemById(itemId, { statusText: msg });
         },
@@ -186,13 +192,12 @@ export default function VideoDownloaderModal({
     }
   };
 
-  // Agregar un nuevo video a la hilera de abajo y comenzar a descargarlo inmediatamente
-  const handleAddAndStartDownload = () => {
-    const cleanUrl = extractUrlFromText(urlInput);
+  const enqueueAndStartUrl = (rawText, interactive = false) => {
+    const cleanUrl = extractUrlFromText(rawText);
     if (!cleanUrl || !/^https?:\/\//i.test(cleanUrl)) {
       Alert.alert(
         'Enlace inválido',
-        'Por favor pega un enlace válido de video (que empiece con http:// o https://).'
+        'Por favor pega o comparte un enlace válido de video (que empiece con http:// o https://).'
       );
       return;
     }
@@ -208,8 +213,8 @@ export default function VideoDownloaderModal({
       title: `${platformInfo.name}: ${shortUrlTitle}`,
       filename: null,
       platform: platformInfo,
-      status: 'downloading', // 'downloading' | 'paused' | 'completed' | 'error' | 'cancelled'
-      statusText: 'Iniciando descarga…',
+      status: 'downloading',
+      statusText: interactive ? 'Abriendo captura con sesión…' : 'Iniciando descarga…',
       percent: 0.04,
       writtenBytes: 0,
       totalBytes: 0,
@@ -221,12 +226,47 @@ export default function VideoDownloaderModal({
       date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    // Apilar en la hilera hacia abajo
     setDownloadItems((prev) => [newItem, ...prev]);
     setUrlInput('');
     setFilterStatus('all');
 
-    startDownloadForItem(newId, cleanUrl, platformInfo);
+    startDownloadForItem(newId, cleanUrl, platformInfo, interactive);
+  };
+
+  // Si el usuario compartió un enlace desde otra app (Facebook, Instagram, TikTok, X, YouTube, etc.),
+  // iniciar la descarga automáticamente en cuanto llega
+  useEffect(() => {
+    if (initialSharedUrl) {
+      const cleanShared = extractUrlFromText(initialSharedUrl);
+      if (onClearSharedUrl) onClearSharedUrl();
+      if (cleanShared && /^https?:\/\//i.test(cleanShared)) {
+        enqueueAndStartUrl(cleanShared, false);
+      } else if (initialSharedUrl.trim()) {
+        setUrlInput(initialSharedUrl.trim());
+      }
+    }
+  }, [initialSharedUrl]);
+
+  const handlePasteFromClipboard = async () => {
+    try {
+      if (NativeModules?.VideoEngineModule?.getClipboardTextNative) {
+        const clip = await NativeModules.VideoEngineModule.getClipboardTextNative();
+        if (clip && clip.trim()) {
+          setUrlInput(clip.trim());
+        } else {
+          Alert.alert('Portapapeles vacío', 'Copia primero el enlace del video o compártelo directamente hacia Mi Galería.');
+        }
+      }
+    } catch (_e) {}
+  };
+
+  // Agregar un nuevo video a la hilera de abajo y comenzar a descargarlo inmediatamente
+  const handleAddAndStartDownload = () => {
+    enqueueAndStartUrl(urlInput, false);
+  };
+
+  const handleAddAndStartInteractive = () => {
+    enqueueAndStartUrl(urlInput, true);
   };
 
   // Pausar o Reanudar un elemento de la hilera
@@ -266,7 +306,14 @@ export default function VideoDownloaderModal({
   const handleRetryItem = (item) => {
     if (!item?.url) return;
     const platformInfo = item.platform || detectPlatform(item.url);
-    startDownloadForItem(item.id, item.url, platformInfo);
+    startDownloadForItem(item.id, item.url, platformInfo, false);
+  };
+
+  // Capturar historia/video con sesión interactiva (Facebook/Instagram Stories privadas o con login)
+  const handleRetryInteractiveItem = (item) => {
+    if (!item?.url) return;
+    const platformInfo = item.platform || detectPlatform(item.url);
+    startDownloadForItem(item.id, item.url, platformInfo, true);
   };
 
   // Mover un elemento hacia arriba o hacia abajo en la hilera
@@ -484,12 +531,21 @@ export default function VideoDownloaderModal({
               returnKeyType="go"
               onSubmitEditing={handleAddAndStartDownload}
             />
-            {urlInput.length > 0 && (
+            {urlInput.length > 0 ? (
               <TouchableOpacity
                 onPress={() => setUrlInput('')}
                 style={styles.clearBtn}
               >
                 <Ionicons name="close-circle" size={20} color={theme.colors.textMuted} />
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                onPress={handlePasteFromClipboard}
+                style={styles.pasteClipboardBtn}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="clipboard-outline" size={14} color="#38bdf8" />
+                <Text style={styles.pasteClipboardText}>Pegar</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -513,7 +569,7 @@ export default function VideoDownloaderModal({
               </View>
             ) : (
               <Text style={styles.inputHintText}>
-                Puedes agregar varios enlaces; se apilarán abajo en hilera.
+                También puedes dar a &quot;Compartir&quot; en cualquier app y elegir Mi Galería.
               </Text>
             )}
 
@@ -530,6 +586,19 @@ export default function VideoDownloaderModal({
               <Text style={styles.addDownloadBtnText}>Descargar video</Text>
             </TouchableOpacity>
           </View>
+
+          {extractedUrl.startsWith('http') && (
+            <TouchableOpacity
+              style={styles.interactiveStoryBtn}
+              onPress={handleAddAndStartInteractive}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="key-outline" size={16} color="#fde68a" />
+              <Text style={styles.interactiveStoryBtnText}>
+                Capturar Historia / Video con Sesión (Facebook / Instagram)
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
 
         {/* 4. RESUMEN Y FILTROS DE LA HILERA (EN CURSO / DESCARGADOS / CON ERROR) */}
@@ -888,12 +957,12 @@ export default function VideoDownloaderModal({
 
                         {item.url && (
                           <TouchableOpacity
-                            style={[styles.rowSmallBtn, styles.rowBtnBrowser]}
-                            onPress={() => Linking.openURL(item.url)}
+                            style={[styles.rowSmallBtn, styles.rowBtnSession]}
+                            onPress={() => handleRetryInteractiveItem(item)}
                           >
-                            <Ionicons name="globe-outline" size={15} color="#93c5fd" />
-                            <Text style={[styles.rowSmallBtnText, { color: '#93c5fd' }]}>
-                              Abrir en navegador
+                            <Ionicons name="key-outline" size={15} color="#fde68a" />
+                            <Text style={[styles.rowSmallBtnText, { color: '#fde68a' }]}>
+                              Capturar con Sesión
                             </Text>
                           </TouchableOpacity>
                         )}
@@ -1046,6 +1115,39 @@ const styles = StyleSheet.create({
   },
   clearBtn: {
     padding: 6,
+  },
+  pasteClipboardBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(56, 189, 248, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  pasteClipboardText: {
+    color: '#38bdf8',
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  interactiveStoryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 7,
+    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.45)',
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  interactiveStoryBtnText: {
+    color: '#fde68a',
+    fontSize: 12,
+    fontWeight: '800',
   },
   inputActionsRow: {
     flexDirection: 'row',
@@ -1390,6 +1492,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#1e293b',
     borderWidth: 1,
     borderColor: '#334155',
+  },
+  rowBtnSession: {
+    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.5)',
   },
   rowSmallBtnText: {
     color: '#ffffff',
