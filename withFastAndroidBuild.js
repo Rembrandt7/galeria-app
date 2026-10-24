@@ -53,9 +53,13 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.InputStreamReader
+import java.net.HttpURLConnection
+import java.net.URL
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -102,6 +106,89 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun removeListeners(count: Int) {
         // Requerido por React Native NativeEventEmitter
+    }
+
+    @ReactMethod
+    fun fetchCleanHtmlNative(targetUrl: String, userAgent: String, promise: Promise) {
+        executor.execute {
+            try {
+                var currentUrl = targetUrl.trim()
+                var redirects = 0
+                var finalHtml = ""
+                var finalStatus = 0
+
+                while (redirects < 7) {
+                    val urlObj = URL(currentUrl)
+                    val conn = (urlObj.openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = false
+                        connectTimeout = 12000
+                        readTimeout = 15000
+                        requestMethod = "GET"
+                        useCaches = false
+                        setRequestProperty("User-Agent", userAgent)
+                        setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+                        setRequestProperty("Accept-Language", "es-MX,es;q=0.9,en-US;q=0.8,en;q=0.7")
+                        setRequestProperty("Sec-Fetch-Dest", "document")
+                        setRequestProperty("Sec-Fetch-Mode", "navigate")
+                        setRequestProperty("Sec-Fetch-Site", "none")
+                        setRequestProperty("Sec-Fetch-User", "?1")
+                        setRequestProperty("Upgrade-Insecure-Requests", "1")
+                    }
+
+                    val code = conn.responseCode
+                    finalStatus = code
+                    if (code in 300..399) {
+                        val loc = conn.getHeaderField("Location") ?: break
+                        conn.disconnect()
+                        var resolvedLoc = try {
+                            URL(urlObj, loc).toString()
+                        } catch (_: Exception) {
+                            loc
+                        }
+                        // Si Facebook redirige a /login/?next=..., desenvolver el parámetro next real sin pasar por login
+                        if (resolvedLoc.contains("/login") && resolvedLoc.contains("next=")) {
+                            val parsedUri = Uri.parse(resolvedLoc)
+                            val nextParam = parsedUri.getQueryParameter("next")
+                            if (!nextParam.isNullOrBlank() && nextParam.startsWith("http")) {
+                                resolvedLoc = nextParam
+                            }
+                        }
+                        resolvedLoc = resolvedLoc
+                            .replace("://m.facebook.com/", "://www.facebook.com/")
+                            .replace("://mbasic.facebook.com/", "://www.facebook.com/")
+                            .replace("://web.facebook.com/", "://www.facebook.com/")
+                        currentUrl = resolvedLoc
+                        redirects++
+                        continue
+                    }
+
+                    val stream = if (code in 200..299) conn.inputStream else (conn.errorStream ?: conn.inputStream)
+                    if (stream != null) {
+                        BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
+                            val sb = StringBuilder()
+                            val buf = CharArray(16384)
+                            var read: Int
+                            while (reader.read(buf).also { read = it } != -1) {
+                                sb.append(buf, 0, read)
+                                if (sb.length > 4_000_000) break
+                            }
+                            finalHtml = sb.toString()
+                        }
+                    }
+                    conn.disconnect()
+                    break
+                }
+
+                val map = Arguments.createMap().apply {
+                    putInt("status", finalStatus)
+                    putString("finalUrl", currentUrl)
+                    putString("html", finalHtml)
+                }
+                promise.resolve(map)
+            } catch (e: Exception) {
+                promise.reject("FETCH_CLEAN_ERR", e.message ?: "Error al consultar página", e)
+            }
+        }
     }
 
     @ReactMethod

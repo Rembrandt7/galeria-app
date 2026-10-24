@@ -15,6 +15,12 @@ const DOWNLOAD_QUEUE_STORAGE_KEY = '@galeria_video_downloads_list_v1';
 const USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
 
+const DESKTOP_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+const FB_CRAWLER_USER_AGENT =
+  'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)';
+
 /**
  * Extrae el primer enlace http/https válido dentro de un texto pegado
  * (por ejemplo cuando el usuario copia un mensaje completo de WhatsApp o TikTok).
@@ -51,14 +57,12 @@ export function detectPlatform(url) {
 }
 
 /**
- * Decodifica secuencias escapadas en JSON o HTML (\u0026, &amp;, \/...)
+ * Decodifica secuencias escapadas en JSON o HTML (\u0025, \u0026, &amp;, \/...)
  */
 function unescapeUrl(raw) {
   if (!raw) return '';
   return raw
-    .replace(/\\u0026/g, '&')
-    .replace(/\\u002F/gi, '/')
-    .replace(/\\u003D/gi, '=')
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/\\\//g, '/')
     .replace(/&amp;/g, '&')
     .trim();
@@ -317,7 +321,218 @@ async function resolvePinterest(url, signal) {
 }
 
 /**
- * 5. Extractor multi-plataforma vía instancias Cobalt API
+ * 5. Extractor especializado de múltiples capas para Facebook (Reels, Share /share/v/ y /share/r/, Watch, fb.watch y Publicaciones)
+ */
+function normalizeFacebookUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  let u = rawUrl.trim();
+  // Si es una redirección /login/?next=..., extraer el destino real
+  if (/\/login(?:\.php)?\?/i.test(u) && /[?&]next=([^&#]+)/i.test(u)) {
+    try {
+      const m = u.match(/[?&]next=([^&#]+)/i);
+      if (m && m[1]) {
+        const decodedNext = decodeURIComponent(m[1]);
+        if (decodedNext.startsWith('http')) {
+          u = decodedNext;
+        }
+      }
+    } catch (_e) {}
+  }
+  return u
+    .replace(/^https?:\/\/(?:m|mbasic|web|touch|business)\.facebook\.com\//i, 'https://www.facebook.com/');
+}
+
+function extractFacebookVideoFromHtml(html) {
+  if (!html || typeof html !== 'string') return null;
+
+  const fbPatterns = [
+    { regex: /"browser_native_hd_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
+    { regex: /"playable_url_quality_hd"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
+    { regex: /"hd_src_no_ratelimit"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
+    { regex: /"hd_src"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
+    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"[^}]{0,220}"quality"\s*:\s*"HD"/i, label: 'Facebook HD' },
+    { regex: /"quality"\s*:\s*"HD"[^}]{0,220}"progressive_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
+    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook Video' },
+    { regex: /"browser_native_sd_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
+    { regex: /"playable_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
+    { regex: /"sd_src_no_ratelimit"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
+    { regex: /"sd_src"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
+    { regex: /"video_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook Video' },
+    { regex: /<meta[^>]+property=["']og:video:secure_url["'][^>]+content=["'](https?:[^"']+)["']/i, label: 'Facebook Video' },
+    { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video:secure_url["']/i, label: 'Facebook Video' },
+    { regex: /<meta[^>]+property=["']og:video["'][^>]+content=["'](https?:[^"']+)["']/i, label: 'Facebook Video' },
+    { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video["']/i, label: 'Facebook Video' },
+  ];
+
+  for (const item of fbPatterns) {
+    const match = html.match(item.regex);
+    if (match && match[1]) {
+      const clean = unescapeUrl(match[1]);
+      if (clean && clean.startsWith('http') && !clean.includes('facebook.com/plugins/')) {
+        const titleMatch =
+          html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
+          html.match(/<title[^>]*>([^<]+)<\/title>/i);
+        const rawTitle = titleMatch && titleMatch[1] ? unescapeUrl(titleMatch[1]).slice(0, 60) : 'facebook_video';
+        return {
+          downloadUrl: clean,
+          title: rawTitle,
+          source: item.label,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+function extractCanonicalAndVideoIdFromFacebook(url, html = '') {
+  let canonical = null;
+  if (html) {
+    const ogUrlMatch =
+      html.match(/<meta[^>]+property=["']og:url["'][^>]+content=["'](https?:[^"']+)["']/i) ||
+      html.match(/<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:url["']/i) ||
+      html.match(/<link[^>]+rel=["']canonical["'][^>]+href=["'](https?:[^"']+)["']/i);
+    if (ogUrlMatch && ogUrlMatch[1]) {
+      const candidate = unescapeUrl(ogUrlMatch[1]);
+      if (candidate.startsWith('http') && !candidate.includes('/login')) {
+        canonical = normalizeFacebookUrl(candidate);
+      }
+    }
+  }
+
+  const combined = `${canonical || ''} ${url || ''} ${(html || '').slice(0, 120000)}`;
+  const idMatch =
+    combined.match(/\/reel\/(\d{8,25})/i) ||
+    combined.match(/\/videos\/(?:[^/?#]+\/)?(\d{8,25})/i) ||
+    combined.match(/[?&]v=(\d{8,25})/i) ||
+    combined.match(/story_fbid=(\d{8,25})/i) ||
+    combined.match(/"video_id"\s*:\s*"?(\d{10,25})"?/i);
+
+  return {
+    canonicalUrl: canonical,
+    videoId: idMatch ? idMatch[1] : null,
+  };
+}
+
+async function fetchCleanHtmlPage(targetUrl, userAgent, signal) {
+  if (signal?.aborted) throw new Error('CANCELLED');
+  if (NativeModules?.VideoEngineModule?.fetchCleanHtmlNative) {
+    try {
+      const res = await NativeModules.VideoEngineModule.fetchCleanHtmlNative(targetUrl, userAgent);
+      if (res && typeof res.html === 'string' && res.html.length > 0) {
+        return {
+          html: res.html,
+          finalUrl: res.finalUrl || targetUrl,
+          status: res.status || 200,
+        };
+      }
+    } catch (_e) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+
+  const res = await fetch(targetUrl, {
+    method: 'GET',
+    credentials: 'omit',
+    headers: {
+      'User-Agent': userAgent,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'es-MX,es;q=0.9,en-US;q=0.8,en;q=0.7',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      'Upgrade-Insecure-Requests': '1',
+    },
+    signal,
+  });
+
+  const html = await res.text();
+  return {
+    html,
+    finalUrl: res.url || targetUrl,
+    status: res.status,
+  };
+}
+
+async function resolveFacebook(url, signal) {
+  let targetUrl = normalizeFacebookUrl(url);
+  let discoveredVideoId = null;
+  let discoveredCanonical = null;
+
+  // Etapa 1: Consultar con el rastreador oficial de vista previa (facebookexternalhit/1.1)
+  // Desenvuelve automáticamente enlaces cortos /share/v/, /share/r/ y fb.watch sin pedir login
+  try {
+    const page1 = await fetchCleanHtmlPage(targetUrl, FB_CRAWLER_USER_AGENT, signal);
+    const found1 = extractFacebookVideoFromHtml(page1.html);
+    if (found1) return found1;
+
+    const info1 = extractCanonicalAndVideoIdFromFacebook(page1.finalUrl, page1.html);
+    if (info1.videoId) discoveredVideoId = info1.videoId;
+    if (info1.canonicalUrl) discoveredCanonical = info1.canonicalUrl;
+    if (page1.finalUrl && page1.finalUrl !== targetUrl) {
+      targetUrl = normalizeFacebookUrl(page1.finalUrl);
+    }
+  } catch (e) {
+    if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+  }
+
+  // Etapa 2: Consultar con navegador Chrome de Escritorio (Recibe el JSON completo de Relay con browser_native_hd_url)
+  const urlForStage2 = discoveredCanonical || targetUrl;
+  try {
+    const page2 = await fetchCleanHtmlPage(urlForStage2, DESKTOP_USER_AGENT, signal);
+    const found2 = extractFacebookVideoFromHtml(page2.html);
+    if (found2) return found2;
+
+    const info2 = extractCanonicalAndVideoIdFromFacebook(page2.finalUrl, page2.html);
+    if (!discoveredVideoId && info2.videoId) discoveredVideoId = info2.videoId;
+    if (!discoveredCanonical && info2.canonicalUrl) discoveredCanonical = info2.canonicalUrl;
+  } catch (e) {
+    if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+  }
+
+  // Etapa 3: Reproductor Embed Oficial de Facebook (plugins/video.php) — ligero y entrega hd_src / sd_src directo
+  const urlsToTryInEmbed = [];
+  if (discoveredCanonical) urlsToTryInEmbed.push(discoveredCanonical);
+  if (targetUrl && !urlsToTryInEmbed.includes(targetUrl)) urlsToTryInEmbed.push(targetUrl);
+  if (discoveredVideoId) {
+    urlsToTryInEmbed.push(`https://www.facebook.com/watch/?v=${discoveredVideoId}`);
+    urlsToTryInEmbed.push(`https://www.facebook.com/reel/${discoveredVideoId}/`);
+  }
+
+  for (const candidateHref of urlsToTryInEmbed) {
+    if (signal?.aborted) throw new Error('CANCELLED');
+    try {
+      const embedEndpoint = `https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(candidateHref)}&show_text=0`;
+      const embedPage = await fetchCleanHtmlPage(embedEndpoint, DESKTOP_USER_AGENT, signal);
+      const foundEmbed = extractFacebookVideoFromHtml(embedPage.html);
+      if (foundEmbed) return foundEmbed;
+    } catch (e) {
+      if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+    }
+  }
+
+  // Etapa 4: Si encontramos un ID numérico de video/reel, consultar directamente /reel/{id} y /watch/?v={id}
+  if (discoveredVideoId) {
+    for (const directUrl of [
+      `https://www.facebook.com/reel/${discoveredVideoId}/`,
+      `https://www.facebook.com/watch/?v=${discoveredVideoId}`,
+    ]) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+      try {
+        const directPage = await fetchCleanHtmlPage(directUrl, DESKTOP_USER_AGENT, signal);
+        const foundDirect = extractFacebookVideoFromHtml(directPage.html);
+        if (foundDirect) return foundDirect;
+      } catch (e) {
+        if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+      }
+    }
+  }
+
+  throw new Error('No se encontró un flujo de video público en este enlace de Facebook');
+}
+
+/**
+ * 6. Extractor multi-plataforma vía instancias Cobalt API
  */
 async function resolveViaCobaltInstances(url, parentSignal) {
   const instances = [
@@ -374,10 +589,14 @@ async function resolveViaCobaltInstances(url, parentSignal) {
  */
 async function resolveFromWebPageHtml(url, signal) {
   const res = await fetch(url, {
+    credentials: 'omit',
     headers: {
-      'User-Agent': USER_AGENT,
+      'User-Agent': DESKTOP_USER_AGENT,
       Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'es-MX,es;q=0.9,en;q=0.8',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
     },
     signal,
   });
@@ -445,6 +664,15 @@ export const videoDownloadService = {
         platform,
         source: 'Enlace Directo',
       };
+    }
+
+    if (platform.id === 'facebook') {
+      try {
+        const res = await resolveFacebook(url, signal);
+        return { ...res, platform };
+      } catch (e) {
+        if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+      }
     }
 
     if (platform.id === 'tiktok') {
@@ -610,7 +838,7 @@ export const videoDownloadService = {
       targetPath,
       {
         headers: {
-          'User-Agent': USER_AGENT,
+          'User-Agent': DESKTOP_USER_AGENT,
           Accept: '*/*',
         },
       },
