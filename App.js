@@ -11,6 +11,7 @@ import {
   Modal,
   TextInput,
   TouchableOpacity,
+  BackHandler,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as MediaLibrary from 'expo-media-library';
@@ -383,6 +384,60 @@ export default function App() {
     setViewerVisible(true);
   };
 
+  // Botón físico Atrás de Android a nivel global: regresa a Álbumes o a la pestaña inicial antes de salir
+  useEffect(() => {
+    const onBackPress = () => {
+      if (viewerVisible) return false; // FullScreenViewer maneja su propio BackHandler
+      if (pinModalVisible) {
+        setPinModalVisible(false);
+        return true;
+      }
+      if (settingsVisible) {
+        setSettingsVisible(false);
+        return true;
+      }
+      if (dupVisible) {
+        setDupVisible(false);
+        return true;
+      }
+      if (cameraVisible) {
+        setCameraVisible(false);
+        return true;
+      }
+      if (downloaderVisible) {
+        setDownloaderVisible(false);
+        return true;
+      }
+      if (selectedAlbum) {
+        handleBackFromAlbum();
+        return true;
+      }
+      if (filterType !== 'all') {
+        setFilterType('all');
+        loadMedia(true, selectedAlbum?.id || null, 'all');
+        return true;
+      }
+      if (activeTab !== 'folder') {
+        setActiveTab('folder');
+        return true;
+      }
+      return false; // En la pantalla inicial ('folder' raíz) permite salir de la app
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [
+    viewerVisible,
+    pinModalVisible,
+    settingsVisible,
+    dupVisible,
+    cameraVisible,
+    downloaderVisible,
+    selectedAlbum,
+    filterType,
+    activeTab,
+  ]);
+
   // Título y subtítulo del Header
   const getHeaderProps = () => {
     if (selectedAlbum) {
@@ -457,6 +512,10 @@ export default function App() {
   const headerProps = getHeaderProps();
   const currentAssetInViewer = displayedAssets[viewerIndex];
   const isCurrentAssetFavorite = Boolean(currentAssetInViewer && favorites[currentAssetInViewer.id]);
+  const hasBothInActiveList =
+    filterType !== 'all' ||
+    (displayedAssets.some((a) => a.mediaType === 'photo') &&
+      displayedAssets.some((a) => a.mediaType === 'video'));
 
   return (
     <SafeAreaProvider>
@@ -469,7 +528,13 @@ export default function App() {
           onRefresh={activeTab !== 'folder' ? handleRefresh : null}
           isRefreshing={isRefreshing}
           filterType={filterType}
-          onToggleFilter={activeTab !== 'albums' || selectedAlbum ? handleToggleFilter : null}
+          onToggleFilter={
+            activeTab !== 'folder' &&
+            (activeTab !== 'albums' || selectedAlbum) &&
+            hasBothInActiveList
+              ? handleToggleFilter
+              : null
+          }
           onPickFolder={activeTab === 'folder' ? handlePickFolder : null}
           onFindDuplicates={
             (activeTab === 'photos' || activeTab === 'folder') && !selectedAlbum

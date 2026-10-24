@@ -52,8 +52,62 @@ export default function PhotoGrid({
   );
 
   const cycleColumns = () => {
-    setNumColumns((prev) => (prev === 3 ? 4 : prev === 4 ? 2 : 3));
+    setNumColumns((prev) => (prev === 3 ? 4 : prev === 4 ? 2 : prev === 2 ? 1 : 3));
   };
+
+  // Gesto de pellizco con 2 dedos en la cuadrícula para hacer zoom sin entrar a la foto (4 <-> 3 <-> 2 <-> 1 col)
+  const pinchRef = useRef({ active: false, startDist: 0, startCols: NUM_COLUMNS });
+
+  const handleGridTouchStart = useCallback(
+    (e) => {
+      const touches = e.nativeEvent.touches;
+      if (touches && touches.length >= 2) {
+        const dx = touches[0].pageX - touches[1].pageX;
+        const dy = touches[0].pageY - touches[1].pageY;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 15) {
+          pinchRef.current = { active: true, startDist: dist, startCols: numColumns };
+        }
+      }
+    },
+    [numColumns]
+  );
+
+  const handleGridTouchMove = useCallback(
+    (e) => {
+      const touches = e.nativeEvent.touches;
+      if (!touches || touches.length < 2) return;
+      const dx = touches[0].pageX - touches[1].pageX;
+      const dy = touches[0].pageY - touches[1].pageY;
+      const dist = Math.hypot(dx, dy);
+      if (!pinchRef.current.active) {
+        if (dist > 15) {
+          pinchRef.current = { active: true, startDist: dist, startCols: numColumns };
+        }
+        return;
+      }
+      const delta = dist - pinchRef.current.startDist;
+      if (Math.abs(delta) > 55) {
+        const step = delta > 0 ? -1 : 1;
+        setNumColumns((prev) => {
+          const next = Math.max(1, Math.min(4, prev + step));
+          if (next !== prev) {
+            pinchRef.current.startDist = dist;
+            pinchRef.current.startCols = next;
+          }
+          return next;
+        });
+      }
+    },
+    [numColumns]
+  );
+
+  const handleGridTouchEnd = useCallback((e) => {
+    const touches = e.nativeEvent.touches;
+    if (!touches || touches.length < 2) {
+      pinchRef.current.active = false;
+    }
+  }, []);
 
   const selectedCount = useMemo(() => Object.keys(selectedIds).length, [selectedIds]);
   const isSelecting = selectedCount > 0;
@@ -362,38 +416,46 @@ export default function PhotoGrid({
           </View>
         )
       )}
-      <FlatList
-        key={`photo_grid_${numColumns}`}
-        data={assets}
-        renderItem={renderItem}
-        keyExtractor={(item) => item.id}
-        numColumns={numColumns}
-        contentContainerStyle={styles.listContent}
-        showsVerticalScrollIndicator={false}
-        initialNumToRender={24}
-        maxToRenderPerBatch={24}
-        updateCellsBatchingPeriod={30}
-        windowSize={7}
-        removeClippedSubviews={true}
-        getItemLayout={getItemLayout}
-        onEndReached={() => {
-          if (hasMore && !isLoadingMore && onLoadMore) {
-            onLoadMore();
+      <View
+        style={{ flex: 1 }}
+        onTouchStart={handleGridTouchStart}
+        onTouchMove={handleGridTouchMove}
+        onTouchEnd={handleGridTouchEnd}
+        onTouchCancel={handleGridTouchEnd}
+      >
+        <FlatList
+          key={`photo_grid_${numColumns}`}
+          data={assets}
+          renderItem={renderItem}
+          keyExtractor={(item) => item.id}
+          numColumns={numColumns}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={24}
+          maxToRenderPerBatch={24}
+          updateCellsBatchingPeriod={30}
+          windowSize={7}
+          removeClippedSubviews={true}
+          getItemLayout={getItemLayout}
+          onEndReached={() => {
+            if (hasMore && !isLoadingMore && onLoadMore) {
+              onLoadMore();
+            }
+          }}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={renderFooter}
+          ListEmptyComponent={renderEmpty}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={onRefresh}
+              tintColor={theme.colors.primary}
+              colors={[theme.colors.primary]}
+              progressBackgroundColor={theme.colors.surface}
+            />
           }
-        }}
-        onEndReachedThreshold={0.5}
-        ListFooterComponent={renderFooter}
-        ListEmptyComponent={renderEmpty}
-        refreshControl={
-          <RefreshControl
-            refreshing={isRefreshing}
-            onRefresh={onRefresh}
-            tintColor={theme.colors.primary}
-            colors={[theme.colors.primary]}
-            progressBackgroundColor={theme.colors.surface}
-          />
-        }
-      />
+        />
+      </View>
 
       <Modal
         visible={isCompressingBatch}

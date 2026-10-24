@@ -75,19 +75,31 @@ export default function FullScreenViewer({
   const currentIndexRef = useRef(initialIndex);
   const zoomScaleRef = useRef(1);
   const assetsLengthRef = useRef(assets?.length || 0);
+  const pinchStateRef = useRef({ active: false, startDist: 0, startZoom: 1 });
 
   const resetZoomAndPan = () => {
     setZoomScale(1);
+    zoomScaleRef.current = 1;
     panX.setValue(0);
     panY.setValue(0);
     panOffsetRef.current = { x: 0, y: 0 };
+    pinchStateRef.current = { active: false, startDist: 0, startZoom: 1 };
   };
 
-  // PanResponder para deslizar fotos a los lados (1x) o arrastrar libremente con zoom (>1x)
+  // PanResponder para pellizcar con 2 dedos (pinch-to-zoom 1x..5x), deslizar fotos a los lados (1x) o arrastrar libremente (>1x)
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponder: (_, gesture) => {
+      onStartShouldSetPanResponder: (evt) => {
+        const touches = evt.nativeEvent.touches;
+        return Boolean(touches && touches.length >= 2);
+      },
+      onStartShouldSetPanResponderCapture: (evt) => {
+        const touches = evt.nativeEvent.touches;
+        return Boolean(touches && touches.length >= 2);
+      },
+      onMoveShouldSetPanResponder: (evt, gesture) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length >= 2) return true;
         if (zoomScaleRef.current > 1) {
           return Math.abs(gesture.dx) > 6 || Math.abs(gesture.dy) > 6;
         }
@@ -96,7 +108,50 @@ export default function FullScreenViewer({
           Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.2
         );
       },
-      onPanResponderMove: (_, gesture) => {
+      onMoveShouldSetPanResponderCapture: (evt) => {
+        const touches = evt.nativeEvent.touches;
+        return Boolean(touches && touches.length >= 2);
+      },
+      onPanResponderGrant: (evt) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length >= 2) {
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          const dist = Math.hypot(dx, dy);
+          pinchStateRef.current = {
+            active: true,
+            startDist: Math.max(dist, 10),
+            startZoom: zoomScaleRef.current || 1,
+          };
+        }
+      },
+      onPanResponderMove: (evt, gesture) => {
+        const touches = evt.nativeEvent.touches;
+        if (touches && touches.length >= 2) {
+          const dx = touches[0].pageX - touches[1].pageX;
+          const dy = touches[0].pageY - touches[1].pageY;
+          const dist = Math.hypot(dx, dy);
+          if (!pinchStateRef.current.active || pinchStateRef.current.startDist <= 0) {
+            pinchStateRef.current = {
+              active: true,
+              startDist: Math.max(dist, 10),
+              startZoom: zoomScaleRef.current || 1,
+            };
+            return;
+          }
+          const ratio = dist / pinchStateRef.current.startDist;
+          const nextZoom = Math.max(1, Math.min(5, Number((pinchStateRef.current.startZoom * ratio).toFixed(2))));
+          zoomScaleRef.current = nextZoom;
+          setZoomScale(nextZoom);
+          if (nextZoom <= 1.02) {
+            panX.setValue(0);
+            panY.setValue(0);
+            panOffsetRef.current = { x: 0, y: 0 };
+          }
+          return;
+        }
+        if (pinchStateRef.current.active) return;
+
         if (zoomScaleRef.current > 1) {
           panX.setValue(panOffsetRef.current.x + gesture.dx);
           panY.setValue(panOffsetRef.current.y + gesture.dy);
@@ -105,6 +160,13 @@ export default function FullScreenViewer({
         }
       },
       onPanResponderRelease: (_, gesture) => {
+        if (pinchStateRef.current.active) {
+          pinchStateRef.current.active = false;
+          if (zoomScaleRef.current <= 1.05) {
+            resetZoomAndPan();
+          }
+          return;
+        }
         if (zoomScaleRef.current > 1) {
           panOffsetRef.current = {
             x: panOffsetRef.current.x + gesture.dx,

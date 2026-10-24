@@ -13,6 +13,7 @@ import {
   Alert,
   Modal,
   TextInput,
+  BackHandler,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
@@ -151,8 +152,68 @@ export default function FolderBrowser({
   );
 
   const cyclePhotoColumns = () => {
-    setPhotoColumns((prev) => (prev === 3 ? 4 : prev === 4 ? 2 : 3));
+    setPhotoColumns((prev) => (prev === 3 ? 4 : prev === 4 ? 2 : prev === 2 ? 1 : 3));
   };
+
+  // Gesto de pellizco con 2 dedos en la cuadrícula para hacer zoom sin entrar a la foto (4 <-> 3 <-> 2 <-> 1 col)
+  const gridPinchRef = useRef({ active: false, startDist: 0, startCols: NUM_PHOTO_COLUMNS });
+
+  const handleGridTouchStart = useCallback(
+    (e) => {
+      const touches = e.nativeEvent.touches;
+      if (touches && touches.length >= 2) {
+        const dx = touches[0].pageX - touches[1].pageX;
+        const dy = touches[0].pageY - touches[1].pageY;
+        const dist = Math.hypot(dx, dy);
+        if (dist > 15) {
+          gridPinchRef.current = {
+            active: true,
+            startDist: dist,
+            startCols: photoColumns,
+          };
+        }
+      }
+    },
+    [photoColumns]
+  );
+
+  const handleGridTouchMove = useCallback(
+    (e) => {
+      const touches = e.nativeEvent.touches;
+      if (!touches || touches.length < 2) return;
+      const dx = touches[0].pageX - touches[1].pageX;
+      const dy = touches[0].pageY - touches[1].pageY;
+      const dist = Math.hypot(dx, dy);
+      if (!gridPinchRef.current.active) {
+        if (dist > 15) {
+          gridPinchRef.current = { active: true, startDist: dist, startCols: photoColumns };
+        }
+        return;
+      }
+      const delta = dist - gridPinchRef.current.startDist;
+      // Separar dedos (> 55px) = acercar foto (menos columnas, fotos más grandes hasta 1 col)
+      // Juntar dedos (< -55px) = alejar foto (más columnas hasta 4 col)
+      if (Math.abs(delta) > 55) {
+        const step = delta > 0 ? -1 : 1;
+        setPhotoColumns((prev) => {
+          const next = Math.max(1, Math.min(4, prev + step));
+          if (next !== prev) {
+            gridPinchRef.current.startDist = dist;
+            gridPinchRef.current.startCols = next;
+          }
+          return next;
+        });
+      }
+    },
+    [photoColumns]
+  );
+
+  const handleGridTouchEnd = useCallback((e) => {
+    const touches = e.nativeEvent.touches;
+    if (!touches || touches.length < 2) {
+      gridPinchRef.current.active = false;
+    }
+  }, []);
 
   const selectedCount = useMemo(() => Object.keys(selectedIds).length, [selectedIds]);
   const isSelecting = selectedCount > 0;
@@ -263,12 +324,16 @@ export default function FolderBrowser({
     [rawFolderList]
   );
 
-  // Lista total filtrada (photos | videos | all + buscador por texto + filtro por peso)
-  const totalFilteredAssets = useMemo(() => {
+  // Solo mostrar la división Fotos / Videos si existen AMBOS tipos en la carpeta actual
+  const hasBothPhotosAndVideos = folderPhotos.length > 0 && folderVideos.length > 0;
+  const effectiveCategory = hasBothPhotosAndVideos ? folderCategory : 'all';
+
+  // Lista base por categoría y búsqueda para calcular si existen archivos Grandes o Medianos
+  const categoryAndSearchList = useMemo(() => {
     let base =
-      folderCategory === 'photos' || filterType === 'photos'
+      effectiveCategory === 'photos' || filterType === 'photos'
         ? folderPhotos
-        : folderCategory === 'videos' || filterType === 'videos'
+        : effectiveCategory === 'videos' || filterType === 'videos'
         ? folderVideos
         : [...folderPhotos, ...folderVideos];
 
@@ -276,18 +341,41 @@ export default function FolderBrowser({
     if (q) {
       base = base.filter((a) => (a.filename || '').toLowerCase().includes(q));
     }
+    return base;
+  }, [effectiveCategory, filterType, folderPhotos, folderVideos, searchQuery]);
 
-    if (sizeFilter === 'heavy') {
-      base = base.filter((a) => (a.fileSize || 0) > 4 * 1024 * 1024);
-    } else if (sizeFilter === 'medium') {
-      base = base.filter((a) => {
+  // Contabilizar archivos Grandes (>4MB) y Medianos (2-4MB) para mostrar filtros solo si existen
+  const { heavyCount, mediumCount } = useMemo(() => {
+    let heavy = 0;
+    let medium = 0;
+    for (const a of categoryAndSearchList) {
+      const sz = a.fileSize || 0;
+      if (sz > 4 * 1024 * 1024) heavy++;
+      else if (sz > 2 * 1024 * 1024) medium++;
+    }
+    return { heavyCount: heavy, mediumCount: medium };
+  }, [categoryAndSearchList]);
+
+  const hasWeightFilters = heavyCount > 0 || mediumCount > 0;
+  const effectiveSizeFilter =
+    (sizeFilter === 'heavy' && heavyCount === 0) ||
+    (sizeFilter === 'medium' && mediumCount === 0)
+      ? 'all'
+      : sizeFilter;
+
+  // Lista total filtrada (photos | videos | all + buscador por texto + filtro por peso condicional)
+  const totalFilteredAssets = useMemo(() => {
+    if (effectiveSizeFilter === 'heavy') {
+      return categoryAndSearchList.filter((a) => (a.fileSize || 0) > 4 * 1024 * 1024);
+    }
+    if (effectiveSizeFilter === 'medium') {
+      return categoryAndSearchList.filter((a) => {
         const sz = a.fileSize || 0;
         return sz > 2 * 1024 * 1024 && sz <= 4 * 1024 * 1024;
       });
     }
-
-    return base;
-  }, [folderCategory, filterType, folderPhotos, folderVideos, searchQuery, sizeFilter]);
+    return categoryAndSearchList;
+  }, [categoryAndSearchList, effectiveSizeFilter]);
 
   // Comprimir fotos de la carpeta completa (incluyendo subcarpetas si el nivel actual solo tiene carpetas)
   const handleCompressFolder = async () => {
@@ -683,6 +771,63 @@ export default function FolderBrowser({
     }
   }, [totalFilteredAssets, onAssetsChange]);
 
+  // Botón físico Atrás de Android: navega hacia atrás paso a paso sin salirse de la app (salvo en pantalla raíz)
+  useEffect(() => {
+    const onBackPress = () => {
+      if (showSystemModal) {
+        setShowSystemModal(false);
+        return true;
+      }
+      if (showMoveModal) {
+        setShowMoveModal(false);
+        return true;
+      }
+      if (showOrganizeConfirmModal) {
+        setShowOrganizeConfirmModal(false);
+        return true;
+      }
+      if (isSelecting) {
+        clearSelection();
+        return true;
+      }
+      if (searchQuery.trim().length > 0) {
+        setSearchQuery('');
+        return true;
+      }
+      if (sizeFilter !== 'all') {
+        setSizeFilter('all');
+        return true;
+      }
+      if (folderCategory !== 'all') {
+        setFolderCategory('all');
+        return true;
+      }
+      if (viewMode === 'all') {
+        setViewMode('folders');
+        return true;
+      }
+      if (history.length > 1) {
+        handleGoBack();
+        return true;
+      }
+      return false; // En la pantalla inicial raíz permite salir o delegar a App.js
+    };
+
+    const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
+    return () => sub.remove();
+  }, [
+    showSystemModal,
+    showMoveModal,
+    showOrganizeConfirmModal,
+    isSelecting,
+    clearSelection,
+    searchQuery,
+    sizeFilter,
+    folderCategory,
+    viewMode,
+    history.length,
+  ]);
+
   // Subcarpetas visibles filtradas por el modo oculto y buscador
   const visibleSubfolders = useMemo(() => {
     const base = showAllFolders
@@ -943,328 +1088,396 @@ export default function FolderBrowser({
         </View>
       </View>
 
-      {/* Contenido Principal */}
+      {/* Barra Superior Fija (Sticky): Buscador, Filtros Condicionales de Peso y Fotos/Videos */}
+      <View style={styles.stickyHeaderBox}>
+        <View style={styles.searchAndQuickFilterBox}>
+          <View style={styles.searchInputWrap}>
+            <Ionicons name="search" size={15} color={theme.colors.textMuted} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Buscar carpeta, foto o fecha..."
+              placeholderTextColor={theme.colors.textMuted}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Ionicons name="close-circle" size={16} color={theme.colors.textSecondary} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.quickFilterScroll}
+          >
+            {/* Selector de Columnas / Indicador de Zoom con 2 dedos */}
+            <TouchableOpacity
+              style={styles.colTogglePill}
+              onPress={cyclePhotoColumns}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="expand-outline" size={13} color="#38bdf8" />
+              <Text style={styles.colToggleText}>
+                {photoColumns === 1 ? '1 col (Zoom)' : `${photoColumns} col`}
+              </Text>
+            </TouchableOpacity>
+
+            {/* División Fotos / Videos (SOLO aparece si existen AMBOS fotos y videos) */}
+            {hasBothPhotosAndVideos && (
+              <>
+                <TouchableOpacity
+                  style={[
+                    styles.weightFilterPill,
+                    effectiveCategory === 'all' && styles.categoryFilterPillActive,
+                  ]}
+                  onPress={() => setFolderCategory('all')}
+                  activeOpacity={0.8}
+                >
+                  <Text
+                    style={[
+                      styles.weightFilterText,
+                      effectiveCategory === 'all' && { color: '#fff', fontWeight: '800' },
+                    ]}
+                  >
+                    Todo ({folderPhotos.length + folderVideos.length})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.weightFilterPill,
+                    effectiveCategory === 'photos' && styles.categoryFilterPillActive,
+                  ]}
+                  onPress={() =>
+                    setFolderCategory(effectiveCategory === 'photos' ? 'all' : 'photos')
+                  }
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="images"
+                    size={12}
+                    color={effectiveCategory === 'photos' ? '#fff' : theme.colors.primaryLight}
+                  />
+                  <Text
+                    style={[
+                      styles.weightFilterText,
+                      effectiveCategory === 'photos' && { color: '#fff', fontWeight: '800' },
+                    ]}
+                  >
+                    Fotos ({folderPhotos.length})
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.weightFilterPill,
+                    effectiveCategory === 'videos' && styles.categoryFilterPillActive,
+                  ]}
+                  onPress={() =>
+                    setFolderCategory(effectiveCategory === 'videos' ? 'all' : 'videos')
+                  }
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="videocam"
+                    size={12}
+                    color={effectiveCategory === 'videos' ? '#fff' : theme.colors.primaryLight}
+                  />
+                  <Text
+                    style={[
+                      styles.weightFilterText,
+                      effectiveCategory === 'videos' && { color: '#fff', fontWeight: '800' },
+                    ]}
+                  >
+                    Videos ({folderVideos.length})
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            {/* Filtros de Peso: Grandes / Medianos / Todos (SOLO aparecen si existen archivos grandes o medianos) */}
+            {hasWeightFilters && (
+              <>
+                <TouchableOpacity
+                  style={[
+                    styles.weightFilterPill,
+                    effectiveSizeFilter === 'all' && styles.weightFilterPillActive,
+                  ]}
+                  onPress={() => setSizeFilter('all')}
+                >
+                  <Text
+                    style={[
+                      styles.weightFilterText,
+                      effectiveSizeFilter === 'all' && { color: '#fff', fontWeight: '800' },
+                    ]}
+                  >
+                    Todos los pesos
+                  </Text>
+                </TouchableOpacity>
+
+                {heavyCount > 0 && (
+                  <TouchableOpacity
+                    style={[
+                      styles.weightFilterPill,
+                      effectiveSizeFilter === 'heavy' && {
+                        backgroundColor: 'rgba(239, 68, 68, 0.22)',
+                        borderColor: '#ef4444',
+                      },
+                    ]}
+                    onPress={() =>
+                      setSizeFilter(effectiveSizeFilter === 'heavy' ? 'all' : 'heavy')
+                    }
+                  >
+                    <View style={[styles.dotIndicator, { backgroundColor: '#ef4444' }]} />
+                    <Text
+                      style={[
+                        styles.weightFilterText,
+                        effectiveSizeFilter === 'heavy' && { color: '#fca5a5', fontWeight: '800' },
+                      ]}
+                    >
+                      Grandes &gt;4 MB ({heavyCount})
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                {mediumCount > 0 && (
+                  <TouchableOpacity
+                    style={[
+                      styles.weightFilterPill,
+                      effectiveSizeFilter === 'medium' && {
+                        backgroundColor: 'rgba(245, 158, 11, 0.22)',
+                        borderColor: '#f59e0b',
+                      },
+                    ]}
+                    onPress={() =>
+                      setSizeFilter(effectiveSizeFilter === 'medium' ? 'all' : 'medium')
+                    }
+                  >
+                    <View style={[styles.dotIndicator, { backgroundColor: '#f59e0b' }]} />
+                    <Text
+                      style={[
+                        styles.weightFilterText,
+                        effectiveSizeFilter === 'medium' && { color: '#fde68a', fontWeight: '800' },
+                      ]}
+                    >
+                      Medianos 2-4 MB ({mediumCount})
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+          </ScrollView>
+        </View>
+
+        {/* Barra de Selección Múltiple fija arriba si hay fotos seleccionadas */}
+        {isSelecting && (
+          <View style={[styles.selectionBar, { marginHorizontal: theme.spacing.md, marginBottom: 6 }]}>
+            <View style={styles.selectionTopRow}>
+              <TouchableOpacity onPress={clearSelection} style={styles.selHeaderBtn}>
+                <Ionicons name="close" size={18} color="#fff" />
+                <Text style={styles.selCountText}>{selectedCount} sel.</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={selectAllFolderAssets} style={styles.selAllBtn}>
+                <Ionicons name="checkmark-done" size={15} color="#38bdf8" />
+                <Text style={styles.selAllText}>
+                  Seleccionar todo ({totalFilteredAssets.length})
+                </Text>
+              </TouchableOpacity>
+            </View>
+            <View style={styles.selectionActionsRow}>
+              <TouchableOpacity style={styles.selActionBtn} onPress={handleCompressSelected}>
+                <Ionicons name="sparkles" size={15} color="#38bdf8" />
+                <Text style={[styles.selActionText, { color: '#38bdf8' }]}>Comprimir</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.selActionBtn}
+                onPress={() => setShowMoveModal(true)}
+              >
+                <Ionicons name="folder-open-outline" size={15} color="#f59e0b" />
+                <Text style={[styles.selActionText, { color: '#f59e0b' }]}>Mover a...</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.selActionBtn} onPress={handleShareSelected}>
+                <Ionicons name="share-social-outline" size={15} color="#fff" />
+                <Text style={styles.selActionText}>Compartir</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.selActionBtn, styles.selDeleteBtn]}
+                onPress={handleDeleteSelected}
+              >
+                <Ionicons name="trash-outline" size={15} color={theme.colors.danger} />
+                <Text style={[styles.selActionText, { color: theme.colors.danger }]}>
+                  Eliminar ({selectedCount})
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </View>
+
+      {/* Contenido Principal con soporte de Zoom con 2 dedos sin abrir la foto */}
       {loading && paginatedAssets.length === 0 && subfolders.length === 0 ? (
         <View style={styles.loadingBox}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
           <Text style={styles.loadingText}>Leyendo contenido de la carpeta…</Text>
         </View>
       ) : (
-        <FlatList
-          key={`folder_grid_${photoColumns}`}
-          data={paginatedAssets}
-          keyExtractor={(item) => item.id}
-          numColumns={photoColumns}
-          contentContainerStyle={styles.photoListContent}
-          initialNumToRender={18}
-          maxToRenderPerBatch={18}
-          windowSize={7}
-          removeClippedSubviews={Platform.OS === 'android'}
-          onEndReached={handleLoadMorePhotos}
-          onEndReachedThreshold={0.5}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              tintColor={theme.colors.primary}
-              colors={[theme.colors.primary]}
-            />
-          }
-          ListHeaderComponent={
-            <View>
-              {viewMode === 'all' ? (
-                <View style={styles.allBanner}>
-                  <Ionicons name="information-circle-outline" size={18} color={theme.colors.primaryLight} />
-                  <Text style={styles.allBannerText}>
-                    {loadingAll
-                      ? `Cargando fotos progresivamente… (${totalFilteredAssets.length} encontradas)`
-                      : `Mostrando ${totalFilteredAssets.length} archivos de esta carpeta y sus subcarpetas.`}
-                  </Text>
-                </View>
-              ) : (
-                /* Sección de Subcarpetas */
-                visibleSubfolders.length > 0 && (
-                  <View style={styles.subfolderSection}>
-                    <View style={styles.sectionHeader}>
-                      <Ionicons name="folder-outline" size={18} color={theme.colors.primary} />
-                      <Text style={styles.sectionTitle}>
-                        Carpetas ({visibleSubfolders.length}
-                        {hiddenSubfolderCount > 0 && showAllFolders ? ` · ${hiddenSubfolderCount} ocultas` : ''})
-                      </Text>
-                    </View>
-                    <View style={styles.folderGrid}>
-                      {visibleSubfolders.map((item) => renderSubfolderItem(item))}
-                    </View>
+        <View
+          style={{ flex: 1 }}
+          onTouchStart={handleGridTouchStart}
+          onTouchMove={handleGridTouchMove}
+          onTouchEnd={handleGridTouchEnd}
+          onTouchCancel={handleGridTouchEnd}
+        >
+          <FlatList
+            key={`folder_grid_${photoColumns}`}
+            data={paginatedAssets}
+            keyExtractor={(item) => item.id}
+            numColumns={photoColumns}
+            contentContainerStyle={styles.photoListContent}
+            initialNumToRender={18}
+            maxToRenderPerBatch={18}
+            windowSize={7}
+            removeClippedSubviews={Platform.OS === 'android'}
+            onEndReached={handleLoadMorePhotos}
+            onEndReachedThreshold={0.5}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={theme.colors.primary}
+                colors={[theme.colors.primary]}
+              />
+            }
+            ListHeaderComponent={
+              <View>
+                {viewMode === 'all' ? (
+                  <View style={styles.allBanner}>
+                    <Ionicons name="information-circle-outline" size={18} color={theme.colors.primaryLight} />
+                    <Text style={styles.allBannerText}>
+                      {loadingAll
+                        ? `Cargando fotos progresivamente… (${totalFilteredAssets.length} encontradas)`
+                        : `Mostrando ${totalFilteredAssets.length} archivos de esta carpeta y sus subcarpetas.`}
+                    </Text>
                   </View>
-                )
-              )}
-
-              {/* Buscador instantáneo + Filtro por Semáforo de Peso + Selector de Columnas */}
-              <View style={styles.searchAndQuickFilterBox}>
-                <View style={styles.searchInputWrap}>
-                  <Ionicons name="search" size={15} color={theme.colors.textMuted} />
-                  <TextInput
-                    style={styles.searchInput}
-                    value={searchQuery}
-                    onChangeText={setSearchQuery}
-                    placeholder="Buscar carpeta, foto o fecha..."
-                    placeholderTextColor={theme.colors.textMuted}
-                  />
-                  {searchQuery.length > 0 && (
-                    <TouchableOpacity onPress={() => setSearchQuery('')}>
-                      <Ionicons name="close-circle" size={16} color={theme.colors.textSecondary} />
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.quickFilterScroll}
-                >
-                  <TouchableOpacity
-                    style={styles.colTogglePill}
-                    onPress={cyclePhotoColumns}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="grid-outline" size={13} color="#38bdf8" />
-                    <Text style={styles.colToggleText}>{photoColumns} col</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.weightFilterPill,
-                      sizeFilter === 'all' && styles.weightFilterPillActive,
-                    ]}
-                    onPress={() => setSizeFilter('all')}
-                  >
-                    <Text
-                      style={[
-                        styles.weightFilterText,
-                        sizeFilter === 'all' && { color: '#fff', fontWeight: '800' },
-                      ]}
-                    >
-                      Todos los pesos
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.weightFilterPill,
-                      sizeFilter === 'heavy' && {
-                        backgroundColor: 'rgba(239, 68, 68, 0.22)',
-                        borderColor: '#ef4444',
-                      },
-                    ]}
-                    onPress={() => setSizeFilter(sizeFilter === 'heavy' ? 'all' : 'heavy')}
-                  >
-                    <View style={[styles.dotIndicator, { backgroundColor: '#ef4444' }]} />
-                    <Text
-                      style={[
-                        styles.weightFilterText,
-                        sizeFilter === 'heavy' && { color: '#fca5a5', fontWeight: '800' },
-                      ]}
-                    >
-                      Solo Pesados (&gt;4 MB)
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.weightFilterPill,
-                      sizeFilter === 'medium' && {
-                        backgroundColor: 'rgba(245, 158, 11, 0.22)',
-                        borderColor: '#f59e0b',
-                      },
-                    ]}
-                    onPress={() => setSizeFilter(sizeFilter === 'medium' ? 'all' : 'medium')}
-                  >
-                    <View style={[styles.dotIndicator, { backgroundColor: '#f59e0b' }]} />
-                    <Text
-                      style={[
-                        styles.weightFilterText,
-                        sizeFilter === 'medium' && { color: '#fde68a', fontWeight: '800' },
-                      ]}
-                    >
-                      Medios (2-4 MB)
-                    </Text>
-                  </TouchableOpacity>
-                </ScrollView>
-              </View>
-
-              {/* Barra de División Fotos y Videos + Botón Comprimir (visible en ambos modos) */}
-              <View style={styles.divisionBar}>
-                <View style={styles.categorySegmentRow}>
-                  <TouchableOpacity
-                    style={[styles.categoryPill, folderCategory === 'all' && styles.categoryPillActive]}
-                    onPress={() => setFolderCategory('all')}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.categoryPillText, folderCategory === 'all' && styles.categoryPillTextActive]}>
-                      Todas ({folderPhotos.length + folderVideos.length})
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.categoryPill, folderCategory === 'photos' && styles.categoryPillActive]}
-                    onPress={() => setFolderCategory('photos')}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons
-                      name="images"
-                      size={14}
-                      color={folderCategory === 'photos' ? '#ffffff' : theme.colors.primaryLight}
-                    />
-                    <Text style={[styles.categoryPillText, folderCategory === 'photos' && styles.categoryPillTextActive]}>
-                      Fotos ({folderPhotos.length})
-                    </Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[styles.categoryPill, folderCategory === 'videos' && styles.categoryPillActive]}
-                    onPress={() => setFolderCategory('videos')}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons
-                      name="videocam"
-                      size={14}
-                      color={folderCategory === 'videos' ? '#ffffff' : theme.colors.primaryLight}
-                    />
-                    <Text style={[styles.categoryPillText, folderCategory === 'videos' && styles.categoryPillTextActive]}>
-                      Videos ({folderVideos.length})
-                    </Text>
-                  </TouchableOpacity>
-                </View>
+                ) : (
+                  /* Sección de Subcarpetas */
+                  visibleSubfolders.length > 0 && (
+                    <View style={styles.subfolderSection}>
+                      <View style={styles.sectionHeader}>
+                        <Ionicons name="folder-outline" size={18} color={theme.colors.primary} />
+                        <Text style={styles.sectionTitle}>
+                          Carpetas ({visibleSubfolders.length}
+                          {hiddenSubfolderCount > 0 && showAllFolders ? ` · ${hiddenSubfolderCount} ocultas` : ''})
+                        </Text>
+                      </View>
+                      <View style={styles.folderGrid}>
+                        {visibleSubfolders.map((item) => renderSubfolderItem(item))}
+                      </View>
+                    </View>
+                  )
+                )}
 
                 {/* Barra de Acciones Inteligentes: Comprimir y Organizar Cámara */}
-                <View style={styles.actionToolsRow}>
-                  {(folderPhotos.length > 0 || visibleSubfolders.length > 0) && (
-                    <TouchableOpacity
-                      style={styles.actionToolButton}
-                      onPress={handleCompressFolder}
-                      disabled={isCompressingFolder}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="sparkles" size={14} color="#38bdf8" />
-                      <Text style={styles.actionToolButtonText}>
-                        {folderPhotos.length > 0
-                          ? `Comprimir fotos (${folderPhotos.length})`
-                          : 'Comprimir fotos de carpeta'}
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+                {(folderPhotos.length > 0 || folderVideos.length > 0 || visibleSubfolders.length > 0) && (
+                  <View style={styles.divisionBar}>
+                    <View style={styles.actionToolsRow}>
+                      {(folderPhotos.length > 0 || visibleSubfolders.length > 0) && (
+                        <TouchableOpacity
+                          style={styles.actionToolButton}
+                          onPress={handleCompressFolder}
+                          disabled={isCompressingFolder}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="sparkles" size={14} color="#38bdf8" />
+                          <Text style={styles.actionToolButtonText}>
+                            {folderPhotos.length > 0
+                              ? `Comprimir fotos (${folderPhotos.length})`
+                              : 'Comprimir fotos de carpeta'}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
 
-                  {folderVideos.length > 0 && (
-                    <TouchableOpacity
-                      style={styles.actionToolButton}
-                      onPress={handleCompressVideosFolder}
-                      disabled={isCompressingFolder}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="videocam" size={14} color="#38bdf8" />
-                      <Text style={styles.actionToolButtonText}>
-                        Comprimir videos ({folderVideos.length})
-                      </Text>
-                    </TouchableOpacity>
-                  )}
+                      {folderVideos.length > 0 && (
+                        <TouchableOpacity
+                          style={styles.actionToolButton}
+                          onPress={handleCompressVideosFolder}
+                          disabled={isCompressingFolder}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="videocam" size={14} color="#38bdf8" />
+                          <Text style={styles.actionToolButtonText}>
+                            Comprimir videos ({folderVideos.length})
+                          </Text>
+                        </TouchableOpacity>
+                      )}
 
-                  {currentFolderAssets.length > 0 && (
-                    <TouchableOpacity
-                      style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
-                      onPress={() => setShowOrganizeConfirmModal(true)}
-                      activeOpacity={0.8}
-                    >
-                      <Ionicons name="calendar" size={14} color={theme.colors.warning} />
-                      <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
-                        Dividir y organizar por meses
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
-
-              {/* Barra de Selección Múltiple si hay fotos seleccionadas */}
-              {isSelecting && (
-                <View style={styles.selectionBar}>
-                  <View style={styles.selectionTopRow}>
-                    <TouchableOpacity onPress={clearSelection} style={styles.selHeaderBtn}>
-                      <Ionicons name="close" size={18} color="#fff" />
-                      <Text style={styles.selCountText}>{selectedCount} sel.</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={selectAllFolderAssets} style={styles.selAllBtn}>
-                      <Ionicons name="checkmark-done" size={15} color="#38bdf8" />
-                      <Text style={styles.selAllText}>
-                        Seleccionar todo ({totalFilteredAssets.length})
-                      </Text>
-                    </TouchableOpacity>
+                      {currentFolderAssets.length > 0 && (
+                        <TouchableOpacity
+                          style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
+                          onPress={() => setShowOrganizeConfirmModal(true)}
+                          activeOpacity={0.8}
+                        >
+                          <Ionicons name="calendar" size={14} color={theme.colors.warning} />
+                          <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
+                            Dividir y organizar por meses
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+                    </View>
                   </View>
-                  <View style={styles.selectionActionsRow}>
-                    <TouchableOpacity style={styles.selActionBtn} onPress={handleCompressSelected}>
-                      <Ionicons name="sparkles" size={15} color="#38bdf8" />
-                      <Text style={[styles.selActionText, { color: '#38bdf8' }]}>Comprimir</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.selActionBtn}
-                      onPress={() => setShowMoveModal(true)}
-                    >
-                      <Ionicons name="folder-open-outline" size={15} color="#f59e0b" />
-                      <Text style={[styles.selActionText, { color: '#f59e0b' }]}>Mover a...</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.selActionBtn} onPress={handleShareSelected}>
-                      <Ionicons name="share-social-outline" size={15} color="#fff" />
-                      <Text style={styles.selActionText}>Compartir</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[styles.selActionBtn, styles.selDeleteBtn]}
-                      onPress={handleDeleteSelected}
-                    >
-                      <Ionicons name="trash-outline" size={15} color={theme.colors.danger} />
-                      <Text style={[styles.selActionText, { color: theme.colors.danger }]}>
-                        Eliminar ({selectedCount})
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
+                )}
 
-              {/* Cabecera descriptiva según división */}
-              <View style={styles.sectionHeader}>
-                <Ionicons
-                  name={folderCategory === 'videos' ? 'videocam-outline' : 'images-outline'}
-                  size={18}
-                  color={theme.colors.primary}
-                />
-                <Text style={styles.sectionTitle}>
-                  {folderCategory === 'photos'
-                    ? `Fotos (${folderPhotos.length})`
-                    : folderCategory === 'videos'
-                    ? `Videos (${folderVideos.length})`
-                    : `Fotos (${folderPhotos.length}) y Videos (${folderVideos.length})`}
-                </Text>
+                {/* Cabecera descriptiva según contenido existente */}
+                {(folderPhotos.length > 0 || folderVideos.length > 0) && (
+                  <View style={styles.sectionHeader}>
+                    <Ionicons
+                      name={
+                        effectiveCategory === 'videos' || (folderPhotos.length === 0 && folderVideos.length > 0)
+                          ? 'videocam-outline'
+                          : 'images-outline'
+                      }
+                      size={18}
+                      color={theme.colors.primary}
+                    />
+                    <Text style={styles.sectionTitle}>
+                      {!hasBothPhotosAndVideos
+                        ? folderPhotos.length > 0
+                          ? `Fotos (${totalFilteredAssets.length})`
+                          : `Videos (${totalFilteredAssets.length})`
+                        : effectiveCategory === 'photos'
+                        ? `Fotos (${totalFilteredAssets.length})`
+                        : effectiveCategory === 'videos'
+                        ? `Videos (${totalFilteredAssets.length})`
+                        : `Fotos y Videos (${totalFilteredAssets.length})`}
+                    </Text>
+                  </View>
+                )}
               </View>
-            </View>
-          }
-          renderItem={renderPhotoItem}
-          updateCellsBatchingPeriod={30}
-          ListEmptyComponent={
-            !loading && subfolders.length === 0 ? (
-              <View style={styles.emptyContainer}>
-                <Ionicons name="images-outline" size={48} color={theme.colors.textMuted} />
-                <Text style={styles.emptyText}>No hay fotos ni videos en esta carpeta.</Text>
-              </View>
-            ) : null
-          }
-          ListFooterComponent={
-            isStreaming ? (
-              <View style={styles.streamingFooter}>
-                <ActivityIndicator size="small" color={theme.colors.primary} />
-                <Text style={styles.streamingText}>Cargando más fotos en segundo plano…</Text>
-              </View>
-            ) : (
-              <View style={{ height: 30 }} />
-            )
-          }
-        />
+            }
+            renderItem={renderPhotoItem}
+            updateCellsBatchingPeriod={30}
+            ListEmptyComponent={
+              !loading && subfolders.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <Ionicons name="images-outline" size={48} color={theme.colors.textMuted} />
+                  <Text style={styles.emptyText}>No hay fotos ni videos en esta carpeta.</Text>
+                </View>
+              ) : null
+            }
+            ListFooterComponent={
+              isStreaming ? (
+                <View style={styles.streamingFooter}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                  <Text style={styles.streamingText}>Cargando más fotos en segundo plano…</Text>
+                </View>
+              ) : (
+                <View style={{ height: 30 }} />
+              )
+            }
+          />
+        </View>
       )}
 
       {/* Modal de Carpetas del Sistema y Permisos */}
@@ -2413,10 +2626,17 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   },
+  stickyHeaderBox: {
+    backgroundColor: theme.colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.surfaceBorder,
+    paddingBottom: 6,
+    zIndex: 10,
+  },
   searchAndQuickFilterBox: {
     paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 4,
+    paddingTop: 8,
+    paddingBottom: 2,
     gap: 8,
   },
   searchInputWrap: {
@@ -2470,6 +2690,10 @@ const styles = StyleSheet.create({
   weightFilterPillActive: {
     backgroundColor: theme.colors.primary,
     borderColor: theme.colors.primary,
+  },
+  categoryFilterPillActive: {
+    backgroundColor: 'rgba(139, 92, 246, 0.35)',
+    borderColor: theme.colors.primaryLight,
   },
   weightFilterText: {
     color: theme.colors.textSecondary,
