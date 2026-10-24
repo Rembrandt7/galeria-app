@@ -170,8 +170,16 @@ export const mediaService = {
               });
               const coverUri =
                 preview.assets && preview.assets.length > 0 ? preview.assets[0].uri : null;
+              let inferredDirUri = null;
+              if (coverUri && coverUri.startsWith('file://')) {
+                const lastSlash = coverUri.lastIndexOf('/');
+                if (lastSlash > 7) {
+                  inferredDirUri = coverUri.slice(0, lastSlash);
+                }
+              }
               return {
                 ...album,
+                uri: album.uri || inferredDirUri || null,
                 coverUri,
               };
             } catch (e) {
@@ -189,30 +197,84 @@ export const mediaService = {
       const suggested =
         mediaAlbums.length === 0 ? await folderService.scanSuggestedFolders(saved) : [];
 
-      const existingTitles = new Set(mediaAlbums.map((a) => (a.title || '').toLowerCase()));
+      const seenNormPaths = new Set();
+      const seenTitles = new Set();
+
+      const normalizePathKey = (u) => {
+        if (!u) return '';
+        try {
+          const phys = folderService.toPhysicalUri(u) || u;
+          return decodeURIComponent(phys).replace(/\/+$/, '').toLowerCase();
+        } catch (_e) {
+          return String(u).replace(/\/+$/, '').toLowerCase();
+        }
+      };
+
       const extraAlbums = [];
 
+      // Primero procesar las carpetas guardadas por el usuario (tienen prioridad de ruta para navegar subcarpetas)
       for (const f of [...(saved || []), ...(suggested || [])]) {
-        const title = f.name || folderService.folderName(f.uri);
-        const key = `${title.toLowerCase()}__${f.uri}`;
-        if (existingTitles.has(key)) continue;
-        existingTitles.add(key);
+        if (!f?.uri) continue;
+        const title = folderService.formatFolderDisplayName(
+          f.name || folderService.folderName(f.uri),
+          f.uri
+        );
+        const normPath = normalizePathKey(f.uri);
+        if (normPath && seenNormPaths.has(normPath)) continue;
 
         const info = await folderService.getFolderCoverAndCount(f.uri, 0);
         const total = f.totalMedia || info.count || 0;
-        if (total > 0 || saved.some((s) => s.uri === f.uri)) {
+        const isUserSaved = (saved || []).some((s) => s.uri === f.uri);
+
+        if (total > 0 || info.subfolderCount > 0 || isUserSaved) {
+          if (normPath) seenNormPaths.add(normPath);
+          seenTitles.add(title.toLowerCase());
           extraAlbums.push({
             id: `folder_${f.uri}`,
             title,
             uri: f.uri,
             assetCount: total,
+            subfolderCount: info.subfolderCount || 0,
             coverUri: info.coverUri,
             isFolderAlbum: true,
+            isUserSaved,
           });
         }
       }
 
-      return [...extraAlbums, ...mediaAlbums];
+      // Filtrar mediaAlbums que no estén duplicados con las carpetas ya incluidas
+      const dedupedMediaAlbums = [];
+      for (const ma of mediaAlbums) {
+        const normPath = normalizePathKey(ma.uri);
+        const lowerTitle = (ma.title || '').trim().toLowerCase();
+        if (normPath && seenNormPaths.has(normPath)) continue;
+        if (seenTitles.has(lowerTitle)) continue;
+        if (normPath) seenNormPaths.add(normPath);
+        if (lowerTitle) seenTitles.add(lowerTitle);
+        dedupedMediaAlbums.push(ma);
+      }
+
+      const combined = [...extraAlbums, ...dedupedMediaAlbums];
+
+      // Ordenar priorizando álbumes esenciales estilo Samsung Galaxy (Cámara, Capturas, Videos Descargados, Descargas)
+      const getEssentialPriority = (item) => {
+        const t = (item.title || '').toLowerCase();
+        if (/^(camera|cámara|camara|dcim)$/i.test(t)) return 1;
+        if (/screenshot|captura/i.test(t)) return 2;
+        if (/videos descargados/i.test(t)) return 3;
+        if (/^(download|descargas|descargar)$/i.test(t)) return 4;
+        if (item.isUserSaved) return 5;
+        return 10;
+      };
+
+      combined.sort((a, b) => {
+        const pa = getEssentialPriority(a);
+        const pb = getEssentialPriority(b);
+        if (pa !== pb) return pa - pb;
+        return (a.title || '').localeCompare(b.title || '', 'es', { sensitivity: 'base' });
+      });
+
+      return combined;
     } catch (error) {
       console.error('Error al obtener álbumes:', error);
       return [];

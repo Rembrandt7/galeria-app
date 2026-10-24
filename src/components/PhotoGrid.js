@@ -666,7 +666,7 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: ITEM_MARGIN,
     paddingTop: ITEM_MARGIN,
-    paddingBottom: 24,
+    paddingBottom: 110,
     flexGrow: 1,
   },
   footerLoader: {
@@ -675,7 +675,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   footerSpacing: {
-    height: 16,
+    height: 80,
   },
   emptyContainer: {
     flex: 1,
@@ -694,7 +694,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 12,
     right: 12,
-    bottom: 12,
+    bottom: 92,
     backgroundColor: 'rgba(15, 23, 42, 0.96)',
     borderWidth: 1,
     borderColor: '#38bdf8',

@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
+import { CURRENT_VERSION } from '../services/updateService';
 
 export default function Header({
   title,
@@ -13,56 +14,103 @@ export default function Header({
   filterType,
   onToggleFilter,
   onPickFolder,
-  onFindDuplicates,
   onOpenSettings,
-  onOpenCamera,
-  onOpenDownloader,
-  onOpenStore,
+  onToggleSearch,
+  onOpenVisibilityManager,
+  hasUpdateAvailable = false,
 }) {
   return (
     <View style={styles.headerContainer}>
       <View style={styles.topRow}>
-        <View style={styles.titleSection}>
-          {showBack && (
+        {/* Izquierda: Regresar + Título (o Botón práctico de Actualización en la vista principal) */}
+        <View style={styles.leftSection}>
+          {showBack ? (
+            <View style={styles.backTitleRow}>
+              <TouchableOpacity
+                onPress={onBack}
+                style={styles.backButton}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Ionicons name="chevron-back" size={26} color="#ffffff" />
+              </TouchableOpacity>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.title} numberOfLines={1}>
+                  {title}
+                </Text>
+                {subtitle ? (
+                  <Text style={styles.subtitle} numberOfLines={1}>
+                    {subtitle}
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+          ) : (
             <TouchableOpacity
-              onPress={onBack}
-              style={styles.backButton}
-              activeOpacity={0.7}
-              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              onPress={onOpenSettings}
+              style={[
+                styles.updatePracticalBtn,
+                hasUpdateAvailable && styles.updatePracticalBtnReady,
+              ]}
+              activeOpacity={0.8}
             >
-              <Ionicons name="arrow-back" size={24} color={theme.colors.textPrimary} />
+              <Ionicons
+                name={hasUpdateAvailable ? 'arrow-up-circle' : 'sync-circle-outline'}
+                size={18}
+                color={hasUpdateAvailable ? '#10b981' : '#60a5fa'}
+              />
+              <Text
+                style={[
+                  styles.updatePracticalText,
+                  hasUpdateAvailable && { color: '#34d399' },
+                ]}
+              >
+                {hasUpdateAvailable
+                  ? `¡Actualizar disponible!`
+                  : `Actualizar · ${CURRENT_VERSION}`}
+              </Text>
+              {hasUpdateAvailable && <View style={styles.liveDot} />}
             </TouchableOpacity>
           )}
-          <View>
-            <Text style={styles.title} numberOfLines={1}>
-              {title}
-            </Text>
-            {subtitle ? (
-              <Text style={styles.subtitle} numberOfLines={1}>
-                {subtitle}
-              </Text>
-            ) : null}
-          </View>
         </View>
 
+        {/* Derecha: Estilo Samsung Galaxy (+  🔍  ⋮) + Botón Actualizar compacto si estamos dentro de carpeta */}
         <View style={styles.actionsSection}>
-          {onFindDuplicates && (
+          {showBack && onOpenSettings && (
             <TouchableOpacity
-              onPress={onFindDuplicates}
-              style={styles.actionButton}
-              activeOpacity={0.7}
+              onPress={onOpenSettings}
+              style={[
+                styles.updateCompactPill,
+                hasUpdateAvailable && styles.updatePracticalBtnReady,
+              ]}
+              activeOpacity={0.8}
             >
-              <Ionicons name="copy-outline" size={21} color={theme.colors.textPrimary} />
+              <Ionicons
+                name="arrow-up-circle-outline"
+                size={16}
+                color={hasUpdateAvailable ? '#10b981' : '#60a5fa'}
+              />
+              <Text style={styles.updateCompactText}>Actualizar</Text>
             </TouchableOpacity>
           )}
 
           {onPickFolder && (
             <TouchableOpacity
               onPress={onPickFolder}
-              style={styles.actionButton}
+              style={styles.galaxyIconBtn}
               activeOpacity={0.7}
             >
-              <Ionicons name="folder-open" size={22} color={theme.colors.textPrimary} />
+              <Ionicons name="add" size={26} color="#ffffff" />
+            </TouchableOpacity>
+          )}
+
+          {onToggleSearch && (
+            <TouchableOpacity
+              onPress={onToggleSearch}
+              style={styles.galaxyIconBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="search" size={21} color="#ffffff" />
             </TouchableOpacity>
           )}
 
@@ -70,7 +118,7 @@ export default function Header({
             <TouchableOpacity
               onPress={onToggleFilter}
               style={[
-                styles.filterButton,
+                styles.galaxyIconBtn,
                 filterType !== 'all' && styles.filterButtonActive,
               ]}
               activeOpacity={0.7}
@@ -83,8 +131,8 @@ export default function Header({
                     ? 'videocam'
                     : 'filter'
                 }
-                size={18}
-                color={filterType !== 'all' ? theme.colors.primaryLight : theme.colors.textSecondary}
+                size={19}
+                color={filterType !== 'all' ? '#60a5fa' : '#ffffff'}
               />
             </TouchableOpacity>
           )}
@@ -92,57 +140,25 @@ export default function Header({
           {onRefresh && (
             <TouchableOpacity
               onPress={onRefresh}
-              style={styles.actionButton}
+              style={styles.galaxyIconBtn}
               disabled={isRefreshing}
               activeOpacity={0.7}
             >
               <Ionicons
                 name={isRefreshing ? 'sync' : 'refresh'}
-                size={22}
-                color={isRefreshing ? theme.colors.primary : theme.colors.textPrimary}
+                size={20}
+                color={isRefreshing ? '#60a5fa' : '#ffffff'}
               />
             </TouchableOpacity>
           )}
 
-          {onOpenDownloader && (
-            <TouchableOpacity
-              onPress={onOpenDownloader}
-              style={styles.actionButton}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="cloud-download-outline" size={21} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
-          )}
-
-          {onOpenStore && (
-            <TouchableOpacity
-              onPress={onOpenStore}
-              style={[styles.actionButton, { borderWidth: 1, borderColor: 'rgba(56, 189, 248, 0.35)' }]}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="bag-handle-outline" size={20} color="#38bdf8" />
-            </TouchableOpacity>
-          )}
-
-          {onOpenCamera && (
-            <TouchableOpacity
-              onPress={onOpenCamera}
-              style={styles.actionButton}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="videocam-outline" size={22} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
-          )}
-
-          {onOpenSettings && (
-            <TouchableOpacity
-              onPress={onOpenSettings}
-              style={styles.actionButton}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="settings-outline" size={21} color={theme.colors.textPrimary} />
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            onPress={onOpenVisibilityManager || onOpenSettings}
+            style={styles.galaxyIconBtn}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="ellipsis-vertical" size={20} color="#ffffff" />
+          </TouchableOpacity>
         </View>
       </View>
     </View>
@@ -151,65 +167,100 @@ export default function Header({
 
 const styles = StyleSheet.create({
   headerContainer: {
-    backgroundColor: theme.colors.background,
-    paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
-    paddingBottom: theme.spacing.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceBorder,
+    backgroundColor: '#000000',
+    paddingHorizontal: 14,
+    paddingTop: 6,
+    paddingBottom: 6,
   },
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 44,
+    minHeight: 42,
   },
-  titleSection: {
+  leftSection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    marginRight: 8,
+  },
+  backTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
   },
   backButton: {
-    marginRight: theme.spacing.md,
-    padding: theme.spacing.xs,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.surface,
+    marginRight: 6,
+    padding: 4,
+    borderRadius: 20,
   },
   title: {
-    fontSize: 22,
+    fontSize: 19,
     fontWeight: '700',
-    color: theme.colors.textPrimary,
+    color: '#ffffff',
     letterSpacing: -0.3,
   },
   subtitle: {
-    fontSize: 13,
+    fontSize: 11.5,
     color: theme.colors.textSecondary,
-    marginTop: 2,
+    marginTop: 1,
+  },
+  updatePracticalBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(59, 130, 246, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(96, 165, 250, 0.38)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  updatePracticalBtnReady: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderColor: '#10b981',
+  },
+  updatePracticalText: {
+    color: '#93c5fd',
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#10b981',
+  },
+  updateCompactPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(59, 130, 246, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(96, 165, 250, 0.35)',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 16,
+    marginRight: 2,
+  },
+  updateCompactText: {
+    color: '#93c5fd',
+    fontSize: 11,
+    fontWeight: '800',
   },
   actionsSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
+    gap: 4,
   },
-  actionButton: {
-    width: 38,
-    height: 38,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  filterButton: {
-    width: 38,
-    height: 38,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.surface,
+  galaxyIconBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
   },
   filterButtonActive: {
-    backgroundColor: theme.colors.surfaceHover,
-    borderColor: theme.colors.primary,
-    borderWidth: 1,
+    backgroundColor: 'rgba(59, 130, 246, 0.2)',
   },
 });

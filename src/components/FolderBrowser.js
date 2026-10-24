@@ -38,6 +38,28 @@ const NUM_FOLDER_COLUMNS = 2;
 const FOLDER_CARD_WIDTH =
   (SCREEN_WIDTH - theme.spacing.lg * 2 - FOLDER_GAP) / NUM_FOLDER_COLUMNS;
 
+const SUBFOLDER_SIDE_PADDING = 10;
+const SUBFOLDER_GAP = 8;
+const SUBFOLDER_COLS = 3;
+const SUBFOLDER_CARD_WIDTH = Math.floor(
+  (SCREEN_WIDTH - SUBFOLDER_SIDE_PADDING * 2 - SUBFOLDER_GAP * (SUBFOLDER_COLS - 1)) / SUBFOLDER_COLS
+);
+const SUBFOLDER_CARD_HEIGHT = Math.round(SUBFOLDER_CARD_WIDTH * 1.22);
+
+const SUBFOLDER_FALLBACK_COVERS = [
+  'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=500&q=80',
+  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=500&q=80',
+  'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=500&q=80',
+  'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&w=500&q=80',
+];
+
+function getSubfolderFallbackCover(name = '') {
+  let h = 0;
+  const s = String(name);
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return SUBFOLDER_FALLBACK_COVERS[h % SUBFOLDER_FALLBACK_COVERS.length];
+}
+
 const BATCH_SIZE = 90; // Tamaño de carga parcial progresiva
 
 export default function FolderBrowser({
@@ -55,6 +77,7 @@ export default function FolderBrowser({
   onToggleHideFolder,
   showAllFolders = false,
   onToggleShowAllFolders,
+  onExitFolder,
 }) {
   // Historial de navegación dentro de la carpeta activa: [{ uri, name }]
   const [history, setHistory] = useState(() => {
@@ -940,6 +963,10 @@ export default function FolderBrowser({
         handleGoBack();
         return true;
       }
+      if (onExitFolder) {
+        onExitFolder();
+        return true;
+      }
       return false; // En la pantalla inicial raíz permite salir o delegar a App.js
     };
 
@@ -958,6 +985,7 @@ export default function FolderBrowser({
     folderCategory,
     viewMode,
     history.length,
+    onExitFolder,
   ]);
 
   // Subcarpetas visibles filtradas por el modo oculto y buscador
@@ -1000,157 +1028,107 @@ export default function FolderBrowser({
     };
   }, [savedFolders]);
 
-  // 1. CARRUSEL SUPERIOR DE CARPETAS CON PORTADA (Miniatura de foto + insignia de carpeta + Nombre / Mes y Año)
-  const renderSavedFoldersBar = () => {
-    const activeUri = currentFolder?.uri || rootUri;
+  // 1. SECCIÓN DE SUBCARPETAS ESTILO SAMSUNG GALAXY (3 columnas dentro de la carpeta actual)
+  const renderSubfoldersGridHeader = () => {
+    if (viewMode !== 'folders' || visibleSubfolders.length === 0) return null;
+
     return (
-      <View style={styles.savedFoldersBar}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.savedFoldersScroll}
-        >
-          {/* Tarjetas con Portada de Carpetas Raíz Guardadas */}
-          {savedFolders.map((f) => {
-            const isRootSelected = f.uri === rootUri && history.length <= 1;
-            const isParentOfCurrent = f.uri === rootUri && history.length > 1;
-            const coverUri =
-              savedFolderCovers[f.uri] ||
-              (f.uri === currentFolder?.uri && currentFolderAssets[0]?.uri) ||
-              null;
-            const displayLabel = folderService.formatFolderDisplayName(f.name, f.uri);
+      <View style={styles.subfoldersGalaxySection}>
+        <View style={styles.subfoldersGalaxyHeaderRow}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Ionicons name="folder-open" size={16} color="#60a5fa" />
+            <Text style={styles.subfoldersGalaxyTitle}>
+              Subcarpetas ({visibleSubfolders.length})
+            </Text>
+          </View>
+          {hiddenSubfolderCount > 0 && (
+            <TouchableOpacity onPress={onToggleShowAllFolders}>
+              <Text style={{ color: '#60a5fa', fontSize: 12, fontWeight: '700' }}>
+                {showAllFolders ? 'Ocultar privadas' : `Ver ocultas (${hiddenSubfolderCount})`}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
 
-            return (
-              <TouchableOpacity
-                key={`saved_${f.uri}`}
-                style={[
-                  styles.coverFolderCard,
-                  isRootSelected && styles.coverFolderCardActive,
-                  isParentOfCurrent && styles.coverFolderCardParent,
-                ]}
-                onPress={() => {
-                  if (f.uri === rootUri && history.length > 1) {
-                    handleJumpToHistory(0);
-                  } else if (onSelectSavedFolder) {
-                    onSelectSavedFolder(f.uri);
-                  }
-                }}
-                activeOpacity={0.8}
-              >
-                <View style={styles.coverThumbBox}>
-                  {coverUri ? (
-                    <Image
-                      source={{ uri: coverUri }}
-                      style={styles.coverThumbImg}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <View style={styles.coverThumbPlaceholder}>
-                      <Ionicons
-                        name={isRootSelected ? 'folder-open' : 'folder'}
-                        size={26}
-                        color={isRootSelected ? '#38bdf8' : theme.colors.primaryLight}
-                      />
-                    </View>
-                  )}
-                  <View
-                    style={[
-                      styles.coverFolderBadge,
-                      isRootSelected && { backgroundColor: theme.colors.primary },
-                    ]}
-                  >
-                    <Ionicons name="folder" size={11} color="#ffffff" />
-                  </View>
-
-                  {onRemoveFolder && (
-                    <TouchableOpacity
-                      style={styles.coverRemoveBadge}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        onRemoveFolder(f.uri);
-                      }}
-                      hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-                    >
-                      <Ionicons name="close" size={11} color="#ffffff" />
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                <Text
-                  style={[
-                    styles.coverFolderTitle,
-                    isRootSelected && styles.coverFolderTitleActive,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {displayLabel}
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-
-          {/* Tarjetas con Portada de Subcarpetas / Meses (ej. "Septiembre 2026", "Agosto 2026") */}
+        <View style={styles.subfoldersGalaxyGrid}>
           {visibleSubfolders.map((sub) => {
-            const isSubSelected = activeUri === sub.uri;
             const isHidden = Boolean(hiddenFolders[sub.uri] || hiddenFolders[sub.name]);
             const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
+            const coverToUse = sub.coverUri || getSubfolderFallbackCover(displayLabel);
 
             return (
               <TouchableOpacity
-                key={`sub_${sub.uri}`}
+                key={`sub_galaxy_${sub.uri}`}
                 style={[
-                  styles.coverFolderCard,
-                  isSubSelected && styles.coverFolderCardActive,
-                  isHidden && { opacity: 0.6, borderColor: '#f59e0b' },
+                  styles.subfolderGalaxyCard,
+                  isHidden && { borderColor: '#f59e0b', borderWidth: 1.5, borderStyle: 'dashed' },
                 ]}
                 onPress={() => handleOpenSubfolder({ ...sub, name: displayLabel })}
-                activeOpacity={0.8}
+                onLongPress={() => {
+                  if (onToggleHideFolder) {
+                    onToggleHideFolder(sub.uri, sub.name);
+                  }
+                }}
+                activeOpacity={0.82}
               >
-                <View style={styles.coverThumbBox}>
-                  {sub.coverUri ? (
-                    <Image
-                      source={{ uri: sub.coverUri }}
-                      style={styles.coverThumbImg}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <View style={styles.coverThumbPlaceholder}>
-                      <Ionicons name="calendar-outline" size={24} color="#a78bfa" />
-                    </View>
-                  )}
-                  <View style={[styles.coverFolderBadge, { backgroundColor: 'rgba(139, 92, 246, 0.85)' }]}>
-                    <Ionicons name="folder-open" size={10} color="#ffffff" />
-                  </View>
+                <Image
+                  source={{ uri: coverToUse }}
+                  style={[styles.subfolderGalaxyImg, isHidden && { opacity: 0.45 }]}
+                  resizeMode="cover"
+                />
+                <View style={styles.subfolderGalaxyScrim} />
 
-                  {showAllFolders && onToggleHideFolder && (
-                    <TouchableOpacity
-                      style={[
-                        styles.coverRemoveBadge,
-                        { backgroundColor: isHidden ? '#f59e0b' : 'rgba(15,23,42,0.75)' },
-                      ]}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        onToggleHideFolder(sub.uri, sub.name);
-                      }}
-                    >
-                      <Ionicons name={isHidden ? 'eye-off' : 'eye'} size={11} color="#ffffff" />
-                    </TouchableOpacity>
-                  )}
+                <View style={styles.subfolderGalaxyTopBadge}>
+                  <Ionicons name="folder" size={12} color="#ffffff" />
                 </View>
 
-                <Text
-                  style={[
-                    styles.coverFolderTitle,
-                    isSubSelected && styles.coverFolderTitleActive,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {displayLabel}
-                </Text>
+                {onToggleHideFolder && (
+                  <TouchableOpacity
+                    style={[
+                      styles.subfolderGalaxyEyeBtn,
+                      isHidden && { backgroundColor: '#f59e0b' },
+                    ]}
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      onToggleHideFolder(sub.uri, sub.name);
+                    }}
+                    hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                  >
+                    <Ionicons
+                      name={isHidden ? 'eye-off' : 'eye-outline'}
+                      size={13}
+                      color="#ffffff"
+                    />
+                  </TouchableOpacity>
+                )}
+
+                <View style={styles.subfolderGalaxyBottomInfo}>
+                  <Text
+                    style={[
+                      styles.subfolderGalaxyCardTitle,
+                      isHidden && { color: '#fcd34d' },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {displayLabel}
+                  </Text>
+                  <Text style={styles.subfolderGalaxyCardSub}>
+                    {sub.count ? `${sub.count}` : 'Subcarpeta'}
+                  </Text>
+                </View>
               </TouchableOpacity>
             );
           })}
-        </ScrollView>
+        </View>
+
+        {paginatedAssets.length > 0 && (
+          <View style={styles.filesDividerRow}>
+            <Ionicons name="images-outline" size={15} color="#a1a1aa" />
+            <Text style={styles.filesDividerText}>
+              Archivos en esta carpeta ({totalFilteredAssets.length})
+            </Text>
+          </View>
+        )}
       </View>
     );
   };
@@ -1180,10 +1158,43 @@ export default function FolderBrowser({
 
   return (
     <View style={styles.container}>
-      {/* 1. CARRUSEL SUPERIOR DE CARPETAS CON PORTADA Y MINIATURA */}
-      {renderSavedFoldersBar()}
+      {/* Ruta de navegación (Breadcrumbs) si estamos dentro de una subcarpeta */}
+      {history.length > 1 && (
+        <View style={styles.breadcrumbBar}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.breadcrumbScroll}
+          >
+            {history.map((h, idx) => {
+              const isLast = idx === history.length - 1;
+              const label = folderService.formatFolderDisplayName(h.name, h.uri);
+              return (
+                <View key={`bc_${h.uri}_${idx}`} style={styles.breadcrumbItem}>
+                  <TouchableOpacity
+                    onPress={() => handleJumpToHistory(idx)}
+                    disabled={isLast}
+                  >
+                    <Text
+                      style={[
+                        styles.breadcrumbText,
+                        isLast && styles.breadcrumbTextActive,
+                      ]}
+                    >
+                      {label}
+                    </Text>
+                  </TouchableOpacity>
+                  {!isLast && (
+                    <Ionicons name="chevron-forward" size={13} color="#71717a" />
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
 
-      {/* 2. RECUADROS DE LAS OPCIONES (donde antes estaban las carpetas) */}
+      {/* 2. RECUADROS DE LAS OPCIONES */}
       <View style={styles.optionsBoxesContainer}>
         <ScrollView
           horizontal
@@ -1624,14 +1635,13 @@ export default function FolderBrowser({
             }
             renderItem={renderPhotoItem}
             updateCellsBatchingPeriod={30}
+            ListHeaderComponent={renderSubfoldersGridHeader}
             ListEmptyComponent={
-              !loading ? (
+              !loading && visibleSubfolders.length === 0 ? (
                 <View style={styles.emptyContainer}>
                   <Ionicons name="images-outline" size={48} color={theme.colors.textMuted} />
                   <Text style={styles.emptyText}>
-                    {visibleSubfolders.length > 0
-                      ? 'Toca cualquiera de las carpetas con portada arriba para ver sus fotos.'
-                      : 'No hay fotos ni videos en esta carpeta.'}
+                    No hay fotos ni subcarpetas en esta ubicación.
                   </Text>
                 </View>
               ) : null
@@ -1643,7 +1653,7 @@ export default function FolderBrowser({
                   <Text style={styles.streamingText}>Cargando más fotos en segundo plano…</Text>
                 </View>
               ) : (
-                <View style={{ height: 30 }} />
+                <View style={{ height: 110 }} />
               )
             }
           />
@@ -3521,5 +3531,129 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 11.5,
     paddingVertical: 0,
+  },
+  breadcrumbBar: {
+    backgroundColor: '#09090b',
+    borderBottomWidth: 1,
+    borderBottomColor: '#27272a',
+    paddingVertical: 6,
+  },
+  breadcrumbScroll: {
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    gap: 6,
+  },
+  breadcrumbItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  breadcrumbText: {
+    color: '#a1a1aa',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  breadcrumbTextActive: {
+    color: '#60a5fa',
+    fontWeight: '800',
+  },
+  subfoldersGalaxySection: {
+    paddingHorizontal: SUBFOLDER_SIDE_PADDING,
+    paddingTop: 10,
+    paddingBottom: 8,
+  },
+  subfoldersGalaxyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingHorizontal: 2,
+  },
+  subfoldersGalaxyTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  subfoldersGalaxyGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: SUBFOLDER_GAP,
+  },
+  subfolderGalaxyCard: {
+    width: SUBFOLDER_CARD_WIDTH,
+    height: SUBFOLDER_CARD_HEIGHT,
+    borderRadius: 18,
+    overflow: 'hidden',
+    backgroundColor: '#222226',
+    position: 'relative',
+  },
+  subfolderGalaxyImg: {
+    width: '100%',
+    height: '100%',
+  },
+  subfolderGalaxyScrim: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: '52%',
+    backgroundColor: 'rgba(0, 0, 0, 0.56)',
+  },
+  subfolderGalaxyTopBadge: {
+    position: 'absolute',
+    top: 7,
+    left: 7,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subfolderGalaxyEyeBtn: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subfolderGalaxyBottomInfo: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    bottom: 8,
+    alignItems: 'center',
+  },
+  subfolderGalaxyCardTitle: {
+    color: '#ffffff',
+    fontSize: 12.5,
+    fontWeight: '700',
+    textAlign: 'center',
+    textShadowColor: 'rgba(0, 0, 0, 0.9)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
+  },
+  subfolderGalaxyCardSub: {
+    color: '#d4d4d8',
+    fontSize: 11,
+    marginTop: 1,
+    textAlign: 'center',
+  },
+  filesDividerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 14,
+    marginBottom: 4,
+    paddingHorizontal: 2,
+  },
+  filesDividerText: {
+    color: '#e4e4e7',
+    fontSize: 13.5,
+    fontWeight: '700',
   },
 });

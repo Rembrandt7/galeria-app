@@ -23,6 +23,7 @@ import { theme } from './src/constants/theme';
 import { mediaService } from './src/services/mediaService';
 import { storageService } from './src/services/storageService';
 import { folderService } from './src/services/folderService';
+import { updateService, CURRENT_VERSION } from './src/services/updateService';
 
 import Header from './src/components/Header';
 import TabBar from './src/components/TabBar';
@@ -40,8 +41,8 @@ import TiendaRembModal from './src/components/TiendaRembModal';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
-  // Por defecto: 'folder' (Mi carpeta primero)
-  const [activeTab, setActiveTab] = useState('folder'); // 'folder' | 'albums' | 'photos' | 'favorites'
+  // Por defecto: 'albums' (Vista principal estilo Samsung Galaxy One UI con carpetas y álbumes)
+  const [activeTab, setActiveTab] = useState('albums'); // 'albums' | 'folder' | 'photos' | 'favorites'
   const [filterType, setFilterType] = useState('all'); // 'all' | 'photos' | 'videos'
 
   // Datos
@@ -72,6 +73,9 @@ export default function App() {
   const [downloaderVisible, setDownloaderVisible] = useState(false);
   const [sharedIncomingUrl, setSharedIncomingUrl] = useState(null);
   const [storeVisible, setStoreVisible] = useState(false);
+  const [albumSearchVisible, setAlbumSearchVisible] = useState(false);
+  const [visibilityModalVisible, setVisibilityModalVisible] = useState(false);
+  const [hasUpdateAvailable, setHasUpdateAvailable] = useState(false);
 
   // Carpetas ocultas y modo todo visible
   const [hiddenFolders, setHiddenFolders] = useState({});
@@ -109,11 +113,22 @@ export default function App() {
       setHasPermission(granted);
 
       if (granted) {
-        // Cargar únicamente el primer bloque de fotos
-        await loadAssets({ reset: true });
+        // Cargar álbumes estilo Samsung Galaxy y el primer bloque de fotos en paralelo
+        await Promise.all([
+          loadAlbums(),
+          loadAssets({ reset: true }),
+        ]);
       } else if (!(await mediaService.canAskAgain())) {
         Linking.openSettings();
       }
+
+      // Verificar en segundo plano si existe una actualización disponible para encender el indicador
+      updateService
+        .checkForUpdates()
+        .then((res) => {
+          if (res?.hasUpdate) setHasUpdateAvailable(true);
+        })
+        .catch(() => {});
 
       // Quitar pantalla de carga INMEDIATAMENTE (< 1 segundo)
       setInitialLoading(false);
@@ -166,6 +181,7 @@ export default function App() {
       if (res && res.uri) {
         const updated = await folderService.getSavedFolders();
         setSavedFolders(updated);
+        await loadAlbums();
         setFolderUri(res.uri);
         setActiveTab('folder');
         setSelectedAlbum(null);
@@ -180,16 +196,17 @@ export default function App() {
     try {
       const updated = await folderService.addMultipleSavedFolders(chosenFolders);
       setSavedFolders(updated);
+      await loadAlbums();
       if (chosenFolders[0]?.uri) {
         setFolderUri(chosenFolders[0].uri);
       } else if (!folderUri && updated.length > 0) {
         setFolderUri(updated[0].uri);
       }
-      setActiveTab('folder');
+      setActiveTab('albums');
       setSelectedAlbum(null);
       Alert.alert(
         '¡Carpetas agregadas!',
-        `Se agregaron ${chosenFolders.length} ${chosenFolders.length === 1 ? 'carpeta' : 'carpetas'} a tu barra de carpetas.`
+        `Se agregaron ${chosenFolders.length} ${chosenFolders.length === 1 ? 'carpeta' : 'carpetas'} a tu pantalla de Álbumes.`
       );
     } catch (e) {
       Alert.alert('Error', 'No se pudieron agregar las carpetas seleccionadas.');
@@ -334,8 +351,15 @@ export default function App() {
     }
   };
 
-  // Seleccionar un álbum
+  // Seleccionar un álbum o carpeta desde la cuadrícula estilo Samsung Galaxy:
+  // Si tiene ruta de carpeta (uri), entramos con FolderBrowser para ver sus subcarpetas y herramientas.
   const handleSelectAlbum = (album) => {
+    if (album?.uri) {
+      setSelectedAlbum(null);
+      setFolderUri(album.uri);
+      setActiveTab('folder');
+      return;
+    }
     setSelectedAlbum(album);
     setAssets([]);
     setEndCursor(null);
@@ -343,10 +367,11 @@ export default function App() {
     loadAssets({ reset: true, album });
   };
 
-  // Volver del álbum a la lista
+  // Volver del álbum o carpeta a la pantalla principal de Álbumes estilo Samsung Galaxy
   const handleBackFromAlbum = () => {
     setSelectedAlbum(null);
-    loadAssets({ reset: true, album: null });
+    setActiveTab('albums');
+    loadAlbums();
   };
 
   // Alternar favorito
@@ -490,11 +515,11 @@ export default function App() {
         loadAssets({ reset: true, album: selectedAlbum, filter: 'all' });
         return true;
       }
-      if (activeTab !== 'folder') {
-        setActiveTab('folder');
+      if (activeTab !== 'albums') {
+        setActiveTab('albums');
         return true;
       }
-      return false; // En la pantalla inicial ('folder' raíz) permite salir de la app
+      return false; // En la pantalla inicial ('albums' estilo Samsung Galaxy) permite salir de la app
     };
 
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
@@ -523,19 +548,17 @@ export default function App() {
     }
 
     if (activeTab === 'folder') {
-      const count = savedFolders.length;
       return {
-        title: folderUri ? folderService.folderName(folderUri) : 'Mis carpetas',
-        subtitle: folderUri
-          ? `${folderAssets.length} fotos y videos · ${count} ${count === 1 ? 'carpeta agregada' : 'carpetas agregadas'}`
-          : `${count} ${count === 1 ? 'carpeta agregada' : 'carpetas agregadas'}`,
-        showBack: false,
+        title: folderUri ? folderService.folderName(folderUri) : 'Carpeta',
+        subtitle: `${folderAssets.length} fotos y videos`,
+        showBack: true,
+        onBack: handleBackFromAlbum,
       };
     }
 
     if (activeTab === 'albums') {
       return {
-        title: 'Álbumes',
+        title: 'Álbumes esenciales',
         subtitle: `${albums.length} carpetas`,
         showBack: false,
       };
@@ -543,7 +566,7 @@ export default function App() {
 
     if (activeTab === 'photos') {
       return {
-        title: 'Todas las fotos',
+        title: 'Imágenes',
         subtitle: `${displayedAssets.length} fotos y videos`,
         showBack: false,
       };
@@ -554,7 +577,8 @@ export default function App() {
       return {
         title: 'Favoritos',
         subtitle: `${count} ${count === 1 ? 'elemento guardado' : 'elementos guardados'}`,
-        showBack: false,
+        showBack: true,
+        onBack: () => setActiveTab('albums'),
       };
     }
 
@@ -595,9 +619,10 @@ export default function App() {
       <SafeAreaView style={styles.rootContainer} edges={['top', 'left', 'right']}>
         <StatusBar barStyle="light-content" backgroundColor={theme.colors.background} />
 
-        {/* Encabezado */}
+        {/* Encabezado Superior estilo Samsung Galaxy One UI */}
         <Header
           {...headerProps}
+          hasUpdateAvailable={hasUpdateAvailable}
           onRefresh={activeTab !== 'folder' ? handleRefresh : null}
           isRefreshing={isRefreshing}
           filterType={filterType}
@@ -608,23 +633,18 @@ export default function App() {
               ? handleToggleFilter
               : null
           }
-          onPickFolder={activeTab === 'folder' ? handlePickFolder : null}
-          onFindDuplicates={
-            (activeTab === 'photos' || activeTab === 'folder') && !selectedAlbum
-              ? () => setDupVisible(true)
+          onPickFolder={handlePickFolder}
+          onToggleSearch={
+            activeTab === 'albums' && !selectedAlbum
+              ? () => setAlbumSearchVisible((prev) => !prev)
               : null
           }
-          onOpenDownloader={() => setDownloaderVisible(true)}
-          onOpenStore={() => setStoreVisible(true)}
-          onOpenCamera={() => setCameraVisible(true)}
+          onOpenVisibilityManager={
+            activeTab === 'albums' && !selectedAlbum
+              ? () => setVisibilityModalVisible(true)
+              : () => setSettingsVisible(true)
+          }
           onOpenSettings={() => setSettingsVisible(true)}
-        />
-
-        {/* Barra de pestañas en la parte de arriba (debajo del Header) */}
-        <TabBar
-          activeTab={activeTab}
-          onSelectTab={handleSelectTab}
-          favoritesCount={Object.keys(favorites).length}
         />
 
         {/* Contenido Principal */}
@@ -649,11 +669,14 @@ export default function App() {
               onToggleHideFolder={handleToggleHideFolder}
               showAllFolders={showAllFolders}
               onToggleShowAllFolders={handleToggleShowAllFolders}
+              onExitFolder={handleBackFromAlbum}
             />
           ) : activeTab === 'albums' && !selectedAlbum ? (
             <AlbumList
               albums={albums}
+              favorites={favorites}
               onSelectAlbum={handleSelectAlbum}
+              onSelectFavorites={() => setActiveTab('favorites')}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
               hiddenFolders={hiddenFolders}
@@ -663,6 +686,10 @@ export default function App() {
               onPickNewFolder={handlePickFolder}
               onAddMultipleFolders={handleAddMultipleFolders}
               savedFolders={savedFolders}
+              searchVisible={albumSearchVisible}
+              visibilityModalVisible={visibilityModalVisible}
+              onCloseVisibilityModal={() => setVisibilityModalVisible(false)}
+              onOpenVisibilityModal={() => setVisibilityModalVisible(true)}
             />
           ) : (
             <PhotoGrid
@@ -683,6 +710,20 @@ export default function App() {
               }
             />
           )}
+
+          {/* Cápsula Flotante Inferior Estilo Samsung Galaxy con todas las opciones y herramientas */}
+          <TabBar
+            activeTab={activeTab}
+            onSelectTab={handleSelectTab}
+            favoritesCount={Object.keys(favorites).length}
+            onOpenDownloader={() => setDownloaderVisible(true)}
+            onOpenStore={() => setStoreVisible(true)}
+            onOpenSettings={() => setSettingsVisible(true)}
+            onOpenCamera={() => setCameraVisible(true)}
+            onFindDuplicates={() => setDupVisible(true)}
+            hasUpdateAvailable={hasUpdateAvailable}
+            currentVersionLabel={CURRENT_VERSION}
+          />
         </View>
 
         {/* Visor de Pantalla Completa */}

@@ -323,10 +323,10 @@ export const folderService = {
   },
 
   /**
-   * Obtiene rápidamente la primera imagen/video (portada) y el conteo de archivos de una carpeta.
+   * Obtiene rápidamente la primera imagen/video (portada), el conteo de archivos y subcarpetas de una carpeta.
    */
   async getFolderCoverAndCount(uri, depth = 0) {
-    if (!uri || depth > 2) return { coverUri: null, count: 0 };
+    if (!uri || depth > 3) return { coverUri: null, count: 0, subfolderCount: 0 };
     try {
       const phys = folderService.toPhysicalUri(uri) || uri;
       let entries = [];
@@ -356,18 +356,28 @@ export const folderService = {
         return {
           coverUri: mediaEntries[0].uri,
           count: mediaEntries.length,
+          subfolderCount: subDirs.length,
         };
       }
 
-      // Si la carpeta raíz solo tiene subcarpetas (ej. DCIM -> Camera), buscar portada en la primera subcarpeta
-      for (const sub of subDirs.slice(0, 6)) {
+      // Si la carpeta raíz solo tiene subcarpetas (ej. DCIM -> Camera o carpeta organizada por meses),
+      // buscar portada y sumar conteo en las primeras subcarpetas
+      let firstCover = null;
+      let totalSubCount = 0;
+      for (const sub of subDirs.slice(0, 8)) {
         const subRes = await folderService.getFolderCoverAndCount(sub.uri, depth + 1);
-        if (subRes.coverUri) {
-          return subRes;
+        if (!firstCover && subRes.coverUri) {
+          firstCover = subRes.coverUri;
         }
+        totalSubCount += subRes.count || 0;
       }
+      return {
+        coverUri: firstCover,
+        count: totalSubCount,
+        subfolderCount: subDirs.length,
+      };
     } catch (_e) {}
-    return { coverUri: null, count: 0 };
+    return { coverUri: null, count: 0, subfolderCount: 0 };
   },
 
   /**

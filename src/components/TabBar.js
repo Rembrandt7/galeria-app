@@ -1,158 +1,219 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { theme } from '../constants/theme';
 
-export default function TabBar({ activeTab, onSelectTab, favoritesCount = 0 }) {
-  // Orden requerido: Mi carpeta -> Álbumes -> Fotos -> (Corazón rojo + contador solo si hay favoritos)
-  const tabs = [
-    { key: 'folder', label: 'Mi carpeta', icon: 'folder-open-outline', iconActive: 'folder-open' },
-    { key: 'albums', label: 'Álbumes', icon: 'albums-outline', iconActive: 'albums' },
-    { key: 'photos', label: 'Fotos', icon: 'images-outline', iconActive: 'images' },
+export default function TabBar({
+  activeTab,
+  onSelectTab,
+  favoritesCount = 0,
+  onOpenDownloader,
+  onOpenStore,
+  onOpenSettings,
+  onOpenCamera,
+  onFindDuplicates,
+  hasUpdateAvailable = false,
+  currentVersionLabel = '',
+}) {
+  const dockItems = [
+    {
+      key: 'photos',
+      label: 'Imágenes',
+      icon: 'images-outline',
+      iconActive: 'images',
+      isTab: true,
+    },
+    {
+      key: 'albums',
+      label: 'Álbumes',
+      icon: 'book-outline',
+      iconActive: 'book',
+      isTab: true,
+    },
+    {
+      key: 'downloader',
+      label: 'Descargas',
+      icon: 'cloud-download-outline',
+      iconActive: 'cloud-download',
+      onPress: onOpenDownloader,
+      accentColor: '#38bdf8',
+    },
+    {
+      key: 'store',
+      label: 'Tienda',
+      icon: 'bag-handle-outline',
+      iconActive: 'bag-handle',
+      onPress: onOpenStore,
+      accentColor: '#a78bfa',
+    },
+    {
+      key: 'update',
+      label: hasUpdateAvailable ? '¡Actualizar!' : 'Actualizar',
+      icon: hasUpdateAvailable ? 'arrow-up-circle' : 'arrow-up-circle-outline',
+      iconActive: 'arrow-up-circle',
+      onPress: onOpenSettings,
+      accentColor: hasUpdateAvailable ? '#10b981' : '#fbbf24',
+      hasDot: hasUpdateAvailable,
+      subBadge: currentVersionLabel,
+    },
+    {
+      key: 'camera',
+      label: 'Cámara',
+      icon: 'camera-outline',
+      iconActive: 'camera',
+      onPress: onOpenCamera,
+    },
+    {
+      key: 'duplicates',
+      label: 'Limpiar',
+      icon: 'sparkles-outline',
+      iconActive: 'sparkles',
+      onPress: onFindDuplicates,
+    },
   ];
 
   if (favoritesCount > 0 || activeTab === 'favorites') {
-    tabs.push({
+    dockItems.splice(2, 0, {
       key: 'favorites',
-      label: '',
-      icon: 'heart',
+      label: `Favoritos (${favoritesCount})`,
+      icon: 'heart-outline',
       iconActive: 'heart',
-      badge: favoritesCount,
-      isHeartOnly: true,
+      isTab: true,
+      accentColor: '#f43f5e',
     });
   }
 
   return (
-    <View style={styles.container}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
-        {tabs.map((tab) => {
-          const isActive = activeTab === tab.key;
-          if (tab.isHeartOnly) {
+    <View style={styles.floatingDockWrapper} pointerEvents="box-none">
+      <View style={styles.galaxyCapsule}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.capsuleScrollContent}
+        >
+          {dockItems.map((item) => {
+            const isSelected =
+              item.isTab &&
+              (activeTab === item.key ||
+                (item.key === 'albums' && activeTab === 'folder'));
+
+            const iconColor = isSelected
+              ? '#ffffff'
+              : item.accentColor || '#d4d4d8';
+
             return (
               <TouchableOpacity
-                key={tab.key}
+                key={item.key}
                 style={[
-                  styles.tabPill,
-                  styles.heartOnlyPill,
-                  isActive && styles.heartOnlyPillActive,
+                  styles.dockButton,
+                  isSelected && styles.dockButtonActive,
+                  item.key === 'update' && hasUpdateAvailable && styles.dockButtonUpdateReady,
                 ]}
-                onPress={() => onSelectTab(tab.key)}
-                activeOpacity={0.75}
+                onPress={() => {
+                  if (item.isTab) {
+                    onSelectTab(item.key);
+                  } else if (item.onPress) {
+                    item.onPress();
+                  }
+                }}
+                activeOpacity={0.78}
               >
-                <Ionicons
-                  name="heart"
-                  size={17}
-                  color={isActive ? '#ffffff' : '#ef4444'}
-                />
-                {tab.badge > 0 && (
-                  <Text
-                    style={[
-                      styles.heartCountText,
-                      isActive && { color: '#ffffff' },
-                    ]}
-                  >
-                    {tab.badge > 99 ? '99+' : tab.badge}
-                  </Text>
-                )}
+                <View style={styles.iconWrap}>
+                  <Ionicons
+                    name={isSelected ? item.iconActive : item.icon}
+                    size={21}
+                    color={iconColor}
+                  />
+                  {item.hasDot && <View style={styles.updateDot} />}
+                </View>
+                <Text
+                  style={[
+                    styles.dockLabel,
+                    isSelected && styles.dockLabelActive,
+                    item.key === 'update' &&
+                      hasUpdateAvailable && { color: '#34d399', fontWeight: '800' },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {item.label}
+                </Text>
               </TouchableOpacity>
             );
-          }
-
-          return (
-            <TouchableOpacity
-              key={tab.key}
-              style={[styles.tabPill, isActive && styles.tabPillActive]}
-              onPress={() => onSelectTab(tab.key)}
-              activeOpacity={0.75}
-            >
-              <Ionicons
-                name={isActive ? tab.iconActive : tab.icon}
-                size={16}
-                color={isActive ? '#ffffff' : theme.colors.textSecondary}
-              />
-              {Boolean(tab.label) && (
-                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-                  {tab.label}
-                </Text>
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </ScrollView>
+          })}
+        </ScrollView>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    backgroundColor: theme.colors.surface,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.surfaceBorder,
-    paddingVertical: 8,
-  },
-  scrollContent: {
-    flexDirection: 'row',
-    paddingHorizontal: 12,
-    gap: 8,
+  floatingDockWrapper: {
+    position: 'absolute',
+    left: 10,
+    right: 10,
+    bottom: Platform.OS === 'android' ? 14 : 20,
     alignItems: 'center',
+    zIndex: 100,
   },
-  tabPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 20,
-    backgroundColor: theme.colors.surfaceHover,
-    gap: 6,
-  },
-  tabPillActive: {
-    backgroundColor: theme.colors.primary,
-  },
-  heartOnlyPill: {
-    paddingHorizontal: 11,
+  galaxyCapsule: {
+    maxWidth: '100%',
+    backgroundColor: 'rgba(36, 36, 40, 0.96)',
+    borderRadius: 36,
     paddingVertical: 6,
+    paddingHorizontal: 6,
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.45)',
-    backgroundColor: 'rgba(239, 68, 68, 0.14)',
-    gap: 5,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.55,
+    shadowRadius: 16,
+    elevation: 18,
   },
-  heartOnlyPillActive: {
-    backgroundColor: '#ef4444',
-    borderColor: '#ef4444',
+  capsuleScrollContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
   },
-  heartCountText: {
-    color: '#ef4444',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  tabLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: theme.colors.textSecondary,
-  },
-  tabLabelActive: {
-    color: '#ffffff',
-    fontWeight: '700',
-  },
-  badge: {
-    backgroundColor: theme.colors.favorite,
-    borderRadius: 10,
-    minWidth: 18,
-    height: 18,
+  dockButton: {
+    minWidth: 68,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 5,
+    gap: 3,
   },
-  badgeActive: {
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+  dockButtonActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.17)',
   },
-  badgeText: {
+  dockButtonUpdateReady: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.45)',
+  },
+  iconWrap: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  updateDot: {
+    position: 'absolute',
+    top: -2,
+    right: -5,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10b981',
+    borderWidth: 1.5,
+    borderColor: '#242428',
+  },
+  dockLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#d4d4d8',
+    letterSpacing: -0.1,
+  },
+  dockLabelActive: {
     color: '#ffffff',
-    fontSize: 10,
-    fontWeight: '700',
+    fontWeight: '800',
   },
 });
