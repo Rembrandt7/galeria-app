@@ -342,42 +342,58 @@ function normalizeFacebookUrl(rawUrl) {
     .replace(/^https?:\/\/(?:m|mbasic|web|touch|business)\.facebook\.com\//i, 'https://www.facebook.com/');
 }
 
+function isValidDirectVideoCandidate(url) {
+  if (!url || typeof url !== 'string' || !url.startsWith('http')) return false;
+  const lower = url.toLowerCase();
+  if (
+    lower.includes('lookaside.fbsbx.com') ||
+    lower.includes('facebook.com/plugins/') ||
+    lower.includes('facebook.com/login') ||
+    lower.includes('/rsrc.php/')
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function extractFacebookVideoFromHtml(html) {
   if (!html || typeof html !== 'string') return null;
 
   const fbPatterns = [
-    { regex: /"browser_native_hd_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
-    { regex: /"playable_url_quality_hd"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
-    { regex: /"hd_src_no_ratelimit"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
-    { regex: /"hd_src"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
-    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"[^}]{0,220}"quality"\s*:\s*"HD"/i, label: 'Facebook HD' },
-    { regex: /"quality"\s*:\s*"HD"[^}]{0,220}"progressive_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook HD' },
-    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook Video' },
-    { regex: /"browser_native_sd_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
-    { regex: /"playable_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
-    { regex: /"sd_src_no_ratelimit"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
-    { regex: /"sd_src"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook SD' },
-    { regex: /"video_url"\s*:\s*"(https?:[^"]+)"/i, label: 'Facebook Video' },
-    { regex: /<meta[^>]+property=["']og:video:secure_url["'][^>]+content=["'](https?:[^"']+)["']/i, label: 'Facebook Video' },
-    { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video:secure_url["']/i, label: 'Facebook Video' },
-    { regex: /<meta[^>]+property=["']og:video["'][^>]+content=["'](https?:[^"']+)["']/i, label: 'Facebook Video' },
-    { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video["']/i, label: 'Facebook Video' },
+    { regex: /"browser_native_hd_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
+    { regex: /"playable_url_quality_hd"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
+    { regex: /"hd_src_no_ratelimit"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
+    { regex: /"hd_src"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
+    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"[^}]{0,220}"quality"\s*:\s*"HD"/gi, label: 'Facebook HD' },
+    { regex: /"quality"\s*:\s*"HD"[^}]{0,220}"progressive_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook HD' },
+    { regex: /"progressive_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook Video' },
+    { regex: /"browser_native_sd_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
+    { regex: /"playable_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
+    { regex: /"sd_src_no_ratelimit"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
+    { regex: /"sd_src"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook SD' },
+    { regex: /"video_url"\s*:\s*"(https?:[^"]+)"/gi, label: 'Facebook Video' },
+    { regex: /<meta[^>]+property=["']og:video:secure_url["'][^>]+content=["'](https?:[^"']+)["']/gi, label: 'Facebook Video' },
+    { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video:secure_url["']/gi, label: 'Facebook Video' },
+    { regex: /<meta[^>]+property=["']og:video["'][^>]+content=["'](https?:[^"']+)["']/gi, label: 'Facebook Video' },
+    { regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video["']/gi, label: 'Facebook Video' },
   ];
 
   for (const item of fbPatterns) {
-    const match = html.match(item.regex);
-    if (match && match[1]) {
-      const clean = unescapeUrl(match[1]);
-      if (clean && clean.startsWith('http') && !clean.includes('facebook.com/plugins/')) {
-        const titleMatch =
-          html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
-          html.match(/<title[^>]*>([^<]+)<\/title>/i);
-        const rawTitle = titleMatch && titleMatch[1] ? unescapeUrl(titleMatch[1]).slice(0, 60) : 'facebook_video';
-        return {
-          downloadUrl: clean,
-          title: rawTitle,
-          source: item.label,
-        };
+    const matches = html.matchAll(item.regex);
+    for (const match of matches) {
+      if (match && match[1]) {
+        const clean = unescapeUrl(match[1]);
+        if (isValidDirectVideoCandidate(clean)) {
+          const titleMatch =
+            html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i) ||
+            html.match(/<title[^>]*>([^<]+)<\/title>/i);
+          const rawTitle = titleMatch && titleMatch[1] ? unescapeUrl(titleMatch[1]).slice(0, 60) : 'facebook_video';
+          return {
+            downloadUrl: clean,
+            title: rawTitle,
+            source: item.label,
+          };
+        }
       }
     }
   }
@@ -401,11 +417,12 @@ function extractCanonicalAndVideoIdFromFacebook(url, html = '') {
 
   const combined = `${canonical || ''} ${url || ''} ${(html || '').slice(0, 120000)}`;
   const idMatch =
+    combined.match(/media_id=(\d{8,25})/i) ||
     combined.match(/\/reel\/(\d{8,25})/i) ||
     combined.match(/\/videos\/(?:[^/?#]+\/)?(\d{8,25})/i) ||
     combined.match(/[?&]v=(\d{8,25})/i) ||
     combined.match(/story_fbid=(\d{8,25})/i) ||
-    combined.match(/"video_id"\s*:\s*"?(\d{10,25})"?/i);
+    combined.match(/"video_id"\s*:\s*"?(\d{8,25})"?/i);
 
   return {
     canonicalUrl: canonical,
@@ -456,47 +473,91 @@ async function fetchCleanHtmlPage(targetUrl, userAgent, signal) {
 
 async function resolveFacebook(url, signal) {
   let targetUrl = normalizeFacebookUrl(url);
-  let discoveredVideoId = null;
-  let discoveredCanonical = null;
+  const initialInfo = extractCanonicalAndVideoIdFromFacebook(targetUrl, '');
+  let discoveredVideoId = initialInfo.videoId;
+  let discoveredCanonical = initialInfo.canonicalUrl;
 
-  // Etapa 1: Consultar con el rastreador oficial de vista previa (facebookexternalhit/1.1)
-  // Desenvuelve automáticamente enlaces cortos /share/v/, /share/r/ y fb.watch sin pedir login
-  try {
-    const page1 = await fetchCleanHtmlPage(targetUrl, FB_CRAWLER_USER_AGENT, signal);
-    const found1 = extractFacebookVideoFromHtml(page1.html);
-    if (found1) return found1;
+  const isShareOrShortLink = /\/share\/|fb\.watch|\/l\.php/i.test(targetUrl);
 
-    const info1 = extractCanonicalAndVideoIdFromFacebook(page1.finalUrl, page1.html);
-    if (info1.videoId) discoveredVideoId = info1.videoId;
-    if (info1.canonicalUrl) discoveredCanonical = info1.canonicalUrl;
-    if (page1.finalUrl && page1.finalUrl !== targetUrl) {
-      targetUrl = normalizeFacebookUrl(page1.finalUrl);
+  // Etapa 1: Si es un enlace corto (/share/v/, /share/r/, fb.watch), desenvolverlo primero con el crawler de Facebook
+  if (isShareOrShortLink) {
+    try {
+      const crawlerPage = await fetchCleanHtmlPage(targetUrl, FB_CRAWLER_USER_AGENT, signal);
+      const foundCrawler = extractFacebookVideoFromHtml(crawlerPage.html);
+      if (foundCrawler) return foundCrawler;
+
+      const infoCrawler = extractCanonicalAndVideoIdFromFacebook(crawlerPage.finalUrl, crawlerPage.html);
+      if (infoCrawler.videoId) discoveredVideoId = infoCrawler.videoId;
+      if (infoCrawler.canonicalUrl) discoveredCanonical = infoCrawler.canonicalUrl;
+      if (crawlerPage.finalUrl && crawlerPage.finalUrl !== targetUrl && !crawlerPage.finalUrl.includes('/login')) {
+        targetUrl = normalizeFacebookUrl(crawlerPage.finalUrl);
+      }
+    } catch (e) {
+      if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
     }
-  } catch (e) {
-    if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
   }
 
-  // Etapa 2: Consultar con navegador Chrome de Escritorio (Recibe el JSON completo de Relay con browser_native_hd_url)
-  const urlForStage2 = discoveredCanonical || targetUrl;
+  // Etapa 2: Consultar con navegador Chrome de Escritorio (Entrega el stream real de fbcdn.net en browser_native_hd_url / sd_url)
+  const urlForDesktop = discoveredCanonical || targetUrl;
   try {
-    const page2 = await fetchCleanHtmlPage(urlForStage2, DESKTOP_USER_AGENT, signal);
-    const found2 = extractFacebookVideoFromHtml(page2.html);
-    if (found2) return found2;
+    const desktopPage = await fetchCleanHtmlPage(urlForDesktop, DESKTOP_USER_AGENT, signal);
+    const foundDesktop = extractFacebookVideoFromHtml(desktopPage.html);
+    if (foundDesktop) return foundDesktop;
 
-    const info2 = extractCanonicalAndVideoIdFromFacebook(page2.finalUrl, page2.html);
-    if (!discoveredVideoId && info2.videoId) discoveredVideoId = info2.videoId;
-    if (!discoveredCanonical && info2.canonicalUrl) discoveredCanonical = info2.canonicalUrl;
+    const infoDesktop = extractCanonicalAndVideoIdFromFacebook(desktopPage.finalUrl, desktopPage.html);
+    if (!discoveredVideoId && infoDesktop.videoId) discoveredVideoId = infoDesktop.videoId;
+    if (!discoveredCanonical && infoDesktop.canonicalUrl) discoveredCanonical = infoDesktop.canonicalUrl;
   } catch (e) {
     if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
   }
 
-  // Etapa 3: Reproductor Embed Oficial de Facebook (plugins/video.php) — ligero y entrega hd_src / sd_src directo
+  // Etapa 2B: Si aún no teníamos canonical/videoId y no habíamos consultado al crawler, consultarlo para obtener media_id y og:url
+  if (!isShareOrShortLink && (!discoveredVideoId || !discoveredCanonical)) {
+    try {
+      const crawlerPage = await fetchCleanHtmlPage(targetUrl, FB_CRAWLER_USER_AGENT, signal);
+      const foundCrawler = extractFacebookVideoFromHtml(crawlerPage.html);
+      if (foundCrawler) return foundCrawler;
+
+      const infoCrawler = extractCanonicalAndVideoIdFromFacebook(crawlerPage.finalUrl, crawlerPage.html);
+      if (!discoveredVideoId && infoCrawler.videoId) discoveredVideoId = infoCrawler.videoId;
+      if (!discoveredCanonical && infoCrawler.canonicalUrl) {
+        discoveredCanonical = infoCrawler.canonicalUrl;
+        // Probar esa URL canónica recién descubierta con Chrome Desktop
+        const canonicalPage = await fetchCleanHtmlPage(discoveredCanonical, DESKTOP_USER_AGENT, signal);
+        const foundCanonical = extractFacebookVideoFromHtml(canonicalPage.html);
+        if (foundCanonical) return foundCanonical;
+      }
+    } catch (e) {
+      if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+    }
+  }
+
+  // Etapa 3: Si descubrimos el ID numérico del video/reel, consultar directamente /watch/?v={id} y /reel/{id} con Chrome Desktop
+  if (discoveredVideoId) {
+    for (const directUrl of [
+      `https://www.facebook.com/watch/?v=${discoveredVideoId}`,
+      `https://www.facebook.com/reel/${discoveredVideoId}/`,
+    ]) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+      try {
+        const directPage = await fetchCleanHtmlPage(directUrl, DESKTOP_USER_AGENT, signal);
+        const foundDirect = extractFacebookVideoFromHtml(directPage.html);
+        if (foundDirect) return foundDirect;
+      } catch (e) {
+        if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+      }
+    }
+  }
+
+  // Etapa 4: Reproductor Embed Oficial de Facebook (plugins/video.php) — entrega hd_src / sd_src directo en fbcdn.net
   const urlsToTryInEmbed = [];
   if (discoveredCanonical) urlsToTryInEmbed.push(discoveredCanonical);
   if (targetUrl && !urlsToTryInEmbed.includes(targetUrl)) urlsToTryInEmbed.push(targetUrl);
   if (discoveredVideoId) {
-    urlsToTryInEmbed.push(`https://www.facebook.com/watch/?v=${discoveredVideoId}`);
-    urlsToTryInEmbed.push(`https://www.facebook.com/reel/${discoveredVideoId}/`);
+    const watchCandidate = `https://www.facebook.com/watch/?v=${discoveredVideoId}`;
+    const reelCandidate = `https://www.facebook.com/reel/${discoveredVideoId}/`;
+    if (!urlsToTryInEmbed.includes(watchCandidate)) urlsToTryInEmbed.push(watchCandidate);
+    if (!urlsToTryInEmbed.includes(reelCandidate)) urlsToTryInEmbed.push(reelCandidate);
   }
 
   for (const candidateHref of urlsToTryInEmbed) {
@@ -508,23 +569,6 @@ async function resolveFacebook(url, signal) {
       if (foundEmbed) return foundEmbed;
     } catch (e) {
       if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
-    }
-  }
-
-  // Etapa 4: Si encontramos un ID numérico de video/reel, consultar directamente /reel/{id} y /watch/?v={id}
-  if (discoveredVideoId) {
-    for (const directUrl of [
-      `https://www.facebook.com/reel/${discoveredVideoId}/`,
-      `https://www.facebook.com/watch/?v=${discoveredVideoId}`,
-    ]) {
-      if (signal?.aborted) throw new Error('CANCELLED');
-      try {
-        const directPage = await fetchCleanHtmlPage(directUrl, DESKTOP_USER_AGENT, signal);
-        const foundDirect = extractFacebookVideoFromHtml(directPage.html);
-        if (foundDirect) return foundDirect;
-      } catch (e) {
-        if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
-      }
     }
   }
 
@@ -632,7 +676,7 @@ async function resolveFromWebPageHtml(url, signal) {
     const match = html.match(regex);
     if (match && match[1]) {
       const candidate = unescapeUrl(match[1]);
-      if (candidate.startsWith('http')) {
+      if (isValidDirectVideoCandidate(candidate)) {
         return {
           downloadUrl: candidate,
           title: 'video_web',
