@@ -24,11 +24,19 @@ export default function SettingsModal({ visible, onClose }) {
   const [updateInfo, setUpdateInfo] = useState(null);
   const [downloading, setDownloading] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [savedApks, setSavedApks] = useState({ current: null, previous: null });
   const [savedPin, setSavedPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
 
+  const refreshSavedApks = async () => {
+    const apks = await updateService.getSavedApks();
+    setSavedApks(apks || { current: null, previous: null });
+    return apks || { current: null, previous: null };
+  };
+
   useEffect(() => {
     if (visible) {
+      refreshSavedApks();
       storageService.getPin().then((p) => {
         setSavedPin(p);
         setPinInput('');
@@ -60,27 +68,48 @@ export default function SettingsModal({ visible, onClose }) {
     setUpdateInfo(null);
     setProgress(0);
     try {
+      const localApks = await refreshSavedApks();
       const result = await updateService.checkForUpdates();
       setUpdateInfo(result);
 
-      // Si existe un APK listo para descargar, actualizar automáticamente de inmediato
       if (result.hasUpdate && result.apkUrl) {
         setChecking(false);
+        // Si ya tenemos descargado este mismo número de compilación en el teléfono, instalar directo sin volver a descargar
+        if (
+          localApks?.current?.uri &&
+          result.remoteRunNumber > 0 &&
+          localApks.current.buildNumber === result.remoteRunNumber
+        ) {
+          await updateService.installSavedApk(localApks.current.uri);
+          return;
+        }
+
+        // Descargar dentro de la app, guardar la versión anterior y eliminar cualquier APK más viejo
         setDownloading(true);
         try {
-          await updateService.downloadAndInstallApk(result.apkUrl, (pct) => {
-            setProgress(pct);
-          });
+          await updateService.downloadAndInstallApk(
+            result.apkUrl,
+            (pct) => setProgress(pct),
+            {
+              buildNumber: result.remoteRunNumber,
+              version: result.detectedVersion || CURRENT_VERSION,
+            }
+          );
+          await refreshSavedApks();
         } catch (downloadErr) {
           Alert.alert(
             'Aviso de descarga',
-            'No se pudo completar la instalación automática: ' + (downloadErr?.message || String(downloadErr))
+            'No se pudo completar la descarga automática: ' +
+              (downloadErr?.message || String(downloadErr))
           );
         } finally {
           setDownloading(false);
         }
       } else if (!result.hasUpdate && !result.latestRunUrl) {
-        Alert.alert('Al día', result.message || `Tu aplicación tiene la última versión disponible (${CURRENT_VERSION}).`);
+        Alert.alert(
+          'Ya tienes esta versión instalada',
+          result.message || `Tu aplicación ya tiene instalada la última versión (${CURRENT_VERSION}).`
+        );
       }
     } catch (e) {
       Alert.alert(
@@ -97,9 +126,15 @@ export default function SettingsModal({ visible, onClose }) {
     setDownloading(true);
     setProgress(0);
     try {
-      await updateService.downloadAndInstallApk(updateInfo.apkUrl, (pct) => {
-        setProgress(pct);
-      });
+      await updateService.downloadAndInstallApk(
+        updateInfo.apkUrl,
+        (pct) => setProgress(pct),
+        {
+          buildNumber: updateInfo.remoteRunNumber || CURRENT_BUILD_NUMBER,
+          version: updateInfo.detectedVersion || CURRENT_VERSION,
+        }
+      );
+      await refreshSavedApks();
     } catch (e) {
       Alert.alert(
         'Error en la actualización',
@@ -108,6 +143,11 @@ export default function SettingsModal({ visible, onClose }) {
     } finally {
       setDownloading(false);
     }
+  };
+
+  const handleInstallLocalApk = async (apkItem) => {
+    if (!apkItem?.uri) return;
+    await updateService.installSavedApk(apkItem.uri);
   };
 
   const handleOpenGitHub = (url) => {
@@ -193,38 +233,55 @@ export default function SettingsModal({ visible, onClose }) {
                           />
                         </View>
                         <Text style={styles.progressText}>
-                          Descargando actualización… {Math.round(progress * 100)}%
+                          Descargando actualización dentro de la app… {Math.round(progress * 100)}%
                         </Text>
                       </View>
                     ) : (
                       <View style={{ gap: 8 }}>
-                        <TouchableOpacity
-                          style={[styles.installButton]}
-                          onPress={handleDownloadAndInstall}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="download-outline" size={20} color="#ffffff" />
-                          <Text style={styles.installButtonText}>Descargar e instalar ahora</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={styles.outlineButton}
-                          onPress={() => handleOpenGitHub(updateInfo.apkUrl)}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="globe-outline" size={16} color={theme.colors.primaryLight} />
-                          <Text style={styles.outlineButtonText}>Descargar en navegador (Chrome)</Text>
-                        </TouchableOpacity>
+                        {savedApks?.current?.uri &&
+                        updateInfo.remoteRunNumber > 0 &&
+                        savedApks.current.buildNumber === updateInfo.remoteRunNumber ? (
+                          <TouchableOpacity
+                            style={styles.installButton}
+                            onPress={() => handleInstallLocalApk(savedApks.current)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="flash" size={20} color="#ffffff" />
+                            <Text style={styles.installButtonText}>
+                              Instalar APK ya descargado (#{savedApks.current.buildNumber}) — Sin descargar
+                            </Text>
+                          </TouchableOpacity>
+                        ) : (
+                          <TouchableOpacity
+                            style={styles.installButton}
+                            onPress={handleDownloadAndInstall}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="download-outline" size={20} color="#ffffff" />
+                            <Text style={styles.installButtonText}>
+                              Descargar en la app e instalar ahora
+                            </Text>
+                          </TouchableOpacity>
+                        )}
                       </View>
                     )}
                   </>
                 ) : (
                   <View style={styles.upToDateBox}>
-                    <Ionicons name="checkmark-circle-outline" size={36} color="#10b981" />
-                    <Text style={styles.upToDateTitle}>Tu app está al día</Text>
-                    <Text style={styles.upToDateDesc}>
-                      {updateInfo.message || 'Tienes instalada la versión más reciente disponible.'}
+                    <Ionicons name="checkmark-circle" size={38} color="#10b981" />
+                    <Text style={styles.upToDateTitle}>
+                      Ya tienes esta versión instalada ({CURRENT_VERSION} #{CURRENT_BUILD_NUMBER})
                     </Text>
+                    <Text style={styles.upToDateDesc}>
+                      {updateInfo.message || 'No necesitas volver a descargar esta actualización.'}
+                    </Text>
+
+                    <View style={styles.alreadyInstalledPill}>
+                      <Ionicons name="shield-checkmark" size={16} color="#10b981" />
+                      <Text style={styles.alreadyInstalledPillText}>
+                        Versión instalada al día • No requiere descarga
+                      </Text>
+                    </View>
 
                     {downloading ? (
                       <View style={[styles.progressContainer, { width: '100%', marginTop: 8 }]}>
@@ -237,31 +294,31 @@ export default function SettingsModal({ visible, onClose }) {
                           />
                         </View>
                         <Text style={styles.progressText}>
-                          Descargando APK… {Math.round(progress * 100)}%
+                          Descargando APK dentro de la app… {Math.round(progress * 100)}%
                         </Text>
                       </View>
+                    ) : savedApks?.current?.uri ? (
+                      <TouchableOpacity
+                        style={[styles.secondaryButton, { marginTop: 8 }]}
+                        onPress={() => handleInstallLocalApk(savedApks.current)}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="cube-outline" size={18} color="#ffffff" />
+                        <Text style={styles.secondaryButtonText}>
+                          Instalar desde APK guardado ({savedApks.current.label}) — Sin descargar
+                        </Text>
+                      </TouchableOpacity>
                     ) : updateInfo.apkUrl ? (
-                      <View style={{ width: '100%', gap: 8, marginTop: 8 }}>
-                        <TouchableOpacity
-                          style={[styles.secondaryButton]}
-                          onPress={handleDownloadAndInstall}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="cloud-download-outline" size={18} color="#ffffff" />
-                          <Text style={styles.secondaryButtonText}>
-                            Reinstalar / Descargar APK actual
-                          </Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={styles.outlineButton}
-                          onPress={() => handleOpenGitHub(updateInfo.apkUrl)}
-                          activeOpacity={0.8}
-                        >
-                          <Ionicons name="globe-outline" size={16} color={theme.colors.primaryLight} />
-                          <Text style={styles.outlineButtonText}>Descargar en navegador (Chrome)</Text>
-                        </TouchableOpacity>
-                      </View>
+                      <TouchableOpacity
+                        style={[styles.outlineButton, { marginTop: 8 }]}
+                        onPress={handleDownloadAndInstall}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="cloud-download-outline" size={16} color={theme.colors.primaryLight} />
+                        <Text style={styles.outlineButtonText}>
+                          Guardar copia del APK actual en la app
+                        </Text>
+                      </TouchableOpacity>
                     ) : null}
 
                     {updateInfo.latestRunUrl ? (
@@ -276,6 +333,77 @@ export default function SettingsModal({ visible, onClose }) {
                     ) : null}
                   </View>
                 )}
+              </View>
+            )}
+
+            {/* Sección permanente de APKs guardados dentro de la app (Actual y Versión Anterior) */}
+            {(savedApks?.current || savedApks?.previous) && (
+              <View style={styles.savedApksBox}>
+                <View style={styles.savedApksHeaderRow}>
+                  <Ionicons name="folder-open-outline" size={18} color="#38bdf8" />
+                  <Text style={styles.savedApksTitle}>
+                    APKs guardados en la app (Instalar sin descargar)
+                  </Text>
+                </View>
+
+                {savedApks.current && (
+                  <View style={styles.savedApkItemCard}>
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.savedApkBadgeRow}>
+                        <Text style={styles.savedApkItemTitle}>
+                          Último APK: {savedApks.current.label}
+                        </Text>
+                        {savedApks.current.buildNumber === CURRENT_BUILD_NUMBER && (
+                          <View style={styles.installedTag}>
+                            <Text style={styles.installedTagText}>Ya instalado</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.savedApkMetaText}>
+                        {savedApks.current.sizeBytes
+                          ? `${(savedApks.current.sizeBytes / (1024 * 1024)).toFixed(1)} MB · `
+                          : ''}
+                        Listo para instalar sin gastar datos
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.savedApkInstallBtn}
+                      onPress={() => handleInstallLocalApk(savedApks.current)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="download-outline" size={16} color="#ffffff" />
+                      <Text style={styles.savedApkInstallBtnText}>Instalar</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {savedApks.previous && (
+                  <View style={[styles.savedApkItemCard, styles.savedApkPreviousCard]}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.savedApkPreviousTitle}>
+                        Versión anterior guardada: {savedApks.previous.label}
+                      </Text>
+                      <Text style={styles.savedApkMetaText}>
+                        {savedApks.previous.sizeBytes
+                          ? `${(savedApks.previous.sizeBytes / (1024 * 1024)).toFixed(1)} MB · `
+                          : ''}
+                        Respaldo por si deseas regresar a la versión previa
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.savedApkRollbackBtn}
+                      onPress={() => handleInstallLocalApk(savedApks.previous)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="refresh-outline" size={16} color="#fde68a" />
+                      <Text style={styles.savedApkRollbackBtnText}>Instalar anterior</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                <Text style={styles.savedApksHintText}>
+                  Al descargar una nueva actualización, la versión previa se conserva aquí como respaldo y el APK más antiguo se elimina automáticamente.
+                </Text>
               </View>
             )}
           </View>
@@ -633,5 +761,121 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 13,
     fontWeight: '700',
+  },
+  alreadyInstalledPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.4)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    marginTop: 6,
+  },
+  alreadyInstalledPillText: {
+    color: '#34d399',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  savedApksBox: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.surfaceBorder,
+    gap: 10,
+  },
+  savedApksHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  savedApksTitle: {
+    color: '#e2e8f0',
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  savedApkItemCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.35)',
+    borderRadius: 10,
+    padding: 11,
+  },
+  savedApkPreviousCard: {
+    backgroundColor: 'rgba(245, 158, 11, 0.08)',
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+  },
+  savedApkBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  savedApkItemTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  savedApkPreviousTitle: {
+    color: '#fde68a',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  installedTag: {
+    backgroundColor: '#10b981',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  installedTagText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  savedApkMetaText: {
+    color: theme.colors.textSecondary,
+    fontSize: 11.5,
+    marginTop: 2,
+  },
+  savedApkInstallBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#10b981',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  savedApkInstallBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  savedApkRollbackBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(245, 158, 11, 0.2)',
+    borderWidth: 1,
+    borderColor: '#f59e0b',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  savedApkRollbackBtnText: {
+    color: '#fde68a',
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  savedApksHintText: {
+    color: theme.colors.textMuted,
+    fontSize: 11,
+    lineHeight: 15,
   },
 });
