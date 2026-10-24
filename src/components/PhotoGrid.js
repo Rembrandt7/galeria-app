@@ -124,6 +124,16 @@ export default function PhotoGrid({
     [assets]
   );
 
+  const photoReductionSummary = useMemo(
+    () => compressionService.getBatchReductionSummary(photoAssets, 'photo'),
+    [photoAssets]
+  );
+
+  const selectedReductionSummary = useMemo(
+    () => compressionService.getBatchReductionSummary(selectedAssets, 'photo'),
+    [selectedAssets]
+  );
+
   const toggleSelectAsset = useCallback((asset) => {
     if (!asset?.id) return;
     setSelectedIds((prev) => {
@@ -363,10 +373,23 @@ export default function PhotoGrid({
             </TouchableOpacity>
           </View>
           <View style={styles.selectionActionsRow}>
-            <TouchableOpacity style={styles.selActionBtn} onPress={handleCompressSelected}>
-              <Ionicons name="sparkles" size={15} color="#38bdf8" />
-              <Text style={[styles.selActionText, { color: '#38bdf8' }]}>Comprimir</Text>
-            </TouchableOpacity>
+            {selectedReductionSummary.canCompress && (
+              <TouchableOpacity
+                style={[
+                  styles.selActionBtn,
+                  {
+                    backgroundColor: selectedReductionSummary.bgColor,
+                    borderColor: selectedReductionSummary.borderColor,
+                  },
+                ]}
+                onPress={handleCompressSelected}
+              >
+                <Ionicons name="sparkles" size={15} color={selectedReductionSummary.color} />
+                <Text style={[styles.selActionText, { color: selectedReductionSummary.color }]}>
+                  Comprimir
+                </Text>
+              </TouchableOpacity>
+            )}
             <TouchableOpacity style={styles.selActionBtn} onPress={handleShareSelected}>
               <Ionicons name="share-social-outline" size={15} color="#fff" />
               <Text style={styles.selActionText}>Compartir</Text>
@@ -386,7 +409,7 @@ export default function PhotoGrid({
         assets.length > 0 && (
           <View style={styles.toolsBar}>
             <Text style={styles.toolsInfoText} numberOfLines={1}>
-              {assets.length} archivos · Mantén presionado para elegir
+              {assets.length} archivos · Pellizca con 2 dedos para zoom
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <TouchableOpacity
@@ -394,21 +417,32 @@ export default function PhotoGrid({
                 onPress={cycleColumns}
                 activeOpacity={0.8}
               >
-                <Ionicons name="grid-outline" size={13} color={theme.colors.textSecondary} />
+                <Ionicons name="expand-outline" size={13} color={theme.colors.textSecondary} />
                 <Text style={[styles.compressBatchBtnText, { color: theme.colors.textSecondary }]}>
                   {numColumns} col
                 </Text>
               </TouchableOpacity>
-              {photoAssets.length > 0 && (
+              {photoAssets.length > 0 && photoReductionSummary.canCompress && (
                 <TouchableOpacity
-                  style={styles.compressBatchBtn}
+                  style={[
+                    styles.compressBatchBtn,
+                    {
+                      backgroundColor: photoReductionSummary.bgColor,
+                      borderColor: photoReductionSummary.borderColor,
+                    },
+                  ]}
                   onPress={handleCompressAll}
                   disabled={isCompressingBatch}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="sparkles" size={14} color="#38bdf8" />
-                  <Text style={styles.compressBatchBtnText}>
-                    Comprimir ({photoAssets.length})
+                  <Ionicons name="sparkles" size={14} color={photoReductionSummary.color} />
+                  <Text
+                    style={[
+                      styles.compressBatchBtnText,
+                      { color: photoReductionSummary.textColor || photoReductionSummary.color },
+                    ]}
+                  >
+                    Comprimir ({photoReductionSummary.compressibleCount})
                   </Text>
                 </TouchableOpacity>
               )}
@@ -457,41 +491,29 @@ export default function PhotoGrid({
         />
       </View>
 
-      <Modal
-        visible={isCompressingBatch}
-        transparent={true}
-        animationType="fade"
-        statusBarTranslucent
-      >
-        <View style={styles.progressModalBackdrop}>
-          <View style={styles.progressModalCard}>
-            <Ionicons name="sparkles" size={36} color="#38bdf8" />
-            <Text style={styles.progressModalTitle}>Comprimiendo fotos...</Text>
-            <Text style={styles.progressModalSubtitle}>
-              Manteniendo el 100% de la resolución original sin pérdida
-            </Text>
-
-            {compressProgress && (
-              <View style={{ width: '100%', marginTop: 14 }}>
-                <View style={styles.progressBarBg}>
-                  <View
-                    style={[
-                      styles.progressBarFill,
-                      { width: `${Math.round((compressProgress.percent || 0) * 100)}%` },
-                    ]}
-                  />
-                </View>
-                <Text style={styles.progressPercentText}>
-                  {compressProgress.current} de {compressProgress.total} fotos ({Math.round((compressProgress.percent || 0) * 100)}%)
-                </Text>
-                <Text style={styles.progressSavedText}>
-                  Espacio ahorrado: {compressProgress.savedFormatted}
-                </Text>
-              </View>
-            )}
+      {isCompressingBatch && (
+        <View style={styles.bgFloatingCard}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <ActivityIndicator size="small" color="#38bdf8" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }} numberOfLines={1}>
+                Comprimiendo en 2do plano ({compressProgress?.current || 0}/{compressProgress?.total || 0})
+              </Text>
+              <Text style={{ color: '#10b981', fontSize: 11, fontWeight: '700' }}>
+                Espacio ahorrado: {compressProgress?.savedFormatted || '0 B'}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.progressBarBg}>
+            <View
+              style={[
+                styles.progressBarFill,
+                { width: `${Math.round((compressProgress?.percent || 0) * 100)}%` },
+              ]}
+            />
           </View>
         </View>
-      </Modal>
+      )}
     </View>
   );
 }
@@ -677,5 +699,20 @@ const styles = StyleSheet.create({
     fontSize: 15,
     textAlign: 'center',
     marginTop: theme.spacing.md,
+  },
+  bgFloatingCard: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    backgroundColor: 'rgba(15, 23, 42, 0.96)',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+    elevation: 10,
+    zIndex: 40,
   },
 });

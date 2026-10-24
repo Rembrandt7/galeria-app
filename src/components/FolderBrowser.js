@@ -44,6 +44,7 @@ export default function FolderBrowser({
   savedFolders = [],
   onSelectSavedFolder,
   onPickNewFolder,
+  onAddMultipleFolders,
   onRemoveFolder,
   onSelectPhoto,
   favorites = {},
@@ -80,9 +81,20 @@ export default function FolderBrowser({
 
   // División y categoría interna: 'all' | 'photos' | 'videos'
   const [folderCategory, setFolderCategory] = useState('all');
-  // Compresión de carpeta completa
+  // Compresión de carpeta completa (con soporte en segundo plano no bloqueante)
   const [isCompressingFolder, setIsCompressingFolder] = useState(false);
   const [compressProgress, setCompressProgress] = useState(null);
+  const [isBackgroundMinimized, setIsBackgroundMinimized] = useState(true);
+  // Escáner inteligente de carpetas sugeridas
+  const [showScannerModal, setShowScannerModal] = useState(false);
+  const [isScanningFolders, setIsScanningFolders] = useState(false);
+  const [scanProgressInfo, setScanProgressInfo] = useState(null);
+  const [suggestedFolders, setSuggestedFolders] = useState([]);
+  const [selectedSuggestedUris, setSelectedSuggestedUris] = useState({});
+  // Limpiador de carpetas vacías
+  const [isScanningEmpty, setIsScanningEmpty] = useState(false);
+  const [emptyFoldersFound, setEmptyFoldersFound] = useState([]);
+  const [showEmptyFoldersModal, setShowEmptyFoldersModal] = useState(false);
   // Organización física de cámara por meses
   const [isOrganizingCamera, setIsOrganizingCamera] = useState(false);
   const [organizeProgress, setOrganizeProgress] = useState(null);
@@ -377,6 +389,110 @@ export default function FolderBrowser({
     return categoryAndSearchList;
   }, [categoryAndSearchList, effectiveSizeFilter]);
 
+  // Semáforo de potencial de reducción para Fotos y Videos de la carpeta actual
+  // Si todas las fotos/videos están en Verde (canCompress === false), se oculta el botón de comprimir
+  const photoReductionSummary = useMemo(
+    () => compressionService.getBatchReductionSummary(folderPhotos, 'photo'),
+    [folderPhotos]
+  );
+  const videoReductionSummary = useMemo(
+    () => compressionService.getBatchReductionSummary(folderVideos, 'video'),
+    [folderVideos]
+  );
+
+  // Escáner de carpetas vacías
+  const handleScanEmptyFolders = async () => {
+    const targetUri = currentFolder?.uri || rootUri;
+    if (!targetUri) return;
+    setIsScanningEmpty(true);
+    try {
+      const empties = await folderService.scanEmptyFolders(targetUri);
+      setEmptyFoldersFound(empties || []);
+      if (!empties || empties.length === 0) {
+        Alert.alert(
+          '¡Todo limpio!',
+          `No se encontraron carpetas vacías dentro de "${currentFolder?.name || 'esta carpeta'}".`
+        );
+      } else {
+        setShowEmptyFoldersModal(true);
+      }
+    } catch (e) {
+      Alert.alert('Aviso', 'No se pudo escanear carpetas vacías: ' + (e?.message || String(e)));
+    } finally {
+      setIsScanningEmpty(false);
+    }
+  };
+
+  const handleConfirmDeleteEmptyFolders = async () => {
+    if (emptyFoldersFound.length === 0) {
+      setShowEmptyFoldersModal(false);
+      return;
+    }
+    try {
+      const deleted = await folderService.deleteEmptyFolders(emptyFoldersFound);
+      setShowEmptyFoldersModal(false);
+      setEmptyFoldersFound([]);
+      Alert.alert(
+        'Carpetas vacías eliminadas',
+        `Se eliminaron ${deleted} ${deleted === 1 ? 'carpeta vacía' : 'carpetas vacías'} correctamente.`
+      );
+      handleRefresh();
+    } catch (e) {
+      Alert.alert('Error', 'No se pudieron eliminar algunas carpetas vacías.');
+    }
+  };
+
+  // Escáner inteligente de carpetas sugeridas para agregar
+  const handleOpenFolderScanner = async () => {
+    setShowScannerModal(true);
+    setIsScanningFolders(true);
+    setSuggestedFolders([]);
+    setSelectedSuggestedUris({});
+    setScanProgressInfo({ foundCount: 0, currentFolder: 'Iniciando escaneo...' });
+    try {
+      const results = await folderService.scanSuggestedFolders(savedFolders, (prog) => {
+        setScanProgressInfo(prog);
+      });
+      setSuggestedFolders(results);
+      // Pre-seleccionar las primeras carpetas sugeridas con más contenido para ahorrar pasos
+      const initialSel = {};
+      results.slice(0, 8).forEach((item) => {
+        initialSel[item.uri] = true;
+      });
+      setSelectedSuggestedUris(initialSel);
+    } catch (e) {
+      Alert.alert('Aviso', 'Error al escanear carpetas: ' + (e?.message || String(e)));
+    } finally {
+      setIsScanningFolders(false);
+    }
+  };
+
+  const toggleSuggestedFolderUri = (uri) => {
+    setSelectedSuggestedUris((prev) => {
+      const next = { ...prev };
+      if (next[uri]) delete next[uri];
+      else next[uri] = true;
+      return next;
+    });
+  };
+
+  const handleAddSelectedSuggestedFolders = async () => {
+    const chosen = suggestedFolders.filter((f) => selectedSuggestedUris[f.uri]);
+    if (chosen.length === 0) {
+      Alert.alert('Selecciona al menos una', 'Marca las carpetas que deseas agregar a tu galería.');
+      return;
+    }
+    setShowScannerModal(false);
+    if (onAddMultipleFolders) {
+      await onAddMultipleFolders(chosen);
+    } else {
+      await folderService.addMultipleSavedFolders(chosen);
+      if (onSelectSavedFolder && chosen[0]?.uri) {
+        onSelectSavedFolder(chosen[0].uri);
+      }
+    }
+  };
+
   // Comprimir fotos de la carpeta completa (incluyendo subcarpetas si el nivel actual solo tiene carpetas)
   const handleCompressFolder = async () => {
     let targetPhotos = folderPhotos;
@@ -570,6 +686,11 @@ export default function FolderBrowser({
   const selectedAssets = useMemo(
     () => totalFilteredAssets.filter((a) => a && selectedIds[a.id]),
     [totalFilteredAssets, selectedIds]
+  );
+
+  const selectedReductionSummary = useMemo(
+    () => compressionService.getBatchReductionSummary(selectedAssets, null),
+    [selectedAssets]
   );
 
   const toggleSelectAsset = useCallback((asset) => {
@@ -774,6 +895,14 @@ export default function FolderBrowser({
   // Botón físico Atrás de Android: navega hacia atrás paso a paso sin salirse de la app (salvo en pantalla raíz)
   useEffect(() => {
     const onBackPress = () => {
+      if (showScannerModal) {
+        setShowScannerModal(false);
+        return true;
+      }
+      if (showEmptyFoldersModal) {
+        setShowEmptyFoldersModal(false);
+        return true;
+      }
       if (showSystemModal) {
         setShowSystemModal(false);
         return true;
@@ -816,6 +945,8 @@ export default function FolderBrowser({
     const sub = BackHandler.addEventListener('hardwareBackPress', onBackPress);
     return () => sub.remove();
   }, [
+    showScannerModal,
+    showEmptyFoldersModal,
     showSystemModal,
     showMoveModal,
     showOrganizeConfirmModal,
@@ -857,8 +988,18 @@ export default function FolderBrowser({
             onPress={onPickNewFolder}
             activeOpacity={0.8}
           >
-            <Ionicons name="add-circle" size={18} color="#ffffff" />
-            <Text style={styles.addFolderChipText}>+ Agregar carpeta</Text>
+            <Ionicons name="add-circle" size={17} color="#ffffff" />
+            <Text style={styles.addFolderChipText}>+ Agregar</Text>
+          </TouchableOpacity>
+
+          {/* Botón Escáner Inteligente de Carpetas Sugeridas */}
+          <TouchableOpacity
+            style={styles.scannerFolderChip}
+            onPress={handleOpenFolderScanner}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="scan-circle-outline" size={17} color="#38bdf8" />
+            <Text style={styles.scannerFolderChipText}>Escanear carpetas</Text>
           </TouchableOpacity>
 
           {/* Botón Carpetas del Sistema / Acceso Especial */}
@@ -867,8 +1008,8 @@ export default function FolderBrowser({
             onPress={() => setShowSystemModal(true)}
             activeOpacity={0.8}
           >
-            <Ionicons name="shield-checkmark" size={16} color={theme.colors.accent} />
-            <Text style={styles.systemFolderChipText}>Carpetas del sistema</Text>
+            <Ionicons name="shield-checkmark" size={15} color={theme.colors.accent} />
+            <Text style={styles.systemFolderChipText}>Sistema</Text>
           </TouchableOpacity>
 
           {/* Chips de Carpetas Guardadas */}
@@ -1287,10 +1428,27 @@ export default function FolderBrowser({
               </TouchableOpacity>
             </View>
             <View style={styles.selectionActionsRow}>
-              <TouchableOpacity style={styles.selActionBtn} onPress={handleCompressSelected}>
-                <Ionicons name="sparkles" size={15} color="#38bdf8" />
-                <Text style={[styles.selActionText, { color: '#38bdf8' }]}>Comprimir</Text>
-              </TouchableOpacity>
+              {/* Solo mostrar Comprimir si los seleccionados NO están todos en Verde */}
+              {selectedReductionSummary.canCompress && (
+                <TouchableOpacity
+                  style={[
+                    styles.selActionBtn,
+                    {
+                      backgroundColor: selectedReductionSummary.bgColor,
+                      borderColor: selectedReductionSummary.borderColor,
+                    },
+                  ]}
+                  onPress={handleCompressSelected}
+                >
+                  <Ionicons name="sparkles" size={15} color={selectedReductionSummary.color} />
+                  <Text style={[styles.selActionText, { color: selectedReductionSummary.color }]}>
+                    Comprimir
+                    {selectedReductionSummary.estimatedSavedFormatted
+                      ? ` (-${selectedReductionSummary.estimatedSavedFormatted})`
+                      : ''}
+                  </Text>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 style={styles.selActionBtn}
                 onPress={() => setShowMoveModal(true)}
@@ -1379,49 +1537,126 @@ export default function FolderBrowser({
                   )
                 )}
 
-                {/* Barra de Acciones Inteligentes: Comprimir y Organizar Cámara */}
-                {(folderPhotos.length > 0 || folderVideos.length > 0 || visibleSubfolders.length > 0) && (
+                {/* Panel Ordenado de Acciones Inteligentes (solo muestra Comprimir si NO están todos en Verde) */}
+                {(photoReductionSummary.canCompress ||
+                  videoReductionSummary.canCompress ||
+                  currentFolderAssets.length > 0 ||
+                  subfolders.length > 0) && (
                   <View style={styles.divisionBar}>
-                    <View style={styles.actionToolsRow}>
-                      {(folderPhotos.length > 0 || visibleSubfolders.length > 0) && (
+                    <View style={styles.actionToolsGrid}>
+                      {/* 1. Comprimir Fotos (SOLO si existen fotos que NO estén todas en Verde) */}
+                      {folderPhotos.length > 0 && photoReductionSummary.canCompress && (
                         <TouchableOpacity
-                          style={styles.actionToolButton}
+                          style={[
+                            styles.actionToolCard,
+                            {
+                              backgroundColor: photoReductionSummary.bgColor,
+                              borderColor: photoReductionSummary.borderColor,
+                            },
+                          ]}
                           onPress={handleCompressFolder}
                           disabled={isCompressingFolder}
                           activeOpacity={0.8}
                         >
-                          <Ionicons name="sparkles" size={14} color="#38bdf8" />
-                          <Text style={styles.actionToolButtonText}>
-                            {folderPhotos.length > 0
-                              ? `Comprimir fotos (${folderPhotos.length})`
-                              : 'Comprimir fotos de carpeta'}
+                          <View style={styles.actionToolHeader}>
+                            <Ionicons name="sparkles" size={16} color={photoReductionSummary.color} />
+                            <Text
+                              style={[
+                                styles.actionToolTitle,
+                                { color: photoReductionSummary.textColor || photoReductionSummary.color },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              Comprimir fotos ({photoReductionSummary.compressibleCount})
+                            </Text>
+                          </View>
+                          <Text
+                            style={[styles.actionToolSub, { color: photoReductionSummary.color }]}
+                            numberOfLines={1}
+                          >
+                            {photoReductionSummary.level === 'heavy'
+                              ? `Reducción alta · Ahorra ~${photoReductionSummary.estimatedSavedFormatted}`
+                              : `Reducción media · Ahorra ~${photoReductionSummary.estimatedSavedFormatted}`}
                           </Text>
                         </TouchableOpacity>
                       )}
 
-                      {folderVideos.length > 0 && (
+                      {/* 2. Comprimir Videos (SOLO si existen videos que NO estén todos en Verde) */}
+                      {folderVideos.length > 0 && videoReductionSummary.canCompress && (
                         <TouchableOpacity
-                          style={styles.actionToolButton}
+                          style={[
+                            styles.actionToolCard,
+                            {
+                              backgroundColor: videoReductionSummary.bgColor,
+                              borderColor: videoReductionSummary.borderColor,
+                            },
+                          ]}
                           onPress={handleCompressVideosFolder}
                           disabled={isCompressingFolder}
                           activeOpacity={0.8}
                         >
-                          <Ionicons name="videocam" size={14} color="#38bdf8" />
-                          <Text style={styles.actionToolButtonText}>
-                            Comprimir videos ({folderVideos.length})
+                          <View style={styles.actionToolHeader}>
+                            <Ionicons name="videocam" size={16} color={videoReductionSummary.color} />
+                            <Text
+                              style={[
+                                styles.actionToolTitle,
+                                { color: videoReductionSummary.textColor || videoReductionSummary.color },
+                              ]}
+                              numberOfLines={1}
+                            >
+                              Comprimir videos ({videoReductionSummary.compressibleCount})
+                            </Text>
+                          </View>
+                          <Text
+                            style={[styles.actionToolSub, { color: videoReductionSummary.color }]}
+                            numberOfLines={1}
+                          >
+                            {videoReductionSummary.level === 'heavy'
+                              ? `Reducción alta · Ahorra ~${videoReductionSummary.estimatedSavedFormatted}`
+                              : `Reducción media · Ahorra ~${videoReductionSummary.estimatedSavedFormatted}`}
                           </Text>
                         </TouchableOpacity>
                       )}
 
+                      {/* 3. Organizar físicamente por meses */}
                       {currentFolderAssets.length > 0 && (
                         <TouchableOpacity
-                          style={[styles.actionToolButton, styles.actionToolButtonOrganize]}
+                          style={[styles.actionToolCard, styles.actionToolCardOrganize]}
                           onPress={() => setShowOrganizeConfirmModal(true)}
                           activeOpacity={0.8}
                         >
-                          <Ionicons name="calendar" size={14} color={theme.colors.warning} />
-                          <Text style={[styles.actionToolButtonText, { color: theme.colors.warning }]}>
-                            Dividir y organizar por meses
+                          <View style={styles.actionToolHeader}>
+                            <Ionicons name="calendar-outline" size={16} color="#a78bfa" />
+                            <Text style={[styles.actionToolTitle, { color: '#ddd6fe' }]} numberOfLines={1}>
+                              Organizar por meses
+                            </Text>
+                          </View>
+                          <Text style={[styles.actionToolSub, { color: '#a78bfa' }]} numberOfLines={1}>
+                            Deja mes activo en raíz
+                          </Text>
+                        </TouchableOpacity>
+                      )}
+
+                      {/* 4. Eliminar carpetas vacías */}
+                      {(subfolders.length > 0 || currentFolder?.uri) && (
+                        <TouchableOpacity
+                          style={[styles.actionToolCard, styles.actionToolCardCleanEmpty]}
+                          onPress={handleScanEmptyFolders}
+                          disabled={isScanningEmpty}
+                          activeOpacity={0.8}
+                        >
+                          <View style={styles.actionToolHeader}>
+                            {isScanningEmpty ? (
+                              <ActivityIndicator size="small" color="#38bdf8" />
+                            ) : (
+                              <Ionicons name="trash-bin-outline" size={16} color="#38bdf8" />
+                            )}
+                            <Text style={[styles.actionToolTitle, { color: '#bae6fd' }]} numberOfLines={1}>
+                              Borrar carpetas vacías
+                            </Text>
+                          </View>
+                          <Text style={[styles.actionToolSub, { color: '#38bdf8' }]} numberOfLines={1}>
+                            {isScanningEmpty ? 'Escaneando vacías...' : 'Limpiar carpetas sin fotos'}
                           </Text>
                         </TouchableOpacity>
                       )}
@@ -1573,11 +1808,85 @@ export default function FolderBrowser({
         </View>
       </Modal>
 
-      {/* Modal de Progreso de Compresión de Carpeta */}
+      {/* Barra Flotante de Compresión en 2do Plano (no bloquea la pantalla mientras navegas) */}
+      {isCompressingFolder && isBackgroundMinimized && (
+        <View style={styles.bgCompressFloatingCard}>
+          <View style={styles.bgCompressTopRow}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+              {isProcessPaused ? (
+                <Ionicons name="pause-circle" size={20} color={theme.colors.warning} />
+              ) : (
+                <ActivityIndicator size="small" color="#38bdf8" />
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={styles.bgCompressTitle} numberOfLines={1}>
+                  {isProcessPaused
+                    ? 'Compresión en pausa (2do plano)'
+                    : `Comprimiendo en 2do plano (${compressProgress?.current || 0}/${compressProgress?.total || 0})`}
+                </Text>
+                <Text style={styles.bgCompressSub} numberOfLines={1}>
+                  Ahorrado: {compressProgress?.savedFormatted || '0 B'}
+                  {compressProgress?.skippedGreenCount > 0
+                    ? ` · ${compressProgress.skippedGreenCount} en verde omitidas`
+                    : ''}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.bgCompressBtnsRow}>
+              <TouchableOpacity
+                style={styles.bgCompressIconBtn}
+                onPress={() => {
+                  if (!processControlRef.current) return;
+                  if (isProcessPaused) processControlRef.current.resume();
+                  else processControlRef.current.pause();
+                }}
+              >
+                <Ionicons
+                  name={isProcessPaused ? 'play' : 'pause'}
+                  size={16}
+                  color={isProcessPaused ? '#10b981' : theme.colors.warning}
+                />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.bgCompressIconBtn}
+                onPress={() => setIsBackgroundMinimized(false)}
+              >
+                <Ionicons name="expand-outline" size={16} color="#38bdf8" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.bgCompressIconBtn}
+                onPress={() => {
+                  if (processControlRef.current) processControlRef.current.cancel();
+                }}
+              >
+                <Ionicons name="close" size={16} color={theme.colors.danger} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <View style={styles.bgCompressBarTrack}>
+            <View
+              style={[
+                styles.bgCompressBarFill,
+                {
+                  width: `${Math.round((compressProgress?.percent || 0) * 100)}%`,
+                  backgroundColor: isProcessPaused ? theme.colors.warning : '#38bdf8',
+                },
+              ]}
+            />
+          </View>
+        </View>
+      )}
+
+      {/* Modal de Progreso de Compresión de Carpeta (solo si el usuario lo expande) */}
       <Modal
-        visible={isCompressingFolder}
+        visible={isCompressingFolder && !isBackgroundMinimized}
         transparent={true}
         animationType="fade"
+        onRequestClose={() => setIsBackgroundMinimized(true)}
         statusBarTranslucent
       >
         <View style={styles.progressModalBackdrop}>
@@ -1588,11 +1897,11 @@ export default function FolderBrowser({
               color={isProcessPaused ? theme.colors.warning : '#38bdf8'}
             />
             <Text style={styles.progressModalTitle}>
-              {isProcessPaused ? 'Compresión en pausa' : 'Comprimiendo fotos...'}
+              {isProcessPaused ? 'Compresión en pausa' : 'Comprimiendo archivos...'}
             </Text>
             <Text style={styles.progressModalSubtitle}>
               {isProcessPaused
-                ? 'Puedes reanudar cuando quieras o cancelar el proceso'
+                ? 'Puedes reanudar cuando quieras o minimizar para seguir navegando'
                 : 'Manteniendo el 100% de la resolución original sin pérdida'}
             </Text>
 
@@ -1610,7 +1919,7 @@ export default function FolderBrowser({
                   />
                 </View>
                 <Text style={styles.progressPercentText}>
-                  {compressProgress.current} de {compressProgress.total} fotos ({Math.round((compressProgress.percent || 0) * 100)}%)
+                  {compressProgress.current} de {compressProgress.total} ({Math.round((compressProgress.percent || 0) * 100)}%)
                   {compressProgress.skippedGreenCount > 0
                     ? ` · ${compressProgress.skippedGreenCount} en verde omitidas`
                     : ''}
@@ -1620,6 +1929,17 @@ export default function FolderBrowser({
                 </Text>
               </View>
             )}
+
+            <TouchableOpacity
+              style={styles.minimizeToBgBtn}
+              onPress={() => setIsBackgroundMinimized(true)}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="layers-outline" size={16} color="#38bdf8" />
+              <Text style={styles.minimizeToBgBtnText}>
+                Seguir en 2do plano mientras navego
+              </Text>
+            </TouchableOpacity>
 
             <View style={styles.processModalBtnRow}>
               <TouchableOpacity
@@ -1650,6 +1970,230 @@ export default function FolderBrowser({
               >
                 <Ionicons name="close-circle-outline" size={16} color={theme.colors.danger} />
                 <Text style={styles.processCancelBtnText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal del Escáner Inteligente de Carpetas Sugeridas */}
+      <Modal
+        visible={showScannerModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowScannerModal(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.systemModalCard}>
+            <View style={styles.systemModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                <Ionicons name="scan-circle" size={26} color="#38bdf8" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.systemModalTitle}>Escáner de Carpetas</Text>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 11 }}>
+                    Carpetas con fotos o videos encontradas en tu teléfono
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity onPress={() => setShowScannerModal(false)}>
+                <Ionicons name="close" size={24} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
+
+            {isScanningFolders ? (
+              <View style={{ paddingVertical: 36, alignItems: 'center', gap: 10 }}>
+                <ActivityIndicator size="large" color="#38bdf8" />
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '700' }}>
+                  Escaneando carpetas del teléfono...
+                </Text>
+                <Text style={{ color: theme.colors.textSecondary, fontSize: 12 }}>
+                  {scanProgressInfo?.foundCount || 0} carpetas sugeridas encontradas
+                </Text>
+                {scanProgressInfo?.currentFolder ? (
+                  <Text style={{ color: '#38bdf8', fontSize: 11 }} numberOfLines={1}>
+                    Revisando: {scanProgressInfo.currentFolder}
+                  </Text>
+                ) : null}
+              </View>
+            ) : suggestedFolders.length === 0 ? (
+              <View style={{ paddingVertical: 32, alignItems: 'center', gap: 10 }}>
+                <Ionicons name="checkmark-done-circle-outline" size={48} color="#10b981" />
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: '700', textAlign: 'center' }}>
+                  ¡Ya tienes todas las carpetas principales agregadas!
+                </Text>
+                <Text
+                  style={{
+                    color: theme.colors.textSecondary,
+                    fontSize: 12,
+                    textAlign: 'center',
+                    paddingHorizontal: 16,
+                  }}
+                >
+                  Si no ves carpetas de WhatsApp o descargas, verifica que el Permiso de Acceso a Todos los Archivos esté activo en Ajustes.
+                </Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.scannerSelectionToolbar}>
+                  <Text style={{ color: theme.colors.textSecondary, fontSize: 12 }}>
+                    {Object.keys(selectedSuggestedUris).length} de {suggestedFolders.length} seleccionadas
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 10 }}>
+                    <TouchableOpacity
+                      onPress={() => {
+                        const all = {};
+                        suggestedFolders.forEach((f) => {
+                          all[f.uri] = true;
+                        });
+                        setSelectedSuggestedUris(all);
+                      }}
+                    >
+                      <Text style={{ color: '#38bdf8', fontSize: 12, fontWeight: '700' }}>
+                        Marcar todas
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setSelectedSuggestedUris({})}>
+                      <Text style={{ color: theme.colors.textMuted, fontSize: 12, fontWeight: '600' }}>
+                        Ninguna
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <ScrollView
+                  showsVerticalScrollIndicator={false}
+                  style={{ maxHeight: 360 }}
+                  contentContainerStyle={{ gap: 8, paddingBottom: 12 }}
+                >
+                  {suggestedFolders.map((item) => {
+                    const isChecked = Boolean(selectedSuggestedUris[item.uri]);
+                    return (
+                      <TouchableOpacity
+                        key={item.uri}
+                        style={[
+                          styles.commonFolderItem,
+                          isChecked && {
+                            borderColor: '#38bdf8',
+                            backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                          },
+                        ]}
+                        onPress={() => toggleSuggestedFolderUri(item.uri)}
+                        activeOpacity={0.75}
+                      >
+                        <Ionicons
+                          name={isChecked ? 'checkbox' : 'square-outline'}
+                          size={22}
+                          color={isChecked ? '#38bdf8' : theme.colors.textMuted}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.commonFolderName} numberOfLines={1}>
+                            {item.name}
+                          </Text>
+                          <Text style={styles.commonFolderDesc} numberOfLines={1}>
+                            {item.relativePath}
+                          </Text>
+                        </View>
+                        <View style={styles.scannerCountBadges}>
+                          {item.photoCount > 0 && (
+                            <View style={styles.scannerCountPill}>
+                              <Ionicons name="image" size={11} color="#a78bfa" />
+                              <Text style={styles.scannerCountText}>{item.photoCount}</Text>
+                            </View>
+                          )}
+                          {item.videoCount > 0 && (
+                            <View style={styles.scannerCountPill}>
+                              <Ionicons name="videocam" size={11} color="#38bdf8" />
+                              <Text style={styles.scannerCountText}>{item.videoCount}</Text>
+                            </View>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                <TouchableOpacity
+                  style={[
+                    styles.confirmOrganizeBtn,
+                    { backgroundColor: '#0284c7', marginTop: 10 },
+                    Object.keys(selectedSuggestedUris).length === 0 && { opacity: 0.45 },
+                  ]}
+                  disabled={Object.keys(selectedSuggestedUris).length === 0}
+                  onPress={handleAddSelectedSuggestedFolders}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="add-circle" size={18} color="#fff" />
+                  <Text style={styles.confirmOrganizeBtnText}>
+                    Agregar carpetas seleccionadas ({Object.keys(selectedSuggestedUris).length})
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal de Confirmación para Eliminar Carpetas Vacías */}
+      <Modal
+        visible={showEmptyFoldersModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setShowEmptyFoldersModal(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.progressModalBackdrop}>
+          <View style={[styles.progressModalCard, { maxWidth: 360 }]}>
+            <Ionicons name="trash-bin" size={38} color={theme.colors.danger} />
+            <Text style={styles.progressModalTitle}>
+              {emptyFoldersFound.length}{' '}
+              {emptyFoldersFound.length === 1 ? 'carpeta vacía encontrada' : 'carpetas vacías encontradas'}
+            </Text>
+            <Text style={styles.progressModalSubtitle}>
+              Estas subcarpetas no contienen ninguna foto ni video:
+            </Text>
+
+            <ScrollView
+              style={{ width: '100%', maxHeight: 180, marginTop: 12 }}
+              contentContainerStyle={{ gap: 6 }}
+            >
+              {emptyFoldersFound.map((f, idx) => (
+                <View
+                  key={f.uri + idx}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    backgroundColor: theme.colors.background,
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
+                    borderRadius: 8,
+                  }}
+                >
+                  <Ionicons name="folder-open-outline" size={16} color={theme.colors.textMuted} />
+                  <Text style={{ color: '#fff', fontSize: 12, flex: 1 }} numberOfLines={1}>
+                    {f.name}
+                  </Text>
+                </View>
+              ))}
+            </ScrollView>
+
+            <View style={{ width: '100%', gap: 8, marginTop: 16 }}>
+              <TouchableOpacity
+                style={[styles.confirmOrganizeBtn, { backgroundColor: theme.colors.danger }]}
+                onPress={handleConfirmDeleteEmptyFolders}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="trash" size={17} color="#fff" />
+                <Text style={styles.confirmOrganizeBtnText}>
+                  Eliminar todas las vacías ({emptyFoldersFound.length})
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.cancelOrganizeBtn}
+                onPress={() => setShowEmptyFoldersModal(false)}
+              >
+                <Text style={styles.cancelOrganizeBtnText}>Cancelar</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -2742,5 +3286,164 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '800',
+  },
+  scannerFolderChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(56, 189, 248, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.45)',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  scannerFolderChipText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  actionToolsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  actionToolCard: {
+    flexGrow: 1,
+    flexBasis: '47%',
+    minWidth: 145,
+    paddingHorizontal: 11,
+    paddingVertical: 9,
+    borderRadius: 12,
+    borderWidth: 1,
+    gap: 3,
+  },
+  actionToolCardOrganize: {
+    backgroundColor: 'rgba(139, 92, 246, 0.14)',
+    borderColor: 'rgba(139, 92, 246, 0.4)',
+  },
+  actionToolCardCleanEmpty: {
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+  },
+  actionToolHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  actionToolTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    flex: 1,
+  },
+  actionToolSub: {
+    fontSize: 10,
+    fontWeight: '600',
+  },
+  bgCompressFloatingCard: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    backgroundColor: 'rgba(15, 23, 42, 0.96)',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    zIndex: 50,
+  },
+  bgCompressTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  bgCompressTitle: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  bgCompressSub: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  bgCompressBtnsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  bgCompressIconBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bgCompressBarTrack: {
+    height: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    borderRadius: 3,
+    overflow: 'hidden',
+    width: '100%',
+  },
+  bgCompressBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+  minimizeToBgBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    width: '100%',
+    marginTop: 14,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: 'rgba(56, 189, 248, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+  },
+  minimizeToBgBtnText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  scannerSelectionToolbar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.surfaceBorder,
+    marginBottom: 8,
+  },
+  scannerCountBadges: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  scannerCountPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  scannerCountText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
   },
 });

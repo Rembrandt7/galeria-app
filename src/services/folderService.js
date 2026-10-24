@@ -162,6 +162,37 @@ export const folderService = {
   },
 
   /**
+   * Agrega múltiples carpetas seleccionadas desde el escáner inteligente en un solo paso.
+   */
+  async addMultipleSavedFolders(foldersToAdd = []) {
+    try {
+      const current = await folderService.getSavedFolders();
+      const existingSet = new Set(current.map((f) => folderService.toPhysicalUri(f.uri) || f.uri));
+      const addedItems = [];
+      let now = Date.now();
+      for (const item of foldersToAdd) {
+        if (!item?.uri) continue;
+        const norm = folderService.toPhysicalUri(item.uri) || item.uri;
+        if (existingSet.has(norm) || existingSet.has(item.uri)) continue;
+        existingSet.add(norm);
+        addedItems.push({
+          uri: item.uri,
+          name: item.name || folderService.folderName(item.uri),
+          addedAt: now++,
+        });
+      }
+      if (addedItems.length === 0) return current;
+      const updated = [...addedItems, ...current];
+      await AsyncStorage.setItem(FOLDERS_LIST_KEY, JSON.stringify(updated));
+      await AsyncStorage.setItem(FOLDER_KEY, addedItems[0].uri);
+      return updated;
+    } catch (e) {
+      console.error('Error al guardar múltiples carpetas:', e);
+      return [];
+    }
+  },
+
+  /**
    * Elimina una carpeta de la lista guardada.
    */
   async removeSavedFolder(uri) {
@@ -346,7 +377,44 @@ export const folderService = {
   },
 
   /**
-   * Lee la carpeta actual (rápido, ordenada de la más reciente a la más antigua).
+   * Enriquece el tamaño en bytes (fileSize) de una lista de assets en lotes paralelos sin bloquear la UI.
+   */
+  async enrichAssetsFileSizes(assets = [], onUpdated) {
+    if (!assets || assets.length === 0) return assets;
+    let changed = false;
+    const BATCH = 35;
+    for (let i = 0; i < assets.length; i += BATCH) {
+      const slice = assets.slice(i, i + BATCH);
+      await Promise.all(
+        slice.map(async (item) => {
+          if (item.fileSize && item.fileSize > 0) return;
+          const physUri = folderService.toPhysicalUri(item.uri) || item.uri;
+          try {
+            const info = await LegacyFS.getInfoAsync(physUri);
+            if (info?.exists && typeof info.size === 'number' && info.size > 0) {
+              item.fileSize = info.size;
+              changed = true;
+              return;
+            }
+          } catch (_e) {}
+          try {
+            const sz = new File(physUri).size;
+            if (typeof sz === 'number' && sz > 0) {
+              item.fileSize = sz;
+              changed = true;
+            }
+          } catch (_e2) {}
+        })
+      );
+    }
+    if (changed && onUpdated) {
+      onUpdated([...assets]);
+    }
+    return assets;
+  },
+
+  /**
+   * Lee la carpeta actual (rápido, ordenada de la más reciente a la más antigua) y enriquece tamaños.
    */
   async readDirectory(uri, onBatch) {
     try {
@@ -354,7 +422,11 @@ export const folderService = {
       subfolders.sort(byNameAsc);
       assets.sort(byFilenameDesc);
       if (onBatch) {
-        onBatch({ subfolders, assets, isPartial: false });
+        onBatch({ subfolders, assets: [...assets], isPartial: true });
+      }
+      await folderService.enrichAssetsFileSizes(assets);
+      if (onBatch) {
+        onBatch({ subfolders, assets: [...assets], isPartial: false });
       }
       return { subfolders, assets };
     } catch (e) {
@@ -376,6 +448,7 @@ export const folderService = {
         return;
       }
       if (level.assets.length > 0) {
+        await folderService.enrichAssetsFileSizes(level.assets);
         for (const a of level.assets) out.push(a);
         if (onBatch) onBatch(level.assets);
       }
@@ -390,6 +463,235 @@ export const folderService = {
     await walk(uri, 0);
     out.sort(byFilenameDesc);
     return out;
+  },
+
+  /**
+   * Escanea recursivamente una carpeta en busca de subcarpetas vacías (sin fotos, videos ni otros archivos útiles).
+   */
+  async scanEmptyFolders(rootUri, onProgress) {
+    const emptyFolders = [];
+    if (!rootUri) return emptyFolders;
+
+    const checkDir = async (dirUri, dirName, depth) => {
+      if (depth > 5) return false;
+      let entries = [];
+      const phys = folderService.toPhysicalUri(dirUri) || dirUri;
+      try {
+        if (phys.startsWith('file://')) {
+          const names = await LegacyFS.readDirectoryAsync(phys);
+          const base = phys.endsWith('/') ? phys : `${phys}/`;
+          entries = names.map((n) => ({ name: n, uri: base + encodeURIComponent(n) }));
+        } else if (dirUri.startsWith('content://')) {
+          const children = await LegacyFS.StorageAccessFramework.readDirectoryAsync(dirUri);
+          entries = children.map((u) => ({ name: nameFromUri(u), uri: u }));
+        }
+      } catch (_e) {
+        return false;
+      }
+
+      const meaningfulEntries = entries.filter((e) => e.name !== '.nomedia' && e.name !== '.DS_Store');
+      if (meaningfulEntries.length === 0) {
+        if (depth > 0) {
+          emptyFolders.push({
+            uri: phys,
+            originalUri: dirUri,
+            name: dirName || folderService.folderName(phys),
+          });
+          if (onProgress) onProgress(emptyFolders.length, dirName);
+        }
+        return true;
+      }
+
+      let hasNonEmptyChild = false;
+      for (const entry of meaningfulEntries) {
+        const media = mediaTypeByName(entry.name);
+        if (media || hasExtension(entry.name)) {
+          hasNonEmptyChild = true;
+          continue;
+        }
+        try {
+          const info = await LegacyFS.getInfoAsync(entry.uri);
+          if (info && info.isDirectory) {
+            const subIsEmpty = await checkDir(entry.uri, entry.name, depth + 1);
+            if (!subIsEmpty) {
+              hasNonEmptyChild = true;
+            }
+          } else if (info && info.exists) {
+            hasNonEmptyChild = true;
+          }
+        } catch (_err) {
+          hasNonEmptyChild = true;
+        }
+      }
+
+      if (!hasNonEmptyChild && depth > 0) {
+        emptyFolders.push({
+          uri: phys,
+          originalUri: dirUri,
+          name: dirName || folderService.folderName(phys),
+        });
+        if (onProgress) onProgress(emptyFolders.length, dirName);
+        return true;
+      }
+      return false;
+    };
+
+    await checkDir(rootUri, folderService.folderName(rootUri), 0);
+    return emptyFolders;
+  },
+
+  /**
+   * Elimina una lista de carpetas vacías (de las más profundas a las más superficiales).
+   */
+  async deleteEmptyFolders(emptyFolders = []) {
+    let deletedCount = 0;
+    const sorted = [...emptyFolders].sort((a, b) => (b.uri || '').length - (a.uri || '').length);
+    for (const folder of sorted) {
+      const target = folder.uri || folder.originalUri;
+      if (!target) continue;
+      try {
+        await LegacyFS.deleteAsync(target, { idempotent: true });
+        deletedCount++;
+      } catch (_e1) {
+        try {
+          new Directory(target).delete();
+          deletedCount++;
+        } catch (_e2) {
+          // ignorar si el sistema lo bloqueó
+        }
+      }
+    }
+    return deletedCount;
+  },
+
+  /**
+   * Escáner inteligente de carpetas del dispositivo:
+   * Recorre la memoria interna buscando carpetas que contienen fotos o videos y que aún NO han sido agregadas,
+   * devolviendo sugerencias ordenadas por cantidad de archivos multimedia.
+   */
+  async scanSuggestedFolders(savedFolders = [], onProgress) {
+    const existingSet = new Set(
+      (savedFolders || []).flatMap((f) => [
+        f.uri,
+        folderService.toPhysicalUri(f.uri),
+        (folderService.toPhysicalUri(f.uri) || '').toLowerCase(),
+      ])
+    );
+
+    const suggestions = [];
+    const visited = new Set();
+
+    const ROOTS_TO_SCAN = [
+      { uri: 'file:///storage/emulated/0/DCIM', label: 'DCIM' },
+      { uri: 'file:///storage/emulated/0/Pictures', label: 'Pictures' },
+      { uri: 'file:///storage/emulated/0/Movies', label: 'Movies' },
+      { uri: 'file:///storage/emulated/0/Download', label: 'Download' },
+      {
+        uri: 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media',
+        label: 'WhatsApp Media',
+      },
+      {
+        uri: 'file:///storage/emulated/0/Android/media/com.whatsapp.w4b/WhatsApp Business/Media',
+        label: 'WhatsApp Business',
+      },
+      {
+        uri: 'file:///storage/emulated/0/Android/media/org.telegram.messenger',
+        label: 'Telegram',
+      },
+      { uri: 'file:///storage/emulated/0', label: 'Memoria Interna' },
+    ];
+
+    const SKIP_DIRS = new Set([
+      'android',
+      '.thumbnails',
+      '.trash',
+      '.trashed',
+      'cache',
+      'code_cache',
+      'alarms',
+      'notifications',
+      'ringtones',
+      'podcasts',
+      'music',
+      'audiobooks',
+    ]);
+
+    const scanDir = async (dirUri, parentLabel, depth, maxDepth) => {
+      const norm = (folderService.toPhysicalUri(dirUri) || dirUri).replace(/\/+$/, '');
+      const normKey = norm.toLowerCase();
+      if (visited.has(normKey)) return;
+      visited.add(normKey);
+
+      let names = [];
+      try {
+        names = await LegacyFS.readDirectoryAsync(norm);
+      } catch (_e) {
+        return;
+      }
+
+      let photoCount = 0;
+      let videoCount = 0;
+      const subDirs = [];
+      const base = `${norm}/`;
+
+      for (const name of names) {
+        if (!name || name.startsWith('.')) continue;
+        const mType = mediaTypeByName(name);
+        if (mType === 'photo') {
+          photoCount++;
+        } else if (mType === 'video') {
+          videoCount++;
+        } else if (!hasExtension(name)) {
+          if (depth === 0 && norm === 'file:///storage/emulated/0' && SKIP_DIRS.has(name.toLowerCase())) {
+            continue;
+          }
+          if (SKIP_DIRS.has(name.toLowerCase())) continue;
+          subDirs.push({ name, uri: base + encodeURIComponent(name) });
+        }
+      }
+
+      const totalMedia = photoCount + videoCount;
+      const isAlreadySaved = existingSet.has(norm) || existingSet.has(normKey);
+
+      if (totalMedia > 0 && !isAlreadySaved && norm !== 'file:///storage/emulated/0') {
+        const folderTitle = folderService.folderName(norm);
+        const relPath = norm.replace(/^file:\/\/\/storage\/emulated\/0\/?/i, '') || folderTitle;
+        suggestions.push({
+          uri: norm,
+          name: folderTitle,
+          relativePath: relPath,
+          photoCount,
+          videoCount,
+          totalMedia,
+        });
+        if (onProgress) {
+          onProgress({ foundCount: suggestions.length, currentFolder: relPath });
+        }
+      }
+
+      if (depth < maxDepth && subDirs.length > 0) {
+        const limited = subDirs.slice(0, 60);
+        for (let i = 0; i < limited.length; i += 20) {
+          const slice = limited.slice(i, i + 20);
+          const infos = await Promise.all(
+            slice.map((s) => LegacyFS.getInfoAsync(s.uri).catch(() => null))
+          );
+          for (let j = 0; j < slice.length; j++) {
+            if (infos[j] && infos[j].isDirectory) {
+              await scanDir(slice[j].uri, slice[j].name, depth + 1, maxDepth);
+            }
+          }
+        }
+      }
+    };
+
+    for (const root of ROOTS_TO_SCAN) {
+      const maxD = root.uri === 'file:///storage/emulated/0' ? 2 : 3;
+      await scanDir(root.uri, root.label, 0, maxD);
+    }
+
+    suggestions.sort((a, b) => b.totalMedia - a.totalMedia);
+    return suggestions;
   },
 
   toPhysicalUri(uri) {

@@ -397,48 +397,152 @@ export const compressionService = {
   /**
    * Determina el nivel de peso y los colores visuales según los rangos del usuario:
    * - 0 a 2 MB: Verde
-   * - 2 a 4 MB: Amarillo
-   * - Más de 4 MB: Título en rojo sobre franja roja
+   * - Fotos: <= 2 MB Verde (muy poco que reducir), 2 a 4 MB Amarillo (reducción media), > 4 MB Rojo (mucha reducción)
+   * - Videos: <= 8 MB Verde (muy poco que reducir), 8 a 25 MB Amarillo (reducción media), > 25 MB Rojo (mucha reducción)
    */
-  getSizeLevel(bytes) {
-    const mb = (bytes || 0) / (1024 * 1024);
+  getSizeLevel(bytes, mediaType = 'photo') {
+    const rawBytes = Number(bytes) || 0;
+    const mb = rawBytes / (1024 * 1024);
+    const isVideo = mediaType === 'video';
+    const greenThreshold = isVideo ? 8 : 2;
+    const yellowThreshold = isVideo ? 25 : 4;
 
-    if (mb <= 2) {
+    if (mb <= greenThreshold) {
       return {
         level: 'light',
         mb: mb.toFixed(2),
-        color: '#10b981', // Verde
+        color: '#10b981', // Verde: muy poco por reducir
         titleColor: '#10b981',
         bannerBg: 'rgba(16, 185, 129, 0.18)',
         borderColor: '#10b981',
-        tagText: 'Ligero',
+        tagText: 'Óptimo (Verde)',
+        reductionText: 'Ya optimizado',
+        canCompress: false,
+        estimatedSavedBytes: 0,
         isHeavy: false,
       };
     }
 
-    if (mb <= 4) {
+    if (mb <= yellowThreshold) {
+      const estSaved = Math.round(rawBytes * (isVideo ? 0.38 : 0.42));
       return {
         level: 'medium',
         mb: mb.toFixed(2),
-        color: '#f59e0b', // Amarillo
+        color: '#f59e0b', // Amarillo: se puede reducir más o menos
         titleColor: '#f59e0b',
-        bannerBg: 'rgba(245, 158, 11, 0.20)',
+        bannerBg: 'rgba(245, 158, 11, 0.22)',
         borderColor: '#f59e0b',
-        tagText: 'Medio',
+        tagText: 'Reducción Media',
+        reductionText: `Ahorra ~${compressionService.formatBytes(estSaved)}`,
+        canCompress: true,
+        estimatedSavedBytes: estSaved,
         isHeavy: false,
       };
     }
 
-    // Más de 4 MB
+    // Rojo: se puede reducir mucho
+    const estSaved = Math.round(rawBytes * (isVideo ? 0.58 : 0.65));
     return {
       level: 'heavy',
       mb: mb.toFixed(2),
-      color: '#ef4444', // Rojo
+      color: '#ef4444', // Rojo: se puede reducir mucho
       titleColor: '#ffffff',
-      bannerBg: '#dc2626', // Franja roja sólida / llamativa
+      bannerBg: '#dc2626',
       borderColor: '#ef4444',
-      tagText: 'Pesado (>4 MB)',
+      tagText: 'Mucha Reducción',
+      reductionText: `Ahorra ~${compressionService.formatBytes(estSaved)}`,
+      canCompress: true,
+      estimatedSavedBytes: estSaved,
       isHeavy: true,
+    };
+  },
+
+  /**
+   * Analiza una lista de fotos o videos y devuelve cuánto se puede reducir en conjunto
+   * y el color correspondiente (Verde = nada/muy poco, Amarillo = más o menos, Rojo = mucho).
+   * Si todas están en Verde (canCompress === false), no se ofrece comprimir.
+   */
+  getBatchReductionSummary(assets = [], mediaType = 'photo') {
+    const filtered = (assets || []).filter((a) => a && (!mediaType || a.mediaType === mediaType));
+    let heavyCount = 0;
+    let mediumCount = 0;
+    let lightCount = 0;
+    let unknownSizeCount = 0;
+    let estimatedSavedBytes = 0;
+
+    for (const item of filtered) {
+      const sz = Number(item.fileSize) || 0;
+      if (sz <= 0) {
+        unknownSizeCount++;
+        continue;
+      }
+      const info = compressionService.getSizeLevel(sz, item.mediaType || mediaType);
+      if (info.level === 'heavy') {
+        heavyCount++;
+        estimatedSavedBytes += info.estimatedSavedBytes;
+      } else if (info.level === 'medium') {
+        mediumCount++;
+        estimatedSavedBytes += info.estimatedSavedBytes;
+      } else {
+        lightCount++;
+      }
+    }
+
+    const compressibleCount = heavyCount + mediumCount;
+    // Si aún se están leyendo tamaños (unknownSizeCount > 0 y compressibleCount === 0 y lightCount === 0)
+    const sizesLoaded = lightCount > 0 || compressibleCount > 0;
+    const canCompress = sizesLoaded ? compressibleCount > 0 : filtered.length > 0;
+
+    if (!canCompress) {
+      return {
+        canCompress: false,
+        level: 'light',
+        color: '#10b981',
+        bgColor: 'rgba(16, 185, 129, 0.14)',
+        borderColor: 'rgba(16, 185, 129, 0.4)',
+        compressibleCount: 0,
+        heavyCount: 0,
+        mediumCount: 0,
+        lightCount,
+        estimatedSavedBytes: 0,
+        estimatedSavedFormatted: '0 B',
+      };
+    }
+
+    // Si hay archivos en Rojo (>4MB fotos / >25MB videos) o el ahorro estimado supera 12 MB -> ROJO (se puede reducir mucho)
+    if (heavyCount > 0 || estimatedSavedBytes >= 12 * 1024 * 1024) {
+      return {
+        canCompress: true,
+        level: 'heavy',
+        color: '#ef4444',
+        textColor: '#fca5a5',
+        bgColor: 'rgba(239, 68, 68, 0.20)',
+        borderColor: '#ef4444',
+        compressibleCount: compressibleCount || filtered.length,
+        heavyCount,
+        mediumCount,
+        lightCount,
+        estimatedSavedBytes,
+        estimatedSavedFormatted:
+          estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '',
+      };
+    }
+
+    // Si hay archivos en Amarillo (reducción media) -> AMARILLO
+    return {
+      canCompress: true,
+      level: 'medium',
+      color: '#f59e0b',
+      textColor: '#fde68a',
+      bgColor: 'rgba(245, 158, 11, 0.20)',
+      borderColor: '#f59e0b',
+      compressibleCount: compressibleCount || filtered.length,
+      heavyCount,
+      mediumCount,
+      lightCount,
+      estimatedSavedBytes,
+      estimatedSavedFormatted:
+        estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '',
     };
   },
 

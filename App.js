@@ -126,6 +126,27 @@ export default function App() {
     }
   };
 
+  // Agregar múltiples carpetas sugeridas desde el escáner inteligente
+  const handleAddMultipleFolders = async (chosenFolders = []) => {
+    try {
+      const updated = await folderService.addMultipleSavedFolders(chosenFolders);
+      setSavedFolders(updated);
+      if (chosenFolders[0]?.uri) {
+        setFolderUri(chosenFolders[0].uri);
+      } else if (!folderUri && updated.length > 0) {
+        setFolderUri(updated[0].uri);
+      }
+      setActiveTab('folder');
+      setSelectedAlbum(null);
+      Alert.alert(
+        '¡Carpetas agregadas!',
+        `Se agregaron ${chosenFolders.length} ${chosenFolders.length === 1 ? 'carpeta' : 'carpetas'} a tu barra de carpetas.`
+      );
+    } catch (e) {
+      Alert.alert('Error', 'No se pudieron agregar las carpetas seleccionadas.');
+    }
+  };
+
   // Quitar una carpeta de la lista
   const handleRemoveFolder = (uri) => {
     Alert.alert(
@@ -559,8 +580,13 @@ export default function App() {
             <FolderBrowser
               rootUri={folderUri}
               savedFolders={savedFolders}
-              onSelectSavedFolder={(uri) => setFolderUri(uri)}
+              onSelectSavedFolder={async (uri) => {
+                const updated = await folderService.getSavedFolders();
+                setSavedFolders(updated);
+                setFolderUri(uri);
+              }}
               onPickNewFolder={handlePickFolder}
+              onAddMultipleFolders={handleAddMultipleFolders}
               onRemoveFolder={handleRemoveFolder}
               onSelectPhoto={handleOpenViewer}
               favorites={favorites}
