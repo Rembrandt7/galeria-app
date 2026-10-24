@@ -2,11 +2,11 @@
   "expo": {
     "name": "Mi Galería",
     "slug": "galeria-app",
-    "version": "1.2.8",
+    "version": "1.2.9",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#0d0f12",
+    "backgroundColor": "#0a0e1a",
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
@@ -16,10 +16,10 @@
     },
     "android": {
       "package": "com.rembrant.galeriaapp",
-      "versionCode": 28,
+      "versionCode": 29,
       "requestLegacyExternalStorage": true,
       "adaptiveIcon": {
-        "backgroundColor": "#121826",
+        "backgroundColor": "#0a0e1a",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
