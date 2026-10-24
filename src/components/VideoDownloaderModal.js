@@ -920,7 +920,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 32) + 14 : 16,
+    paddingTop: Platform.OS === 'android' ? Math.max(StatusBar.currentHeight || 40, 40) + 14 : 18,
     paddingBottom: 12,
     backgroundColor: '#0f1624',
     borderBottomWidth: 1,

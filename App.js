@@ -86,13 +86,18 @@ export default function App() {
       setShowAllFolders(false);
       storageService.setShowAllFolders(false);
 
-      // 2. Cargar carpetas guardadas en segundo plano
-      folderService.getSavedFolders().then((folders) => {
-        if (folders && folders.length > 0) {
-          setSavedFolders(folders);
-          setFolderUri(folders[0].uri);
-        }
-      });
+      // 2. Asegurar carpeta propia "Videos Descargados" y cargar carpetas guardadas
+      folderService
+        .ensureDownloadedVideosFolder()
+        .catch(() => {})
+        .finally(() => {
+          folderService.getSavedFolders().then((folders) => {
+            if (folders && folders.length > 0) {
+              setSavedFolders(folders);
+              setFolderUri(folders[0].uri);
+            }
+          });
+        });
 
       // 3. Revisar permisos
       const granted = await mediaService.checkAndRequestPermissions();
@@ -681,7 +686,26 @@ export default function App() {
         <VideoDownloaderModal
           visible={downloaderVisible}
           onClose={() => setDownloaderVisible(false)}
-          onVideoDownloaded={() => handleRefresh()}
+          onReopen={() => setDownloaderVisible(true)}
+          onVideoDownloaded={async () => {
+            const updated = await folderService.getSavedFolders();
+            setSavedFolders(updated);
+            handleRefresh();
+          }}
+          onOpenDownloadedFolder={async (targetFolderUri) => {
+            const finalUri = await folderService.ensureDownloadedVideosFolder();
+            const updated = await folderService.getSavedFolders();
+            setSavedFolders(updated);
+            setDownloaderVisible(false);
+            setSelectedAlbum(null);
+            setActiveTab('folder');
+            setFolderUri(targetFolderUri || finalUri);
+          }}
+          onPlayDownloadedAsset={(asset) => {
+            if (!asset?.uri) return;
+            setDownloaderVisible(false);
+            handleOpenViewer(asset, [asset]);
+          }}
         />
 
         {/* Modal de PIN para desbloquear carpetas ocultas */}
