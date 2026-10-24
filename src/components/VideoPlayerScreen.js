@@ -16,15 +16,13 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as MediaLibrary from 'expo-media-library';
-import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { compressionService } from '../services/compressionService';
 import { videoEngineService, VIDEO_QUALITY_PRESETS } from '../services/videoEngineService';
 import { theme } from '../constants/theme';
 
-const FRAME = 1 / 30;
 const SPEEDS = [0.5, 1, 1.5, 2];
-const THUMB_COUNT = 7;
+const THUMB_COUNT = 6;
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
@@ -47,70 +45,59 @@ export default function VideoPlayerScreen({
   onShare,
   onDelete,
 }) {
-  const [fallbackUri, setFallbackUri] = useState(null);
-  const triedFallbackRef = useRef(false);
-
-  // 1. Obtener URI óptimo y memoizar videoSource para que ExoPlayer jamás se reinicie en re-renders
-  const playableUri = useMemo(
-    () => fallbackUri || videoEngineService.getPlayableVideoUri(asset),
-    [asset?.uri, fallbackUri]
-  );
-
+  // 1. Pasar el URI original directamente a useVideoPlayer (idéntico al núcleo probado que siempre reproduce)
   const videoSource = useMemo(
-    () => (playableUri ? { uri: playableUri } : null),
-    [playableUri]
+    () => (asset?.uri ? { uri: asset.uri } : null),
+    [asset?.uri]
   );
 
   const player = useVideoPlayer(videoSource, (p) => {
-    p.timeUpdateEventInterval = 0.15;
-    p.loop = false;
-    p.muted = false;
-    p.play();
+    try {
+      p.timeUpdateEventInterval = 0.1;
+      p.loop = false;
+      p.play();
+    } catch (_e) {}
   });
 
-  // Estado de reproducción y metadatos
+  // Estados de reproducción
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(
     asset?.duration && asset.duration > 0 ? asset.duration : 0
   );
   const [playing, setPlaying] = useState(true);
-  const [isReady, setIsReady] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [loopEnabled, setLoopEnabled] = useState(false);
   const [rate, setRate] = useState(1);
+  const [useNativeControls, setUseNativeControls] = useState(false);
   const [videoMeta, setVideoMeta] = useState(null);
   const [currentFileSize, setCurrentFileSize] = useState(asset?.fileSize || 0);
   const [filmstripThumbs, setFilmstripThumbs] = useState([]);
   const [seekFeedback, setSeekFeedback] = useState(null);
 
-  // Modo principal de la interfaz: 'play' (Reproductor limpio) | 'trim' (Recortar) | 'compress' (Comprimir)
+  // Modo amigable: 'play' (Ver Video) | 'trim' (Recortar) | 'compress' (Bajar Peso)
   const [studioMode, setStudioMode] = useState(initialMode || 'play');
 
-  // Submodo de recorte:
-  // 'keep' = Dejar solo el tramo [Inicio, Fin]
-  // 'cut_middle' = Borrar la parte central marcada y unir el principio con el final
-  // 'multi' = Unir varios tramos del mismo video
+  // Estado de Recorte
+  // 'keep' = Dejar solo esta parte | 'cut_middle' = Borrar parte de en medio | 'multi' = Unir varios tramos
   const [trimMode, setTrimMode] = useState('keep');
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
   const [savedClips, setSavedClips] = useState([]);
-  const [activeHandle, setActiveHandle] = useState('start'); // 'start' | 'end'
+  const [activeHandle, setActiveHandle] = useState('start');
   const [previewingCut, setPreviewingCut] = useState(false);
 
-  // Estado de compresión sin perder resolución
+  // Estado de Compresión
   const [selectedPresetId, setSelectedPresetId] = useState('balanced');
   const [applyTrimOnCompress, setApplyTrimOnCompress] = useState(false);
 
-  // Estado de procesamiento
+  // Estado de progreso en operaciones
   const [busy, setBusy] = useState(false);
   const [progressInfo, setProgressInfo] = useState({ percent: 0, stage: '' });
 
-  // Referencias para gestos fluidos sin saltos en Android
-  const viewportWidthRef = useRef(360);
+  // Referencias para barras deslizables suaves
   const playScrubberWidthRef = useRef(1);
   const scrubberGrantXRef = useRef(0);
   const timelineWidthRef = useRef(1);
-  const timelineDragModeRef = useRef('playhead'); // 'start' | 'end' | 'playhead'
+  const timelineDragModeRef = useRef('playhead');
   const timelineGrantXRef = useRef(0);
   const isScrubbingRef = useRef(false);
   const durationRef = useRef(duration);
@@ -118,79 +105,60 @@ export default function VideoPlayerScreen({
   const trimEndRef = useRef(0);
   const dragInitialStartRef = useRef(0);
   const dragInitialEndRef = useRef(0);
-  const singleTapTimerRef = useRef(null);
-  const lastTapTimeRef = useRef(0);
-  const loopEnabledRef = useRef(false);
 
   durationRef.current = duration;
   trimStartRef.current = trimStart;
   trimEndRef.current = trimEnd;
-  loopEnabledRef.current = loopEnabled;
 
-  // Limpiar archivo temporal de respaldo y timers al desmontar
-  useEffect(() => {
-    return () => {
-      if (singleTapTimerRef.current) {
-        clearTimeout(singleTapTimerRef.current);
-      }
-      if (fallbackUri && fallbackUri.includes('vid_in_')) {
-        try {
-          new File(fallbackUri).delete();
-        } catch (_e) {}
-      }
-    };
-  }, [fallbackUri]);
-
-  // Sincronizar modo inicial cuando cambia el asset o el modo pedido
   useEffect(() => {
     setStudioMode(initialMode || 'play');
-    setFallbackUri(null);
-    triedFallbackRef.current = false;
   }, [initialMode, asset?.uri]);
 
-  // Leer metadatos del video sin copiar el archivo ni bloquear ExoPlayer
+  // Obtener peso y resolución sin bloquear el reproductor
   useEffect(() => {
     let mounted = true;
     (async () => {
-      const meta = await videoEngineService.getVideoMetadata(asset);
-      if (!mounted || !meta) return;
-      setVideoMeta(meta);
-      if (meta.sizeBytes > 0) {
-        setCurrentFileSize(meta.sizeBytes);
-      }
-      if (meta.durationMs > 0) {
-        const dSec = meta.durationMs / 1000;
-        if (dSec > 0 && (!durationRef.current || Math.abs(dSec - durationRef.current) > 0.2)) {
-          setDuration(dSec);
-          if (trimEndRef.current <= 0) {
-            setTrimEnd(dSec);
+      try {
+        const meta = await videoEngineService.getVideoMetadata(asset);
+        if (!mounted || !meta) return;
+        setVideoMeta(meta);
+        if (meta.sizeBytes > 0) {
+          setCurrentFileSize(meta.sizeBytes);
+        }
+        if (meta.durationMs > 0) {
+          const dSec = meta.durationMs / 1000;
+          if (dSec > 0 && (!durationRef.current || Math.abs(dSec - durationRef.current) > 0.2)) {
+            setDuration(dSec);
+            if (trimEndRef.current <= 0) {
+              setTrimEnd(dSec);
+            }
           }
         }
-      }
+      } catch (_e) {}
     })();
     return () => {
       mounted = false;
     };
   }, [asset]);
 
-  // Extraer miniaturas para el Filmstrip en hilo nativo SEPARADO únicamente cuando se abre "Recortar"
+  // Extraer miniaturas solo si el usuario entra a "Recortar"
   useEffect(() => {
     let cancelled = false;
     if (studioMode !== 'trim' || filmstripThumbs.length > 0) return;
-
     (async () => {
-      const thumbs = await videoEngineService.extractFilmstrip(asset, THUMB_COUNT);
-      if (!cancelled && Array.isArray(thumbs) && thumbs.length > 0) {
-        setFilmstripThumbs(thumbs);
-      }
+      try {
+        const thumbs = await videoEngineService.extractFilmstrip(asset, THUMB_COUNT);
+        if (!cancelled && Array.isArray(thumbs) && thumbs.length > 0) {
+          setFilmstripThumbs(thumbs);
+        }
+      } catch (_e) {}
     })();
-
     return () => {
       cancelled = true;
     };
   }, [studioMode, asset, filmstripThumbs.length]);
 
-  // Calcular los tramos efectivos que quedarán en el video final
+  // Tramos efectivos del recorte
   const effectiveSegments = useMemo(() => {
     const dur = duration || 0;
     if (dur <= 0) return [];
@@ -229,93 +197,78 @@ export default function VideoPlayerScreen({
   const previewingCutRef = useRef(false);
   previewingCutRef.current = previewingCut;
 
-  // Suscripción a eventos del reproductor ExoPlayer
+  // Suscripción segura únicamente a los 3 eventos nativos soportados por expo-video
   useEffect(() => {
-    const subs = [
-      player.addListener('timeUpdate', ({ currentTime }) => {
-        if (!isScrubbingRef.current) {
-          setTime(currentTime);
-        }
-        setIsReady(true);
+    if (!player) return;
+    const subs = [];
 
-        if (
-          player.duration &&
-          player.duration > 0 &&
-          Math.abs(player.duration - durationRef.current) > 0.1
-        ) {
-          setDuration(player.duration);
-          if (trimEndRef.current <= 0) {
-            setTrimEnd(player.duration);
+    try {
+      subs.push(
+        player.addListener('timeUpdate', ({ currentTime }) => {
+          if (!isScrubbingRef.current) {
+            setTime(currentTime);
           }
-        }
-
-        // Vista previa inteligente del recorte: salta en tiempo real las partes descartadas
-        if (previewingCutRef.current && effectiveSegmentsRef.current.length > 0) {
-          const segs = effectiveSegmentsRef.current;
-          const insideAny = segs.some(
-            (seg) => currentTime >= seg.start - 0.1 && currentTime <= seg.end + 0.06
-          );
-          if (!insideAny) {
-            const nextSeg = segs.find((seg) => seg.start > currentTime + 0.03);
-            if (nextSeg) {
-              player.currentTime = nextSeg.start;
-              setTime(nextSeg.start);
-            } else {
-              player.currentTime = segs[0].start;
-              setTime(segs[0].start);
-            }
-          }
-        }
-      }),
-      player.addListener('playingChange', ({ isPlaying }) => {
-        setPlaying(isPlaying);
-        if (isPlaying) setIsReady(true);
-      }),
-      player.addListener('statusChange', ({ status }) => {
-        if (status === 'readyToPlay') {
-          setIsReady(true);
           if (player.duration && player.duration > 0) {
-            setDuration(player.duration);
+            if (Math.abs(player.duration - durationRef.current) > 0.1) {
+              setDuration(player.duration);
+            }
             if (trimEndRef.current <= 0) {
               setTrimEnd(player.duration);
             }
           }
-        } else if (status === 'error' && !triedFallbackRef.current) {
-          // Si ExoPlayer tuvo problema con un URI SAF o nombre especial, preparar copia limpia en caché automáticamente
-          triedFallbackRef.current = true;
-          videoEngineService.preparePlayableFallbackUri(asset).then((cleanUri) => {
-            if (cleanUri) {
-              setFallbackUri(cleanUri);
+
+          // Si está en modo "Ver cómo queda el recorte", saltar partes recortadas automáticamente
+          if (previewingCutRef.current && effectiveSegmentsRef.current.length > 0) {
+            const segs = effectiveSegmentsRef.current;
+            const insideAny = segs.some(
+              (seg) => currentTime >= seg.start - 0.1 && currentTime <= seg.end + 0.06
+            );
+            if (!insideAny) {
+              const nextSeg = segs.find((seg) => seg.start > currentTime + 0.03);
+              try {
+                if (nextSeg) {
+                  player.currentTime = nextSeg.start;
+                  setTime(nextSeg.start);
+                } else {
+                  player.currentTime = segs[0].start;
+                  setTime(segs[0].start);
+                }
+              } catch (_e) {}
             }
-          });
-        }
-      }),
-      player.addListener('sourceLoad', ({ duration: d }) => {
-        setIsReady(true);
-        if (d && d > 0) {
-          setDuration(d);
-          if (trimEndRef.current <= 0) {
-            setTrimEnd(d);
           }
-        }
-      }),
-      player.addListener('playToEnd', () => {
-        if (previewingCutRef.current && effectiveSegmentsRef.current.length > 0) {
-          const first = effectiveSegmentsRef.current[0];
-          player.currentTime = first.start;
-          setTime(first.start);
-          player.play();
-        } else if (loopEnabledRef.current) {
-          player.currentTime = 0;
-          setTime(0);
-          player.play();
-        } else {
-          setPlaying(false);
-        }
-      }),
-    ];
-    return () => subs.forEach((s) => s.remove());
-  }, [player, asset]);
+        })
+      );
+    } catch (_e) {}
+
+    try {
+      subs.push(
+        player.addListener('playingChange', ({ isPlaying }) => {
+          setPlaying(Boolean(isPlaying));
+        })
+      );
+    } catch (_e) {}
+
+    try {
+      subs.push(
+        player.addListener('sourceLoad', ({ duration: d }) => {
+          if (d && d > 0) {
+            setDuration(d);
+            if (trimEndRef.current <= 0) {
+              setTrimEnd(d);
+            }
+          }
+        })
+      );
+    } catch (_e) {}
+
+    return () => {
+      subs.forEach((s) => {
+        try {
+          s?.remove?.();
+        } catch (_e) {}
+      });
+    };
+  }, [player]);
 
   useEffect(() => {
     const onBackPress = () => {
@@ -348,7 +301,7 @@ export default function VideoPlayerScreen({
         player.pause();
       } else {
         const dur = durationRef.current || player.duration || 0;
-        if (dur > 0 && time >= dur - 0.15) {
+        if (dur > 0 && time >= dur - 0.1) {
           seekTo(0);
         }
         player.play();
@@ -360,67 +313,29 @@ export default function VideoPlayerScreen({
     setPreviewingCut(false);
     const current = Number.isFinite(player.currentTime) ? player.currentTime : time;
     seekTo(current + delta);
-    const label = delta > 0 ? `+${Math.round(delta)}s` : `${Math.round(delta)}s`;
+    const label = delta > 0 ? `+${Math.round(delta)} seg` : `${Math.round(delta)} seg`;
     setSeekFeedback(label);
-    setTimeout(() => setSeekFeedback(null), 550);
-  };
-
-  // Toque en el área del video: 1 toque = Play/Pausa, Doble toque izquierda/derecha = -10s / +10s sin pausar por error
-  const handleVideoPress = (evt) => {
-    const now = Date.now();
-    const locX = evt?.nativeEvent?.locationX ?? viewportWidthRef.current / 2;
-    const width = viewportWidthRef.current || 360;
-
-    if (now - lastTapTimeRef.current < 250) {
-      if (singleTapTimerRef.current) {
-        clearTimeout(singleTapTimerRef.current);
-        singleTapTimerRef.current = null;
-      }
-      if (locX < width * 0.38) {
-        seekBy(-10);
-      } else if (locX > width * 0.62) {
-        seekBy(10);
-      } else {
-        togglePlay();
-      }
-      lastTapTimeRef.current = 0;
-      return;
-    }
-
-    lastTapTimeRef.current = now;
-    singleTapTimerRef.current = setTimeout(() => {
-      togglePlay();
-      singleTapTimerRef.current = null;
-    }, 230);
+    setTimeout(() => setSeekFeedback(null), 650);
   };
 
   const toggleMute = () => {
     const next = !muted;
-    player.muted = next;
+    try {
+      player.muted = next;
+    } catch (_e) {}
     setMuted(next);
-  };
-
-  const toggleLoop = () => {
-    const next = !loopEnabled;
-    player.loop = next;
-    setLoopEnabled(next);
   };
 
   const cycleSpeed = () => {
     const idx = SPEEDS.indexOf(rate);
     const next = SPEEDS[(idx + 1) % SPEEDS.length];
-    player.playbackRate = next;
+    try {
+      player.playbackRate = next;
+    } catch (_e) {}
     setRate(next);
   };
 
-  const stepFrame = (dir) => {
-    setPreviewingCut(false);
-    player.pause();
-    const current = Number.isFinite(player.currentTime) ? player.currentTime : time;
-    seekTo(current + dir * FRAME);
-  };
-
-  // PanResponder A: Barra de progreso en Modo Reproducir (usa grantX + dx para cero saltos en Android)
+  // Barra de progreso en modo "Ver Video"
   const playScrubberPanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -448,9 +363,7 @@ export default function VideoPlayerScreen({
     })
   ).current;
 
-  // PanResponder B UNIFICADO: Línea de tiempo en Modo Recortar
-  // Detecta automáticamente si el usuario tocó cerca de [ Inicio, Fin ] o la aguja central,
-  // funcionando al 100% incluso en los bordes 0% y 100% en Android.
+  // Barra interactiva de Recorte (manijas Inicio / Fin y aguja)
   const timelinePanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -469,16 +382,20 @@ export default function VideoPlayerScreen({
 
         const distStart = Math.abs(touchX - startX);
         const distEnd = Math.abs(touchX - endX);
-        const HANDLE_RADIUS = 30;
+        const HANDLE_RADIUS = 34;
 
         if (distStart <= HANDLE_RADIUS && distStart <= distEnd) {
           timelineDragModeRef.current = 'start';
-          player.pause();
+          try {
+            player.pause();
+          } catch (_e) {}
           setActiveHandle('start');
           dragInitialStartRef.current = trimStartRef.current;
         } else if (distEnd <= HANDLE_RADIUS) {
           timelineDragModeRef.current = 'end';
-          player.pause();
+          try {
+            player.pause();
+          } catch (_e) {}
           setActiveHandle('end');
           dragInitialEndRef.current = currentEnd;
         } else {
@@ -519,37 +436,23 @@ export default function VideoPlayerScreen({
     })
   ).current;
 
-  // Probar en vivo cómo quedará el video con el recorte
   const handlePreviewSelection = () => {
     if (effectiveSegments.length === 0) return;
     if (previewingCut && playing) {
       setPreviewingCut(false);
-      player.pause();
+      try {
+        player.pause();
+      } catch (_e) {}
       return;
     }
     setPreviewingCut(true);
     const first = effectiveSegments[0];
     seekTo(first.start);
-    player.play();
+    try {
+      player.play();
+    } catch (_e) {}
   };
 
-  // Ajuste fino (±0.1s / ±0.5s) de la manija seleccionada
-  const nudgeHandle = (deltaSec) => {
-    player.pause();
-    setPreviewingCut(false);
-    const dur = duration || 1;
-    if (activeHandle === 'start') {
-      const next = clamp(trimStart + deltaSec, 0, Math.max(0, (trimEnd || dur) - 0.2));
-      setTrimStart(next);
-      seekTo(next);
-    } else {
-      const next = clamp((trimEnd || dur) + deltaSec, Math.min(dur, trimStart + 0.2), dur);
-      setTrimEnd(next);
-      seekTo(next);
-    }
-  };
-
-  // Fijar Inicio o Fin exactamente en el segundo actual del video
   const setHandleToCurrentTime = (which) => {
     const t = Number.isFinite(player.currentTime) ? player.currentTime : time;
     const dur = duration || 1;
@@ -578,7 +481,7 @@ export default function VideoPlayerScreen({
     const s = clamp(trimStart, 0, dur);
     const e = clamp(trimEnd || dur, 0, dur);
     if (e - s < 0.2) {
-      Alert.alert('Tramo muy corto', 'Selecciona un tramo de al menos 0.2 segundos.');
+      Alert.alert('Tramo muy corto', 'Selecciona una parte de al menos medio segundo.');
       return;
     }
     setSavedClips((prev) => [
@@ -598,18 +501,20 @@ export default function VideoPlayerScreen({
     setSavedClips([]);
   };
 
-  // Capturar fotograma actual como foto JPEG sin interrumpir el reproductor
+  // Guardar foto del momento actual
   const handleCaptureFrame = async () => {
-    player.pause();
+    try {
+      player.pause();
+    } catch (_e) {}
     const captureTime = Number.isFinite(player.currentTime) ? player.currentTime : time;
     setBusy(true);
-    setProgressInfo({ percent: 0.6, stage: 'Guardando captura en alta definición...' });
+    setProgressInfo({ percent: 0.6, stage: 'Guardando foto de este momento...' });
     try {
       let frameUri = await videoEngineService.captureFrame(asset, captureTime);
       if (!frameUri) {
         const thumbs = await player.generateThumbnailsAsync([captureTime]);
         if (!thumbs || !thumbs[0]) {
-          throw new Error('No se pudo extraer el cuadro actual.');
+          throw new Error('No se pudo extraer la imagen del video.');
         }
         const context = ImageManipulator.manipulate(thumbs[0]);
         const rendered = await context.renderAsync();
@@ -621,21 +526,21 @@ export default function VideoPlayerScreen({
       }
       await MediaLibrary.saveToLibraryAsync(frameUri);
       Alert.alert(
-        '📸 Foto guardada',
-        `Se guardó el cuadro (${formatTime(captureTime, true)}) como imagen en tu galería.`
+        '📸 ¡Foto guardada!',
+        `Se guardó la imagen del minuto ${formatTime(captureTime)} en tu galería.`
       );
       if (onSaved) onSaved();
     } catch (e) {
-      Alert.alert('Error al capturar cuadro', String(e?.message || e));
+      Alert.alert('Error al guardar foto', String(e?.message || e));
     } finally {
       setBusy(false);
     }
   };
 
-  // Ejecutar recorte de video
+  // Ejecutar recorte
   const handleExecuteTrim = async (replaceOriginal = false) => {
     if (effectiveSegments.length === 0) {
-      Alert.alert('Recorte', 'Selecciona al menos un tramo válido.');
+      Alert.alert('Recortar', 'Selecciona al menos una parte del video.');
       return;
     }
 
@@ -649,16 +554,18 @@ export default function VideoPlayerScreen({
       Math.abs(effectiveSegments[0].end - duration) <= 0.1
     ) {
       Alert.alert(
-        'Ajusta las manijas de recorte',
-        'Arrastra las barras amarillas [ Inicio o Fin ] en la línea de tiempo (o usa los botones "[ Inicio aquí" / "Fin aquí ]") para marcar la parte que quieres recortar.'
+        'Marca primero qué parte recortar',
+        'Mueve las barritas amarillas de INICIO o FIN en la barra de abajo (o toca "Empezar aquí" / "Terminar aquí") antes de guardar.'
       );
       return;
     }
 
-    player.pause();
+    try {
+      player.pause();
+    } catch (_e) {}
     setPreviewingCut(false);
     setBusy(true);
-    setProgressInfo({ percent: 0.12, stage: 'Recortando video al 100% de resolución...' });
+    setProgressInfo({ percent: 0.15, stage: 'Recortando tu video sin perder calidad...' });
 
     try {
       const res = await videoEngineService.trimVideoSegments({
@@ -674,15 +581,15 @@ export default function VideoPlayerScreen({
 
       if (replaceOriginal) {
         Alert.alert(
-          '✅ Video recortado',
-          `El video original fue actualizado (${formatTime(totalFinalSec, true)}) manteniendo el 100% de su calidad y resolución.\n\nNuevo peso: ${compressionService.formatBytes(res.newSizeBytes)}.`
+          '✅ ¡Video recortado!',
+          `El video original fue actualizado (${formatTime(totalFinalSec)}) manteniendo toda su calidad.\n\nNuevo peso: ${compressionService.formatBytes(res.newSizeBytes)}.`
         );
         if (onSaved) onSaved();
         onClose();
       } else {
         Alert.alert(
-          '✅ Copia recortada guardada',
-          `Se guardó el nuevo video (${formatTime(totalFinalSec, true)}) en tu galería (${compressionService.formatBytes(res.newSizeBytes)}).`
+          '✅ ¡Copia nueva guardada!',
+          `Se guardó el video recortado (${formatTime(totalFinalSec)}) en tu galería (${compressionService.formatBytes(res.newSizeBytes)}).`
         );
         if (onSaved) onSaved();
       }
@@ -693,14 +600,16 @@ export default function VideoPlayerScreen({
     }
   };
 
-  // Ejecutar compresión manteniendo el 100% de resolución
+  // Ejecutar compresión
   const handleExecuteCompress = async (replaceOriginal = true) => {
-    player.pause();
+    try {
+      player.pause();
+    } catch (_e) {}
     setPreviewingCut(false);
     setBusy(true);
     setProgressInfo({
-      percent: 0.06,
-      stage: 'Comprimiendo video manteniendo 100% resolución...',
+      percent: 0.08,
+      stage: 'Reduciendo el peso del video sin perder calidad...',
     });
 
     try {
@@ -720,25 +629,23 @@ export default function VideoPlayerScreen({
 
       if (res.alreadyOptimized) {
         Alert.alert(
-          'Video ya optimizado',
-          `Este video (${compressionService.formatBytes(res.oldSizeBytes)}) ya está en su peso óptimo para su resolución.`
+          'Video ya ligero',
+          `Este video (${compressionService.formatBytes(res.oldSizeBytes)}) ya tiene un peso muy bajo y óptimo.`
         );
       } else if (replaceOriginal) {
         setCurrentFileSize(res.newSizeBytes);
         Alert.alert(
-          '✨ ¡Video original comprimido!',
-          `Resolución intacta: ${videoMeta?.resolutionText || '100% Original'}\n` +
-            `Peso anterior: ${compressionService.formatBytes(res.oldSizeBytes)}\n` +
+          '🎉 ¡Video mucho más ligero!',
+          `Peso anterior: ${compressionService.formatBytes(res.oldSizeBytes)}\n` +
             `Peso nuevo: ${compressionService.formatBytes(res.newSizeBytes)}\n\n` +
-            `Ahorraste: ${compressionService.formatBytes(res.savedBytes)}`
+            `¡Ahorraste ${compressionService.formatBytes(res.savedBytes)} manteniendo la misma resolución!`
         );
         if (onSaved) onSaved();
       } else {
         Alert.alert(
-          '✨ ¡Copia comprimida guardada!',
-          `Se guardó una copia ligera al 100% de resolución.\n` +
-            `Peso original: ${compressionService.formatBytes(res.oldSizeBytes)}\n` +
-            `Peso nuevo: ${compressionService.formatBytes(res.newSizeBytes)}\n` +
+          '🎉 ¡Copia ligera guardada!',
+          `Se guardó una copia ligera en tu galería.\n` +
+            `Antes: ${compressionService.formatBytes(res.oldSizeBytes)} → Ahora: ${compressionService.formatBytes(res.newSizeBytes)}\n` +
             `Ahorro: ${compressionService.formatBytes(res.savedBytes)}`
         );
         if (onSaved) onSaved();
@@ -778,27 +685,25 @@ export default function VideoPlayerScreen({
 
   return (
     <View style={styles.fullscreenOverlay}>
-      <StatusBar barStyle="light-content" backgroundColor="#06080d" />
+      <StatusBar barStyle="light-content" backgroundColor="#000000" />
       <SafeAreaView style={styles.container}>
-        {/* 1. BARRA SUPERIOR LIMPIA Y PROFESIONAL */}
+        {/* 1. CABECERA AMIGABLE Y CLARA */}
         <View style={styles.topBar}>
-          <TouchableOpacity onPress={onClose} style={styles.iconCircleBtn} disabled={busy}>
+          <TouchableOpacity
+            onPress={onClose}
+            style={styles.backBtn}
+            disabled={busy}
+            activeOpacity={0.8}
+          >
             <Ionicons name="arrow-back" size={22} color="#ffffff" />
+            <Text style={styles.backBtnText}>Volver</Text>
           </TouchableOpacity>
 
           <View style={styles.headerCenter}>
             <Text style={styles.title} numberOfLines={1}>
-              {asset.filename || 'Video'}
+              {asset.filename || 'Mi Video'}
             </Text>
             <View style={styles.metaBadgesRow}>
-              <View style={styles.resBadge}>
-                <Text style={styles.resBadgeText}>
-                  {videoMeta?.resolutionBadge || 'HD'}
-                  {videoMeta?.displayWidth
-                    ? ` • ${videoMeta.displayWidth}×${videoMeta.displayHeight}`
-                    : ''}
-                </Text>
-              </View>
               {currentFileSize > 0 && (
                 <View style={[styles.sizeBadge, { borderColor: sizeLevel.color }]}>
                   <View style={[styles.sizeDot, { backgroundColor: sizeLevel.color }]} />
@@ -807,20 +712,15 @@ export default function VideoPlayerScreen({
                   </Text>
                 </View>
               )}
+              {videoMeta?.resolutionBadge ? (
+                <View style={styles.resBadge}>
+                  <Text style={styles.resBadgeText}>{videoMeta.resolutionBadge}</Text>
+                </View>
+              ) : null}
             </View>
           </View>
 
           <View style={styles.headerRightActions}>
-            <TouchableOpacity
-              style={styles.snapActionBtn}
-              onPress={handleCaptureFrame}
-              disabled={busy}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="camera-outline" size={17} color="#ffffff" />
-              <Text style={styles.snapActionText}>Foto</Text>
-            </TouchableOpacity>
-
             {onShare && (
               <TouchableOpacity
                 style={styles.iconCircleBtn}
@@ -828,10 +728,9 @@ export default function VideoPlayerScreen({
                 disabled={busy}
                 activeOpacity={0.75}
               >
-                <Ionicons name="share-social-outline" size={19} color="#ffffff" />
+                <Ionicons name="share-social-outline" size={20} color="#ffffff" />
               </TouchableOpacity>
             )}
-
             {onDelete && (
               <TouchableOpacity
                 style={styles.iconCircleBtn}
@@ -839,51 +738,35 @@ export default function VideoPlayerScreen({
                 disabled={busy}
                 activeOpacity={0.75}
               >
-                <Ionicons name="trash-outline" size={19} color="#f87171" />
+                <Ionicons name="trash-outline" size={20} color="#f87171" />
               </TouchableOpacity>
             )}
           </View>
         </View>
 
-        {/* 2. VISOR DE VIDEO AMPLIO Y FLUIDO CON CAPA TÁCTIL SUPERIOR GARANTIZADA */}
-        <View
-          style={styles.videoViewport}
-          onLayout={(e) => {
-            viewportWidthRef.current = e.nativeEvent.layout.width || 360;
-          }}
+        {/* 2. ÁREA DEL VIDEO (Mismo patrón directo que garantizó reproducción al 100%) */}
+        <TouchableOpacity
+          style={styles.videoArea}
+          activeOpacity={1}
+          onPress={useNativeControls ? undefined : togglePlay}
         >
           <VideoView
             player={player}
             style={styles.video}
             contentFit="contain"
-            nativeControls={false}
+            nativeControls={useNativeControls}
             surfaceType="textureView"
           />
 
-          {/* Capa táctil transparente sobre el TextureView para que Android nunca ignore el toque */}
-          <TouchableOpacity
-            style={StyleSheet.absoluteFill}
-            activeOpacity={1}
-            onPress={handleVideoPress}
-          />
-
-          {/* Indicador de carga inicial */}
-          {!isReady && duration <= 0 && (
-            <View pointerEvents="none" style={styles.loadingOverlay}>
-              <ActivityIndicator size="large" color="#38bdf8" />
-            </View>
-          )}
-
-          {/* Botón central de Play cuando está en pausa */}
-          {!playing && (
+          {!playing && !useNativeControls && (
             <View pointerEvents="none" style={styles.centerPlayOverlay}>
               <View style={styles.centerPlayCircle}>
-                <Ionicons name="play" size={36} color="#ffffff" style={{ marginLeft: 4 }} />
+                <Ionicons name="play" size={42} color="#ffffff" style={{ marginLeft: 4 }} />
               </View>
+              <Text style={styles.centerPlayHint}>Toca para reproducir</Text>
             </View>
           )}
 
-          {/* Indicador de salto rápido (-10s / +10s) */}
           {seekFeedback && (
             <View pointerEvents="none" style={styles.seekFeedbackPill}>
               <Ionicons
@@ -895,20 +778,19 @@ export default function VideoPlayerScreen({
             </View>
           )}
 
-          {/* Banner flotante cuando se está probando el recorte */}
           {previewingCut && (
             <View pointerEvents="none" style={styles.previewBanner}>
-              <Ionicons name="eye" size={14} color="#34d399" />
+              <Ionicons name="eye" size={15} color="#34d399" />
               <Text style={styles.previewBannerText}>
-                Probando resultado del recorte ({formatTime(totalResultDuration, true)})
+                Viendo cómo queda tu recorte ({formatTime(totalResultDuration)})
               </Text>
             </View>
           )}
-        </View>
+        </TouchableOpacity>
 
-        {/* 3. BARRA INFERIOR PROFESIONAL CON 3 MODOS CLAROS (SIN SCROLL INNECESARIO) */}
+        {/* 3. PANEL INFERIOR SÚPER AMIGABLE CON BOTONES GRANDES Y TEXTO CLARO */}
         <View style={styles.bottomStudioDock}>
-          {/* Selector principal de modo */}
+          {/* Pestañas grandes y fáciles de entender */}
           <View style={styles.modeSelectorBar}>
             <TouchableOpacity
               style={[
@@ -923,7 +805,7 @@ export default function VideoPlayerScreen({
             >
               <Ionicons
                 name={studioMode === 'play' ? 'play-circle' : 'play-circle-outline'}
-                size={18}
+                size={20}
                 color={studioMode === 'play' ? '#ffffff' : '#94a3b8'}
               />
               <Text
@@ -932,7 +814,7 @@ export default function VideoPlayerScreen({
                   studioMode === 'play' && styles.modeTabTextActive,
                 ]}
               >
-                Reproducir
+                Ver Video
               </Text>
             </TouchableOpacity>
 
@@ -946,8 +828,8 @@ export default function VideoPlayerScreen({
             >
               <Ionicons
                 name="cut"
-                size={17}
-                color={studioMode === 'trim' ? '#ffffff' : '#94a3b8'}
+                size={19}
+                color={studioMode === 'trim' ? '#ffffff' : '#fbbf24'}
               />
               <Text
                 style={[
@@ -969,9 +851,9 @@ export default function VideoPlayerScreen({
               activeOpacity={0.85}
             >
               <Ionicons
-                name="sparkles"
-                size={16}
-                color={studioMode === 'compress' ? '#ffffff' : '#94a3b8'}
+                name="flash"
+                size={18}
+                color={studioMode === 'compress' ? '#ffffff' : '#38bdf8'}
               />
               <Text
                 style={[
@@ -979,15 +861,15 @@ export default function VideoPlayerScreen({
                   studioMode === 'compress' && styles.modeTabTextActive,
                 ]}
               >
-                Comprimir
+                Bajar Peso
               </Text>
             </TouchableOpacity>
           </View>
 
-          {/* ================= MODO 1: REPRODUCTOR LIMPIO ================= */}
+          {/* ================= MODO 1: VER VIDEO (REPRODUCTOR AMIGABLE) ================= */}
           {studioMode === 'play' && (
             <View style={styles.playModeContainer}>
-              {/* Barra de progreso suave de lado a lado */}
+              {/* Barra de tiempo grande y fácil de mover con el dedo */}
               <View style={styles.scrubberRow}>
                 <Text style={styles.scrubberTimeText}>{formatTime(time)}</Text>
 
@@ -1012,36 +894,19 @@ export default function VideoPlayerScreen({
                 <Text style={styles.scrubberTimeText}>{formatTime(duration)}</Text>
               </View>
 
-              {/* Botonera principal de reproducción */}
-              <View style={styles.playerMainControlsRow}>
+              {/* 3 Botones grandes principales: Atrasar 10s | Reproducir/Pausar | Adelantar 10s */}
+              <View style={styles.friendlyMainRow}>
                 <TouchableOpacity
-                  style={[styles.auxControlBtn, muted && styles.auxControlBtnActive]}
-                  onPress={toggleMute}
-                >
-                  <Ionicons
-                    name={muted ? 'volume-mute' : 'volume-high'}
-                    size={19}
-                    color={muted ? '#f87171' : '#e2e8f0'}
-                  />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.skipControlBtn}
+                  style={styles.friendlySkipBtn}
                   onPress={() => seekBy(-10)}
+                  activeOpacity={0.8}
                 >
-                  <Ionicons name="play-back" size={18} color="#ffffff" />
-                  <Text style={styles.skipControlLabel}>10s</Text>
+                  <Ionicons name="play-back" size={20} color="#ffffff" />
+                  <Text style={styles.friendlySkipText}>-10 seg</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.frameControlBtn}
-                  onPress={() => stepFrame(-1)}
-                >
-                  <Ionicons name="chevron-back" size={18} color="#cbd5e1" />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.bigPlayPauseBtn}
+                  style={styles.friendlyPlayPauseBtn}
                   onPress={togglePlay}
                   activeOpacity={0.85}
                 >
@@ -1049,57 +914,81 @@ export default function VideoPlayerScreen({
                     name={playing ? 'pause' : 'play'}
                     size={26}
                     color="#ffffff"
-                    style={!playing ? { marginLeft: 3 } : undefined}
                   />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.frameControlBtn}
-                  onPress={() => stepFrame(1)}
-                >
-                  <Ionicons name="chevron-forward" size={18} color="#cbd5e1" />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.skipControlBtn}
-                  onPress={() => seekBy(10)}
-                >
-                  <Ionicons name="play-forward" size={18} color="#ffffff" />
-                  <Text style={styles.skipControlLabel}>10s</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.auxControlBtn, rate !== 1 && styles.auxControlBtnActive]}
-                  onPress={cycleSpeed}
-                >
-                  <Text
-                    style={[
-                      styles.speedPillText,
-                      rate !== 1 && { color: '#38bdf8' },
-                    ]}
-                  >
-                    {rate}x
+                  <Text style={styles.friendlyPlayPauseText}>
+                    {playing ? 'Pausar' : 'Reproducir'}
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.auxControlBtn, loopEnabled && styles.auxControlBtnActive]}
-                  onPress={toggleLoop}
+                  style={styles.friendlySkipBtn}
+                  onPress={() => seekBy(10)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.friendlySkipText}>+10 seg</Text>
+                  <Ionicons name="play-forward" size={20} color="#ffffff" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Fila de opciones útiles con nombres claros */}
+              <View style={styles.friendlyToolsRow}>
+                <TouchableOpacity
+                  style={styles.friendlyToolChip}
+                  onPress={handleCaptureFrame}
+                  disabled={busy}
+                >
+                  <Ionicons name="camera-outline" size={18} color="#38bdf8" />
+                  <Text style={styles.friendlyToolChipText}>Guardar foto</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.friendlyToolChip,
+                    muted && styles.friendlyToolChipMuted,
+                  ]}
+                  onPress={toggleMute}
                 >
                   <Ionicons
-                    name="repeat"
+                    name={muted ? 'volume-mute' : 'volume-high'}
                     size={18}
-                    color={loopEnabled ? '#38bdf8' : '#94a3b8'}
+                    color={muted ? '#f87171' : '#34d399'}
                   />
+                  <Text style={styles.friendlyToolChipText}>
+                    {muted ? 'Sin sonido' : 'Sonido'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.friendlyToolChip,
+                    rate !== 1 && styles.friendlyToolChipActive,
+                  ]}
+                  onPress={cycleSpeed}
+                >
+                  <Ionicons name="speedometer-outline" size={18} color="#fbbf24" />
+                  <Text style={styles.friendlyToolChipText}>Velocidad {rate}x</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.friendlyToolChip,
+                    useNativeControls && styles.friendlyToolChipActive,
+                  ]}
+                  onPress={() => setUseNativeControls((v) => !v)}
+                >
+                  <Ionicons name="options-outline" size={18} color="#cbd5e1" />
+                  <Text style={styles.friendlyToolChipText}>
+                    {useNativeControls ? 'Modo simple' : 'Barra nativa'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
           )}
 
-          {/* ================= MODO 2: RECORTAR (ESTILO APP PRO SENCILLA) ================= */}
+          {/* ================= MODO 2: RECORTAR (GUIADO PASO A PASO) ================= */}
           {studioMode === 'trim' && (
             <View style={styles.trimModeContainer}>
-              {/* 1. Selector simple de tipo de recorte en 1 fila */}
+              {/* Paso 1: Elegir qué hacer con palabras sencillas */}
               <View style={styles.trimSubmodeRow}>
                 <TouchableOpacity
                   style={[
@@ -1110,7 +999,7 @@ export default function VideoPlayerScreen({
                 >
                   <Ionicons
                     name="cut-outline"
-                    size={14}
+                    size={16}
                     color={trimMode === 'keep' ? '#fef3c7' : '#94a3b8'}
                   />
                   <Text
@@ -1119,7 +1008,7 @@ export default function VideoPlayerScreen({
                       trimMode === 'keep' && styles.trimSubmodeTextActive,
                     ]}
                   >
-                    Dejar tramo
+                    Dejar solo esta parte
                   </Text>
                 </TouchableOpacity>
 
@@ -1131,8 +1020,8 @@ export default function VideoPlayerScreen({
                   onPress={() => setTrimMode('cut_middle')}
                 >
                   <Ionicons
-                    name="trash-bin-outline"
-                    size={14}
+                    name="trash-outline"
+                    size={16}
                     color={trimMode === 'cut_middle' ? '#fee2e2' : '#94a3b8'}
                   />
                   <Text
@@ -1141,20 +1030,20 @@ export default function VideoPlayerScreen({
                       trimMode === 'cut_middle' && styles.trimSubmodeTextActive,
                     ]}
                   >
-                    Borrar centro
+                    Borrar parte central
                   </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={[
-                    styles.trimSubmodePill,
+                    styles.trimSubmodePillSmall,
                     trimMode === 'multi' && styles.trimSubmodePillMulti,
                   ]}
                   onPress={() => setTrimMode('multi')}
                 >
                   <Ionicons
                     name="layers-outline"
-                    size={14}
+                    size={15}
                     color={trimMode === 'multi' ? '#d1fae5' : '#94a3b8'}
                   />
                   <Text
@@ -1163,49 +1052,30 @@ export default function VideoPlayerScreen({
                       trimMode === 'multi' && styles.trimSubmodeTextActive,
                     ]}
                   >
-                    Unir varios
+                    Varios
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              {/* 2. Línea de tiempo interactiva unificada con manijas gruesas */}
+              {/* Paso 2: Barra visual grande con INICIO y FIN claros */}
               <View style={styles.timelineWrapper}>
                 <View style={styles.timelineInfoHeader}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setActiveHandle('start');
-                      seekTo(trimStart);
-                    }}
-                    style={[
-                      styles.timeTagChip,
-                      activeHandle === 'start' && styles.timeTagChipActive,
-                    ]}
-                  >
-                    <Text style={styles.timeTagLabel}>[ Inicio: </Text>
-                    <Text style={styles.timeTagVal}>{formatTime(trimStart, true)}</Text>
-                  </TouchableOpacity>
+                  <Text style={styles.friendlyTimeInfo}>
+                    Inicio: <Text style={styles.friendlyTimeBold}>{formatTime(trimStart, true)}</Text>
+                  </Text>
 
                   <View style={styles.resultDurationPill}>
                     <Text style={styles.resultDurationText}>
-                      Quedará: {formatTime(totalResultDuration, true)}
+                      Durará: {formatTime(totalResultDuration, true)}
                     </Text>
                   </View>
 
-                  <TouchableOpacity
-                    onPress={() => {
-                      setActiveHandle('end');
-                      seekTo(trimEnd || duration);
-                    }}
-                    style={[
-                      styles.timeTagChip,
-                      activeHandle === 'end' && styles.timeTagChipActive,
-                    ]}
-                  >
-                    <Text style={styles.timeTagLabel}>Fin ]: </Text>
-                    <Text style={styles.timeTagVal}>
+                  <Text style={styles.friendlyTimeInfo}>
+                    Fin:{' '}
+                    <Text style={styles.friendlyTimeBold}>
                       {formatTime(trimEnd || duration, true)}
                     </Text>
-                  </TouchableOpacity>
+                  </Text>
                 </View>
 
                 <View
@@ -1215,7 +1085,6 @@ export default function VideoPlayerScreen({
                   }}
                   {...timelinePanResponder.panHandlers}
                 >
-                  {/* Fotogramas o bloques limpios de fondo */}
                   <View style={styles.filmstripRow} pointerEvents="none">
                     {filmstripThumbs.length > 0
                       ? filmstripThumbs.map((uri, idx) => (
@@ -1233,7 +1102,6 @@ export default function VideoPlayerScreen({
                         ))}
                   </View>
 
-                  {/* Tramos guardados en modo "Unir varios" */}
                   {trimMode === 'multi' &&
                     savedClips.map((clip) => {
                       const l = clamp((clip.start / dur) * 100, 0, 100);
@@ -1247,7 +1115,6 @@ export default function VideoPlayerScreen({
                       );
                     })}
 
-                  {/* Máscaras según el modo de recorte */}
                   {trimMode !== 'cut_middle' ? (
                     <>
                       <View
@@ -1277,12 +1144,11 @@ export default function VideoPlayerScreen({
                         { left: `${startPct}%`, width: `${selectedSpanPct}%` },
                       ]}
                     >
-                      <Ionicons name="close-circle" size={14} color="#fecaca" />
-                      <Text style={styles.deleteCenterLabel}>SE BORRARÁ</Text>
+                      <Text style={styles.deleteCenterLabel}>SE BORRARÁ ESTA PARTE</Text>
                     </View>
                   )}
 
-                  {/* Manija Izquierda [ */}
+                  {/* Manija Izquierda INICIO */}
                   <View
                     pointerEvents="none"
                     style={[styles.handleHitBox, { left: `${startPct}%` }]}
@@ -1300,7 +1166,7 @@ export default function VideoPlayerScreen({
                     </View>
                   </View>
 
-                  {/* Manija Derecha ] */}
+                  {/* Manija Derecha FIN */}
                   <View
                     pointerEvents="none"
                     style={[styles.handleHitBox, { left: `${endPct}%` }]}
@@ -1318,7 +1184,7 @@ export default function VideoPlayerScreen({
                     </View>
                   </View>
 
-                  {/* Aguja blanca del tiempo actual */}
+                  {/* Aguja blanca */}
                   <View
                     pointerEvents="none"
                     style={[styles.playheadNeedle, { left: `${playheadPct}%` }]}
@@ -1328,41 +1194,29 @@ export default function VideoPlayerScreen({
                 </View>
               </View>
 
-              {/* 3. Barra rápida de fijación en 1 toque, Play/Pausa y ajuste fino */}
+              {/* Botones amigables para marcar inicio/fin con 1 toque mientras ves el video */}
               <View style={styles.quickPrecisionRow}>
                 <TouchableOpacity
                   style={styles.miniPlayToggleBtn}
                   onPress={togglePlay}
                 >
-                  <Ionicons name={playing ? 'pause' : 'play'} size={15} color="#ffffff" />
+                  <Ionicons name={playing ? 'pause' : 'play'} size={18} color="#ffffff" />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={styles.setPointBtn}
                   onPress={() => setHandleToCurrentTime('start')}
                 >
-                  <Text style={styles.setPointBtnText}>[ Inicio aquí</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.microStepBtn}
-                  onPress={() => nudgeHandle(-0.1)}
-                >
-                  <Text style={styles.microStepText}>-0.1s</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.microStepBtn}
-                  onPress={() => nudgeHandle(0.1)}
-                >
-                  <Text style={styles.microStepText}>+0.1s</Text>
+                  <Ionicons name="flag-outline" size={14} color="#fde68a" />
+                  <Text style={styles.setPointBtnText}>Empezar aquí</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={styles.setPointBtn}
                   onPress={() => setHandleToCurrentTime('end')}
                 >
-                  <Text style={styles.setPointBtnText}>Fin aquí ]</Text>
+                  <Ionicons name="flag" size={14} color="#fde68a" />
+                  <Text style={styles.setPointBtnText}>Terminar aquí</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -1373,8 +1227,8 @@ export default function VideoPlayerScreen({
                   onPress={handlePreviewSelection}
                 >
                   <Ionicons
-                    name={previewingCut ? 'stop' : 'eye-outline'}
-                    size={14}
+                    name={previewingCut ? 'stop-circle' : 'eye-outline'}
+                    size={16}
                     color={previewingCut ? '#34d399' : '#38bdf8'}
                   />
                   <Text
@@ -1383,12 +1237,11 @@ export default function VideoPlayerScreen({
                       previewingCut && { color: '#34d399' },
                     ]}
                   >
-                    {previewingCut ? 'Parar' : 'Probar'}
+                    {previewingCut ? 'Detener' : 'Ver cómo queda'}
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              {/* 4. Fila extra solo si eligió "Unir varios" */}
               {trimMode === 'multi' && (
                 <View style={styles.multiClipsCompactRow}>
                   <TouchableOpacity
@@ -1396,7 +1249,7 @@ export default function VideoPlayerScreen({
                     onPress={handleAddClipSegment}
                   >
                     <Ionicons name="add-circle" size={16} color="#10b981" />
-                    <Text style={styles.addClipCompactText}>+ Añadir tramo</Text>
+                    <Text style={styles.addClipCompactText}>+ Agregar tramo</Text>
                   </TouchableOpacity>
 
                   <ScrollView
@@ -1406,7 +1259,7 @@ export default function VideoPlayerScreen({
                   >
                     {savedClips.length === 0 ? (
                       <Text style={styles.multiEmptyHint}>
-                        Marca un tramo y toca &quot;+ Añadir tramo&quot;
+                        Marca una parte y toca &quot;+ Agregar tramo&quot;
                       </Text>
                     ) : (
                       savedClips.map((clip, i) => (
@@ -1419,11 +1272,11 @@ export default function VideoPlayerScreen({
                             }}
                           >
                             <Text style={styles.savedClipChipText}>
-                              #{i + 1}: {formatTime(clip.start)}→{formatTime(clip.end)}
+                              Parte {i + 1}: {formatTime(clip.start)} a {formatTime(clip.end)}
                             </Text>
                           </TouchableOpacity>
                           <TouchableOpacity onPress={() => handleRemoveSavedClip(clip.id)}>
-                            <Ionicons name="close-circle" size={15} color="#f87171" />
+                            <Ionicons name="close-circle" size={16} color="#f87171" />
                           </TouchableOpacity>
                         </View>
                       ))
@@ -1432,7 +1285,7 @@ export default function VideoPlayerScreen({
                 </View>
               )}
 
-              {/* 5. Botones principales de acción siempre visibles */}
+              {/* Paso 3: Guardar */}
               <View style={styles.bottomActionButtonsRow}>
                 {hasActiveTrim && (
                   <TouchableOpacity
@@ -1440,7 +1293,7 @@ export default function VideoPlayerScreen({
                     onPress={handleResetTrim}
                     disabled={busy}
                   >
-                    <Ionicons name="refresh" size={18} color="#94a3b8" />
+                    <Ionicons name="refresh" size={19} color="#cbd5e1" />
                   </TouchableOpacity>
                 )}
 
@@ -1449,8 +1302,8 @@ export default function VideoPlayerScreen({
                   onPress={() => handleExecuteTrim(false)}
                   disabled={busy}
                 >
-                  <Ionicons name="copy-outline" size={17} color="#ffffff" />
-                  <Text style={styles.saveBtnText}>Guardar copia</Text>
+                  <Ionicons name="copy-outline" size={18} color="#ffffff" />
+                  <Text style={styles.saveBtnText}>Guardar copia nueva</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -1458,29 +1311,29 @@ export default function VideoPlayerScreen({
                   onPress={() => handleExecuteTrim(true)}
                   disabled={busy}
                 >
-                  <Ionicons name="checkmark-circle" size={18} color="#ffffff" />
+                  <Ionicons name="checkmark-circle" size={19} color="#ffffff" />
                   <Text style={styles.saveBtnText}>Reemplazar original</Text>
                 </TouchableOpacity>
               </View>
             </View>
           )}
 
-          {/* ================= MODO 3: COMPRIMIR (100% RESOLUCIÓN) ================= */}
+          {/* ================= MODO 3: BAJAR PESO (COMPRESOR AMIGABLE) ================= */}
           {studioMode === 'compress' && (
             <View style={styles.compressModeContainer}>
-              {/* 1. Tarjeta comparativa de ahorro en 1 sola línea clara */}
+              {/* Comparación clara de Antes vs Después */}
               <View style={styles.compressCompareBanner}>
                 <View>
-                  <Text style={styles.compareSmallLabel}>Peso actual</Text>
+                  <Text style={styles.compareSmallLabel}>Pesa ahora</Text>
                   <Text style={styles.compareOldWeight}>
                     {compressionService.formatBytes(currentFileSize)}
                   </Text>
                 </View>
 
-                <Ionicons name="arrow-forward" size={18} color="#38bdf8" />
+                <Ionicons name="arrow-forward-circle" size={24} color="#38bdf8" />
 
                 <View>
-                  <Text style={styles.compareSmallLabel}>Peso estimado</Text>
+                  <Text style={styles.compareSmallLabel}>Quedará en</Text>
                   <Text style={styles.compareNewWeight}>
                     ~{compressionService.formatBytes(estimatedCompressedBytes)}
                   </Text>
@@ -1488,18 +1341,28 @@ export default function VideoPlayerScreen({
 
                 <View style={styles.savingsBadgeBox}>
                   <Text style={styles.savingsBadgeMain}>
-                    Ahorras ~{compressionService.formatBytes(estimatedSavedBytes)}
+                    ¡Ahorras ~{compressionService.formatBytes(estimatedSavedBytes)}!
                   </Text>
-                  <Text style={styles.savingsBadgeSub}>
-                    100% Resolución ({videoMeta?.resolutionBadge || 'Intacta'})
-                  </Text>
+                  <Text style={styles.savingsBadgeSub}>Sin perder calidad</Text>
                 </View>
               </View>
 
-              {/* 2. Tres tarjetas horizontales compactas para elegir nivel en 1 toque */}
+              {/* 3 Botones grandes y amigables para elegir cuánto bajar */}
               <View style={styles.presetsHorizontalRow}>
                 {VIDEO_QUALITY_PRESETS.map((preset) => {
                   const isSelected = selectedPresetId === preset.id;
+                  const friendlyTitle =
+                    preset.id === 'high'
+                      ? 'Calidad Alta'
+                      : preset.id === 'balanced'
+                      ? 'Recomendado'
+                      : 'Súper Ligero';
+                  const friendlySub =
+                    preset.id === 'high'
+                      ? 'Ahorra 40%'
+                      : preset.id === 'balanced'
+                      ? '⭐ Ahorra 60%'
+                      : 'Ahorra 72%';
                   return (
                     <TouchableOpacity
                       key={preset.id}
@@ -1507,31 +1370,17 @@ export default function VideoPlayerScreen({
                         styles.presetCompactCard,
                         isSelected && {
                           borderColor: preset.color,
-                          backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                          backgroundColor: 'rgba(56, 189, 248, 0.15)',
                         },
                       ]}
                       onPress={() => setSelectedPresetId(preset.id)}
                       activeOpacity={0.85}
                     >
-                      <View style={styles.presetCardTop}>
-                        <Ionicons
-                          name={preset.icon}
-                          size={15}
-                          color={isSelected ? preset.color : '#94a3b8'}
-                        />
-                        <Text
-                          style={[
-                            styles.presetCompactDiscount,
-                            { color: isSelected ? preset.color : '#cbd5e1' },
-                          ]}
-                        >
-                          {preset.id === 'high'
-                            ? '-40%'
-                            : preset.id === 'balanced'
-                            ? '-60%'
-                            : '-72%'}
-                        </Text>
-                      </View>
+                      <Ionicons
+                        name={preset.icon}
+                        size={20}
+                        color={isSelected ? preset.color : '#94a3b8'}
+                      />
                       <Text
                         style={[
                           styles.presetCompactTitle,
@@ -1539,17 +1388,22 @@ export default function VideoPlayerScreen({
                         ]}
                         numberOfLines={1}
                       >
-                        {preset.label}
+                        {friendlyTitle}
                       </Text>
-                      <Text style={styles.presetCompactSub} numberOfLines={1}>
-                        {preset.id === 'balanced' ? '⭐ Recomendado' : '100% Resolución'}
+                      <Text
+                        style={[
+                          styles.presetCompactSub,
+                          isSelected && { color: preset.color, fontWeight: '800' },
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {friendlySub}
                       </Text>
                     </TouchableOpacity>
                   );
                 })}
               </View>
 
-              {/* 3. Opción para aplicar también el recorte si el usuario movió las manijas */}
               {hasActiveTrim && (
                 <TouchableOpacity
                   style={styles.combineTrimSwitchRow}
@@ -1557,23 +1411,22 @@ export default function VideoPlayerScreen({
                 >
                   <Ionicons
                     name={applyTrimOnCompress ? 'checkbox' : 'square-outline'}
-                    size={19}
+                    size={20}
                     color={applyTrimOnCompress ? '#38bdf8' : '#94a3b8'}
                   />
                   <Text style={styles.combineTrimSwitchText}>
-                    Aplicar también el recorte marcado ({formatTime(totalResultDuration, true)})
+                    Aplicar también el recorte que marqué ({formatTime(totalResultDuration)})
                   </Text>
                 </TouchableOpacity>
               )}
 
-              {/* 4. Botones de acción de compresión */}
               <View style={styles.bottomActionButtonsRow}>
                 <TouchableOpacity
                   style={[styles.secondarySaveBtn, busy && { opacity: 0.5 }]}
                   onPress={() => handleExecuteCompress(false)}
                   disabled={busy}
                 >
-                  <Ionicons name="copy-outline" size={17} color="#ffffff" />
+                  <Ionicons name="copy-outline" size={18} color="#ffffff" />
                   <Text style={styles.saveBtnText}>Guardar copia</Text>
                 </TouchableOpacity>
 
@@ -1582,8 +1435,8 @@ export default function VideoPlayerScreen({
                   onPress={() => handleExecuteCompress(true)}
                   disabled={busy}
                 >
-                  <Ionicons name="sparkles" size={17} color="#ffffff" />
-                  <Text style={styles.saveBtnText}>Comprimir original</Text>
+                  <Ionicons name="flash" size={18} color="#ffffff" />
+                  <Text style={styles.saveBtnText}>Bajar peso al original</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1596,7 +1449,7 @@ export default function VideoPlayerScreen({
             <View style={styles.busyCard}>
               <ActivityIndicator size="large" color="#38bdf8" />
               <Text style={styles.busyTitle}>
-                {progressInfo.stage || 'Procesando video...'}
+                {progressInfo.stage || 'Procesando tu video...'}
               </Text>
               <View style={styles.busyBarBg}>
                 <View
@@ -1611,8 +1464,7 @@ export default function VideoPlayerScreen({
                 />
               </View>
               <Text style={styles.busyPctText}>
-                {Math.round(clamp(progressInfo.percent || 0.08, 0.05, 1) * 100)}% • Manteniendo
-                100% resolución original
+                {Math.round(clamp(progressInfo.percent || 0.08, 0.05, 1) * 100)}% completado
               </Text>
             </View>
           </View>
@@ -1625,9 +1477,9 @@ export default function VideoPlayerScreen({
 const styles = StyleSheet.create({
   fullscreenOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: '#06080d',
-    zIndex: 9999,
-    elevation: 9999,
+    backgroundColor: '#000000',
+    zIndex: 100000,
+    elevation: 100000,
   },
   container: {
     flex: 1,
@@ -1637,55 +1489,50 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 10,
     backgroundColor: '#0b0f19',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
-    gap: 8,
+    gap: 10,
   },
-  iconCircleBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#172033',
+  backBtn: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: '#172033',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#293548',
+  },
+  backBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
   },
   headerCenter: {
     flex: 1,
   },
   title: {
     color: '#f8fafc',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
   },
   metaBadgesRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 2,
-  },
-  resBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.14)',
-    paddingHorizontal: 6,
-    paddingVertical: 1.5,
-    borderRadius: 5,
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.35)',
-  },
-  resBadgeText: {
-    color: '#38bdf8',
-    fontSize: 10,
-    fontWeight: '700',
+    marginTop: 3,
   },
   sizeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     backgroundColor: '#111827',
-    paddingHorizontal: 6,
-    paddingVertical: 1.5,
-    borderRadius: 5,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
     borderWidth: 1,
   },
   sizeDot: {
@@ -1694,113 +1541,125 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   sizeBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '800',
+  },
+  resBadge: {
+    backgroundColor: 'rgba(56, 189, 248, 0.14)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  resBadgeText: {
+    color: '#38bdf8',
+    fontSize: 10.5,
+    fontWeight: '700',
   },
   headerRightActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
   },
-  snapActionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
+  iconCircleBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: '#172033',
-    paddingHorizontal: 9,
-    paddingVertical: 7,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#2d3d59',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  snapActionText: {
-    color: '#ffffff',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  videoViewport: {
+  videoArea: {
     flex: 1,
+    width: '100%',
     backgroundColor: '#000000',
+    minHeight: 200,
     justifyContent: 'center',
     alignItems: 'center',
+    position: 'relative',
   },
   video: {
     width: '100%',
     height: '100%',
   },
-  loadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.35)',
-  },
   centerPlayOverlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.18)',
+    backgroundColor: 'rgba(0,0,0,0.22)',
   },
   centerPlayCircle: {
-    width: 66,
-    height: 66,
-    borderRadius: 33,
-    backgroundColor: 'rgba(15, 23, 42, 0.82)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255,255,255,0.55)',
+    width: 74,
+    height: 74,
+    borderRadius: 37,
+    backgroundColor: 'rgba(37, 99, 235, 0.90)',
+    borderWidth: 2,
+    borderColor: '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
+    elevation: 8,
+  },
+  centerPlayHint: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '700',
+    marginTop: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   seekFeedbackPill: {
     position: 'absolute',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(15, 23, 42, 0.88)',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: '#38bdf8',
   },
   seekFeedbackText: {
     color: '#ffffff',
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '800',
   },
   previewBanner: {
     position: 'absolute',
-    bottom: 10,
+    bottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(6, 78, 59, 0.92)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    backgroundColor: 'rgba(6, 78, 59, 0.94)',
+    paddingHorizontal: 14,
+    paddingVertical: 7,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: '#10b981',
   },
   previewBannerText: {
     color: '#ecfdf5',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
   },
   bottomStudioDock: {
     backgroundColor: '#0b0f19',
     borderTopWidth: 1,
     borderTopColor: '#1e293b',
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: 12,
-    gap: 10,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 14,
+    gap: 12,
   },
   modeSelectorBar: {
     flexDirection: 'row',
     backgroundColor: '#111827',
-    borderRadius: 12,
-    padding: 3,
+    borderRadius: 14,
+    padding: 4,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: '#1f2937',
+    gap: 4,
   },
   modeTabBtn: {
     flex: 1,
@@ -1808,8 +1667,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 8,
-    borderRadius: 9,
+    paddingVertical: 10,
+    borderRadius: 10,
   },
   modeTabBtnActivePlay: {
     backgroundColor: '#2563eb',
@@ -1821,8 +1680,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#0284c7',
   },
   modeTabText: {
-    color: '#94a3b8',
-    fontSize: 12,
+    color: '#cbd5e1',
+    fontSize: 13,
     fontWeight: '700',
   },
   modeTabTextActive: {
@@ -1830,16 +1689,15 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   activeDotIndicator: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: '#fde68a',
   },
 
-  /* MODO REPRODUCIR */
+  /* MODO 1: VER VIDEO AMIGABLE */
   playModeContainer: {
-    gap: 10,
-    paddingVertical: 2,
+    gap: 12,
   },
   scrubberRow: {
     flexDirection: 'row',
@@ -1847,22 +1705,22 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   scrubberTimeText: {
-    color: '#cbd5e1',
-    fontSize: 12,
+    color: '#e2e8f0',
+    fontSize: 13,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
-    minWidth: 38,
+    minWidth: 40,
     textAlign: 'center',
   },
   scrubberTrackHitArea: {
     flex: 1,
-    height: 30,
+    height: 34,
     justifyContent: 'center',
     position: 'relative',
   },
   scrubberTrackBg: {
-    height: 5,
-    borderRadius: 3,
+    height: 7,
+    borderRadius: 4,
     backgroundColor: '#1e293b',
     overflow: 'hidden',
   },
@@ -1872,96 +1730,124 @@ const styles = StyleSheet.create({
   },
   scrubberThumb: {
     position: 'absolute',
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    marginLeft: -8,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    marginLeft: -10,
     backgroundColor: '#ffffff',
-    borderWidth: 2,
-    borderColor: '#3b82f6',
+    borderWidth: 3,
+    borderColor: '#2563eb',
     elevation: 4,
   },
-  playerMainControlsRow: {
+  friendlyMainRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 2,
-    paddingVertical: 2,
+    gap: 10,
   },
-  auxControlBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#161f33',
+  friendlySkipBtn: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#172033',
+    paddingVertical: 13,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#26334d',
+    borderColor: '#293548',
   },
-  auxControlBtnActive: {
+  friendlySkipText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  friendlyPlayPauseBtn: {
+    flex: 1.4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#2563eb',
+    paddingVertical: 13,
+    borderRadius: 14,
+    elevation: 4,
+  },
+  friendlyPlayPauseText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  friendlyToolsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  friendlyToolChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: '#131b2e',
+    paddingVertical: 9,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  friendlyToolChipActive: {
     borderColor: '#38bdf8',
     backgroundColor: 'rgba(56, 189, 248, 0.14)',
   },
-  skipControlBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 2,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 18,
-    backgroundColor: '#161f33',
+  friendlyToolChipMuted: {
+    borderColor: '#f87171',
+    backgroundColor: 'rgba(248, 113, 113, 0.14)',
   },
-  skipControlLabel: {
+  friendlyToolChipText: {
     color: '#e2e8f0',
     fontSize: 11,
-    fontWeight: '800',
-  },
-  frameControlBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#131b2e',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  bigPlayPauseBtn: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    backgroundColor: '#2563eb',
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 5,
-  },
-  speedPillText: {
-    color: '#e2e8f0',
-    fontSize: 11.5,
-    fontWeight: '800',
+    fontWeight: '700',
   },
 
-  /* MODO RECORTAR */
+  /* MODO 2: RECORTAR AMIGABLE */
   trimModeContainer: {
-    gap: 9,
+    gap: 10,
   },
   trimSubmodeRow: {
     flexDirection: 'row',
     gap: 6,
   },
   trimSubmodePill: {
-    flex: 1,
+    flex: 1.3,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 5,
-    paddingVertical: 7,
-    borderRadius: 9,
+    paddingVertical: 9,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+    backgroundColor: '#131b2e',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  trimSubmodePillSmall: {
+    flex: 0.75,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingVertical: 9,
+    paddingHorizontal: 6,
+    borderRadius: 10,
     backgroundColor: '#131b2e',
     borderWidth: 1,
     borderColor: '#1e293b',
   },
   trimSubmodePillKeep: {
     borderColor: '#f59e0b',
-    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    backgroundColor: 'rgba(245, 158, 11, 0.18)',
   },
   trimSubmodePillDeleteCenter: {
     borderColor: '#ef4444',
@@ -1969,11 +1855,11 @@ const styles = StyleSheet.create({
   },
   trimSubmodePillMulti: {
     borderColor: '#10b981',
-    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
   },
   trimSubmodeText: {
     color: '#94a3b8',
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
   },
   trimSubmodeTextActive: {
@@ -1987,47 +1873,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: 4,
   },
-  timeTagChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    backgroundColor: '#151d2e',
-    borderWidth: 1,
-    borderColor: '#26334d',
-  },
-  timeTagChipActive: {
-    borderColor: '#f59e0b',
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-  },
-  timeTagLabel: {
+  friendlyTimeInfo: {
     color: '#94a3b8',
-    fontSize: 10,
+    fontSize: 12,
     fontWeight: '600',
   },
-  timeTagVal: {
+  friendlyTimeBold: {
     color: '#ffffff',
-    fontSize: 11,
     fontWeight: '800',
-    fontVariant: ['tabular-nums'],
   },
   resultDurationPill: {
-    paddingHorizontal: 9,
-    paddingVertical: 2.5,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
     borderRadius: 999,
     backgroundColor: '#172033',
+    borderWidth: 1,
+    borderColor: '#f59e0b',
   },
   resultDurationText: {
     color: '#fde68a',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '800',
   },
   filmstripTrack: {
-    height: 48,
+    height: 52,
     marginHorizontal: 8,
-    borderRadius: 9,
+    borderRadius: 10,
     backgroundColor: '#151d2e',
     position: 'relative',
     justifyContent: 'center',
@@ -2036,7 +1909,7 @@ const styles = StyleSheet.create({
   filmstripRow: {
     ...StyleSheet.absoluteFillObject,
     flexDirection: 'row',
-    borderRadius: 9,
+    borderRadius: 10,
     overflow: 'hidden',
   },
   filmstripThumb: {
@@ -2055,7 +1928,7 @@ const styles = StyleSheet.create({
   },
   filmstripTickLine: {
     width: 2,
-    height: 14,
+    height: 16,
     borderRadius: 1,
     backgroundColor: '#334155',
   },
@@ -2074,8 +1947,8 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     backgroundColor: 'rgba(4, 7, 13, 0.72)',
-    borderTopLeftRadius: 9,
-    borderBottomLeftRadius: 9,
+    borderTopLeftRadius: 10,
+    borderBottomLeftRadius: 10,
   },
   dimMaskRight: {
     position: 'absolute',
@@ -2083,15 +1956,15 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     backgroundColor: 'rgba(4, 7, 13, 0.72)',
-    borderTopRightRadius: 9,
-    borderBottomRightRadius: 9,
+    borderTopRightRadius: 10,
+    borderBottomRightRadius: 10,
   },
   selectionBoxKeep: {
     position: 'absolute',
     top: 0,
     bottom: 0,
-    borderTopWidth: 2.5,
-    borderBottomWidth: 2.5,
+    borderTopWidth: 3,
+    borderBottomWidth: 3,
     borderColor: '#f59e0b',
   },
   selectionBoxDeleteCenter: {
@@ -2099,39 +1972,38 @@ const styles = StyleSheet.create({
     top: 0,
     bottom: 0,
     backgroundColor: 'rgba(220, 38, 38, 0.48)',
-    borderTopWidth: 2.5,
-    borderBottomWidth: 2.5,
+    borderTopWidth: 3,
+    borderBottomWidth: 3,
     borderColor: '#ef4444',
     alignItems: 'center',
     justifyContent: 'center',
   },
   deleteCenterLabel: {
     color: '#fecaca',
-    fontSize: 8.5,
+    fontSize: 9,
     fontWeight: '900',
-    letterSpacing: 0.4,
   },
   handleHitBox: {
     position: 'absolute',
     top: -4,
     bottom: -4,
-    width: 24,
-    marginLeft: -12,
+    width: 26,
+    marginLeft: -13,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 20,
   },
   handleBarVisual: {
-    width: 14,
+    width: 16,
     height: '100%',
-    borderRadius: 6,
+    borderRadius: 7,
     alignItems: 'center',
     justifyContent: 'center',
     elevation: 5,
   },
   handleGripInner: {
     width: 3,
-    height: 16,
+    height: 18,
     borderRadius: 1.5,
     backgroundColor: '#0f172a',
   },
@@ -2139,67 +2011,57 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: -6,
     bottom: -6,
-    width: 2.5,
-    marginLeft: -1.25,
+    width: 3,
+    marginLeft: -1.5,
     backgroundColor: '#ffffff',
     alignItems: 'center',
     zIndex: 25,
   },
   playheadTopKnob: {
-    width: 9,
-    height: 9,
-    borderRadius: 4.5,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
     backgroundColor: '#ffffff',
     marginTop: -2,
   },
   quickPrecisionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
   },
   miniPlayToggleBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
+    width: 38,
+    height: 38,
+    borderRadius: 10,
     backgroundColor: '#2563eb',
     alignItems: 'center',
     justifyContent: 'center',
   },
   setPointBtn: {
     flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    gap: 5,
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
     borderWidth: 1,
     borderColor: 'rgba(245, 158, 11, 0.45)',
   },
   setPointBtnText: {
     color: '#fde68a',
-    fontSize: 10,
+    fontSize: 11.5,
     fontWeight: '800',
-  },
-  microStepBtn: {
-    paddingHorizontal: 7,
-    paddingVertical: 7,
-    borderRadius: 8,
-    backgroundColor: '#161f33',
-    borderWidth: 1,
-    borderColor: '#26334d',
-  },
-  microStepText: {
-    color: '#e2e8f0',
-    fontSize: 10,
-    fontWeight: '700',
   },
   previewTrimBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
-    paddingHorizontal: 8,
-    paddingVertical: 7,
-    borderRadius: 8,
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    borderRadius: 10,
     backgroundColor: 'rgba(56, 189, 248, 0.14)',
     borderWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.4)',
@@ -2210,34 +2072,28 @@ const styles = StyleSheet.create({
   },
   previewTrimBtnText: {
     color: '#38bdf8',
-    fontSize: 10,
+    fontSize: 11.5,
     fontWeight: '800',
   },
   multiClipsCompactRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#111827',
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#1e293b',
   },
   addClipCompactBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(16, 185, 129, 0.16)',
-    paddingHorizontal: 9,
-    paddingVertical: 5,
-    borderRadius: 7,
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
     borderWidth: 1,
     borderColor: '#10b981',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 9,
   },
   addClipCompactText: {
-    color: '#6ee7b7',
-    fontSize: 10.5,
+    color: '#d1fae5',
+    fontSize: 11.5,
     fontWeight: '800',
   },
   savedClipsScroll: {
@@ -2246,135 +2102,126 @@ const styles = StyleSheet.create({
   },
   multiEmptyHint: {
     color: '#64748b',
-    fontSize: 10.5,
+    fontSize: 11.5,
   },
   savedClipChip: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    gap: 6,
+    backgroundColor: '#172033',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#10b981',
-    paddingHorizontal: 8,
-    paddingVertical: 3.5,
-    borderRadius: 7,
+    borderColor: '#2d3d59',
   },
   savedClipChipText: {
-    color: '#ecfdf5',
-    fontSize: 10.5,
+    color: '#e2e8f0',
+    fontSize: 11,
     fontWeight: '700',
   },
 
-  /* MODO COMPRIMIR */
+  /* MODO 3: BAJAR PESO AMIGABLE */
   compressModeContainer: {
-    gap: 9,
+    gap: 10,
   },
   compressCompareBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#121a2b',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
+    backgroundColor: '#131b2e',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.28)',
+    borderColor: '#1e293b',
   },
   compareSmallLabel: {
     color: '#94a3b8',
-    fontSize: 9.5,
+    fontSize: 11,
     fontWeight: '600',
   },
   compareOldWeight: {
     color: '#f8fafc',
-    fontSize: 12.5,
+    fontSize: 14,
     fontWeight: '800',
   },
   compareNewWeight: {
-    color: '#38bdf8',
-    fontSize: 12.5,
+    color: '#34d399',
+    fontSize: 15,
     fontWeight: '900',
   },
   savingsBadgeBox: {
-    alignItems: 'flex-end',
     backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 9,
     borderWidth: 1,
     borderColor: 'rgba(16, 185, 129, 0.35)',
+    alignItems: 'flex-end',
   },
   savingsBadgeMain: {
     color: '#34d399',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '800',
   },
   savingsBadgeSub: {
     color: '#94a3b8',
-    fontSize: 9,
-    fontWeight: '700',
+    fontSize: 10,
+    fontWeight: '600',
   },
   presetsHorizontalRow: {
     flexDirection: 'row',
-    gap: 7,
+    gap: 8,
   },
   presetCompactCard: {
     flex: 1,
-    backgroundColor: '#121a2b',
-    borderRadius: 10,
+    backgroundColor: '#131b2e',
+    paddingVertical: 10,
     paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderWidth: 1,
+    borderRadius: 12,
+    borderWidth: 1.5,
     borderColor: '#1e293b',
-    gap: 2,
-  },
-  presetCardTop: {
-    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  presetCompactDiscount: {
-    fontSize: 12,
-    fontWeight: '900',
+    gap: 3,
   },
   presetCompactTitle: {
     color: '#cbd5e1',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '800',
     marginTop: 2,
   },
   presetCompactSub: {
     color: '#64748b',
-    fontSize: 9.5,
-    fontWeight: '600',
+    fontSize: 11,
+    fontWeight: '700',
   },
   combineTrimSwitchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
-    paddingVertical: 2,
+    gap: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
   },
   combineTrimSwitchText: {
     color: '#cbd5e1',
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '600',
   },
-
-  /* BOTONES DE ACCIÓN FINALES */
   bottomActionButtonsRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
   resetIconBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#161f33',
+    width: 42,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#172033',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#26334d',
+    borderColor: '#293548',
   },
   secondarySaveBtn: {
     flex: 1,
@@ -2382,69 +2229,67 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: '#1b253b',
-    paddingVertical: 11,
-    borderRadius: 10,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: '#1e293b',
     borderWidth: 1,
     borderColor: '#334155',
   },
   primaryTrimSaveBtn: {
-    flex: 1.3,
+    flex: 1.25,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    height: 44,
+    borderRadius: 12,
     backgroundColor: '#d97706',
-    paddingVertical: 11,
-    borderRadius: 10,
   },
   primaryCompressSaveBtn: {
-    flex: 1.3,
+    flex: 1.25,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    height: 44,
+    borderRadius: 12,
     backgroundColor: '#0284c7',
-    paddingVertical: 11,
-    borderRadius: 10,
   },
   saveBtnText: {
     color: '#ffffff',
-    fontSize: 12.5,
+    fontSize: 13,
     fontWeight: '800',
   },
-
-  /* OVERLAY DE PROCESAMIENTO */
   busyOverlay: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(6, 8, 13, 0.86)',
+    backgroundColor: 'rgba(4, 7, 13, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
-    zIndex: 999,
+    zIndex: 200,
   },
   busyCard: {
     width: '100%',
-    maxWidth: 330,
+    maxWidth: 320,
     backgroundColor: '#111827',
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 18,
+    padding: 22,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#1e293b',
-    gap: 10,
+    gap: 12,
   },
   busyTitle: {
     color: '#f8fafc',
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '800',
     textAlign: 'center',
   },
   busyBarBg: {
     width: '100%',
     height: 8,
-    borderRadius: 4,
     backgroundColor: '#1e293b',
+    borderRadius: 4,
     overflow: 'hidden',
   },
   busyBarFill: {
@@ -2453,8 +2298,7 @@ const styles = StyleSheet.create({
   },
   busyPctText: {
     color: '#94a3b8',
-    fontSize: 11,
-    fontWeight: '600',
-    textAlign: 'center',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });

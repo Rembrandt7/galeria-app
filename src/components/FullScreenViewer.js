@@ -663,30 +663,33 @@ export default function FullScreenViewer({
                   },
                 ]}
               >
-                {currentAsset.uri ? (
+                {currentAsset.uri && (!isVideo || !playerAsset) ? (
                   <Image
                     source={{ uri: currentAsset.uri }}
                     style={styles.fullImage}
                     contentFit="contain"
-                    priority="high"
+                    priority={isVideo ? 'low' : 'high'}
                     transition={0}
                     recyclingKey={`${currentAsset.id}_${imageRev}`}
                     cachePolicy={imageRev > 0 ? 'none' : 'memory-disk'}
                   />
                 ) : null}
 
-                {/* Botón central de reproducción si es un video */}
-                {isVideo && (
+                {/* Botón central amigable de reproducción si es un video */}
+                {isVideo && !playerAsset && (
                   <TouchableOpacity
                     style={styles.centerVideoOverlay}
-                    activeOpacity={0.8}
+                    activeOpacity={0.85}
                     onPress={() => {
                       setOpenedDirectlyAsVideo(false);
                       setPlayerInitialMode('play');
                       setPlayerAsset(currentAsset);
                     }}
                   >
-                    <Ionicons name="play-circle" size={72} color="rgba(255,255,255,0.9)" />
+                    <View style={styles.friendlyVideoPlayCard}>
+                      <Ionicons name="play-circle" size={68} color="#ffffff" />
+                      <Text style={styles.friendlyVideoPlayTitle}>Reproducir Video</Text>
+                    </View>
                   </TouchableOpacity>
                 )}
               </Animated.View>
@@ -1107,6 +1110,22 @@ const styles = StyleSheet.create({
     position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  friendlyVideoPlayCard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.82)',
+    paddingHorizontal: 22,
+    paddingVertical: 14,
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: 'rgba(56, 189, 248, 0.5)',
+    gap: 6,
+  },
+  friendlyVideoPlayTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
   },
   arrowButton: {
     position: 'absolute',
