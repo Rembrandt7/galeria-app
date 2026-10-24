@@ -1,8 +1,9 @@
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
 import * as LegacyFS from 'expo-file-system/legacy';
 import { Alert, NativeModules } from 'react-native';
+import { folderService } from './folderService';
 
 const { VideoEngineModule } = NativeModules;
 
@@ -45,24 +46,49 @@ function resolveMimeAndExt(uri, filename, mediaType) {
 }
 
 export const mediaService = {
-  // Solicitar o verificar permisos
+  // Solicitar o verificar permisos (especificando ['photo', 'video'] para evitar bloqueo por audio en Android 13+)
   async checkAndRequestPermissions() {
-    const { status: existingStatus, canAskAgain } = await MediaLibrary.getPermissionsAsync();
-    if (existingStatus === 'granted') {
-      return true;
-    }
+    try {
+      const { status: existingStatus, canAskAgain } = await MediaLibrary.getPermissionsAsync(
+        false,
+        ['photo', 'video']
+      );
+      if (existingStatus === 'granted') {
+        return true;
+      }
 
-    if (canAskAgain) {
-      const { status } = await MediaLibrary.requestPermissionsAsync();
-      return status === 'granted';
+      if (canAskAgain) {
+        const { status } = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
+        return status === 'granted';
+      }
+    } catch (_e) {
+      try {
+        const { status } = await MediaLibrary.requestPermissionsAsync();
+        return status === 'granted';
+      } catch (_e2) {}
     }
-
     return false;
   },
 
-  // Obtener fotos y videos paginados
-  async getAssets({ first = 60, after = null, albumId = null, mediaTypes = null }) {
+  // Obtener fotos y videos paginados (con respaldo automático desde carpetas del teléfono si MediaStore devuelve vacío)
+  async getAssets({ first = 60, after = null, albumId = null, albumUri = null, mediaTypes = null }) {
     try {
+      // Si el álbum proviene de una carpeta física o SAF (albumUri)
+      if (albumUri) {
+        const folderItems = await folderService.loadFolderAssets(albumUri);
+        const wantPhoto = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.photo) || mediaTypes.includes('photo');
+        const wantVideo = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.video) || mediaTypes.includes('video');
+        const filtered = (folderItems || []).filter(
+          (a) => (a.mediaType === 'photo' && wantPhoto) || (a.mediaType === 'video' && wantVideo)
+        );
+        return {
+          assets: filtered,
+          endCursor: null,
+          hasNextPage: false,
+          totalCount: filtered.length,
+        };
+      }
+
       const options = {
         first,
         sortBy: [MediaLibrary.SortBy.creationTime],
@@ -77,51 +103,119 @@ export const mediaService = {
         options.album = albumId;
       }
 
-      const result = await MediaLibrary.getAssetsAsync(options);
+      let result = { assets: [], endCursor: null, hasNextPage: false };
+      try {
+        result = await MediaLibrary.getAssetsAsync(options);
+      } catch (_mErr) {}
+
+      // Si estamos en "Todas las fotos" (!albumId) y MediaStore no devolvió nada o muy poco, combinar con las carpetas guardadas/comunes
+      if (!albumId && !after && (!result.assets || result.assets.length === 0)) {
+        const saved = await folderService.getSavedFolders();
+        const roots =
+          saved && saved.length > 0
+            ? saved.map((f) => f.uri)
+            : [
+                'file:///storage/emulated/0/DCIM',
+                'file:///storage/emulated/0/Pictures',
+                'file:///storage/emulated/0/Download',
+              ];
+        const combined = [];
+        const seen = new Set();
+        const wantPhoto = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.photo) || mediaTypes.includes('photo');
+        const wantVideo = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.video) || mediaTypes.includes('video');
+
+        for (const rUri of roots.slice(0, 6)) {
+          try {
+            const list = await folderService.loadFolderAssets(rUri);
+            for (const item of list || []) {
+              if (seen.has(item.uri)) continue;
+              if ((item.mediaType === 'photo' && wantPhoto) || (item.mediaType === 'video' && wantVideo)) {
+                seen.add(item.uri);
+                combined.push(item);
+              }
+            }
+          } catch (_e) {}
+        }
+        return {
+          assets: combined,
+          endCursor: null,
+          hasNextPage: false,
+          totalCount: combined.length,
+        };
+      }
+
       return result;
     } catch (error) {
       console.error('Error al obtener archivos multimedia:', error);
-      throw error;
+      return { assets: [], endCursor: null, hasNextPage: false };
     }
   },
 
-  // Obtener álbumes del teléfono con vista previa
+  // Obtener álbumes del teléfono con vista previa (combinando MediaLibrary + Carpetas guardadas y detectadas)
   async getAlbums() {
     try {
-      const albums = await MediaLibrary.getAlbumsAsync({
-        includeSmartAlbums: true,
-      });
+      let mediaAlbums = [];
+      try {
+        const albums = await MediaLibrary.getAlbumsAsync({
+          includeSmartAlbums: true,
+        });
+        const activeAlbums = (albums || []).filter((a) => a.assetCount > 0);
+        mediaAlbums = await Promise.all(
+          activeAlbums.map(async (album) => {
+            try {
+              const preview = await MediaLibrary.getAssetsAsync({
+                first: 1,
+                album: album.id,
+                sortBy: [MediaLibrary.SortBy.creationTime],
+              });
+              const coverUri =
+                preview.assets && preview.assets.length > 0 ? preview.assets[0].uri : null;
+              return {
+                ...album,
+                coverUri,
+              };
+            } catch (e) {
+              return {
+                ...album,
+                coverUri: null,
+              };
+            }
+          })
+        );
+      } catch (_mErr) {}
 
-      // Filtramos álbumes que tengan al menos 1 elemento
-      const activeAlbums = albums.filter((a) => a.assetCount > 0);
+      // Combinar siempre con las carpetas guardadas por el usuario y carpetas detectadas en el teléfono
+      const saved = await folderService.getSavedFolders();
+      const suggested =
+        mediaAlbums.length === 0 ? await folderService.scanSuggestedFolders(saved) : [];
 
-      // Traer la portada (primera foto) de cada álbum
-      const albumsWithCovers = await Promise.all(
-        activeAlbums.map(async (album) => {
-          try {
-            const preview = await MediaLibrary.getAssetsAsync({
-              first: 1,
-              album: album.id,
-              sortBy: [MediaLibrary.SortBy.creationTime],
-            });
-            const coverUri = preview.assets && preview.assets.length > 0 ? preview.assets[0].uri : null;
-            return {
-              ...album,
-              coverUri,
-            };
-          } catch (e) {
-            return {
-              ...album,
-              coverUri: null,
-            };
-          }
-        })
-      );
+      const existingTitles = new Set(mediaAlbums.map((a) => (a.title || '').toLowerCase()));
+      const extraAlbums = [];
 
-      return albumsWithCovers;
+      for (const f of [...(saved || []), ...(suggested || [])]) {
+        const title = f.name || folderService.folderName(f.uri);
+        const key = `${title.toLowerCase()}__${f.uri}`;
+        if (existingTitles.has(key)) continue;
+        existingTitles.add(key);
+
+        const info = await folderService.getFolderCoverAndCount(f.uri, 0);
+        const total = f.totalMedia || info.count || 0;
+        if (total > 0 || saved.some((s) => s.uri === f.uri)) {
+          extraAlbums.push({
+            id: `folder_${f.uri}`,
+            title,
+            uri: f.uri,
+            assetCount: total,
+            coverUri: info.coverUri,
+            isFolderAlbum: true,
+          });
+        }
+      }
+
+      return [...extraAlbums, ...mediaAlbums];
     } catch (error) {
       console.error('Error al obtener álbumes:', error);
-      throw error;
+      return [];
     }
   },
 

@@ -2,7 +2,7 @@ import { NativeModules } from 'react-native';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { File, Paths } from 'expo-file-system';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 
 /**
  * Extrae rutas físicas file:// a partir de cualquier URI (incluyendo URIs SAF content:// de Android)

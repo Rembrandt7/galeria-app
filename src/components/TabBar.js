@@ -4,13 +4,23 @@ import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 
 export default function TabBar({ activeTab, onSelectTab, favoritesCount = 0 }) {
-  // Orden requerido: Mi carpeta -> Álbumes -> Fotos -> Favoritos
+  // Orden requerido: Mi carpeta -> Álbumes -> Fotos -> (Corazón rojo + contador solo si hay favoritos)
   const tabs = [
     { key: 'folder', label: 'Mi carpeta', icon: 'folder-open-outline', iconActive: 'folder-open' },
     { key: 'albums', label: 'Álbumes', icon: 'albums-outline', iconActive: 'albums' },
     { key: 'photos', label: 'Fotos', icon: 'images-outline', iconActive: 'images' },
-    { key: 'favorites', label: 'Favoritos', icon: 'heart-outline', iconActive: 'heart', badge: favoritesCount },
   ];
+
+  if (favoritesCount > 0 || activeTab === 'favorites') {
+    tabs.push({
+      key: 'favorites',
+      label: '',
+      icon: 'heart',
+      iconActive: 'heart',
+      badge: favoritesCount,
+      isHeartOnly: true,
+    });
+  }
 
   return (
     <View style={styles.container}>
@@ -21,6 +31,37 @@ export default function TabBar({ activeTab, onSelectTab, favoritesCount = 0 }) {
       >
         {tabs.map((tab) => {
           const isActive = activeTab === tab.key;
+          if (tab.isHeartOnly) {
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={[
+                  styles.tabPill,
+                  styles.heartOnlyPill,
+                  isActive && styles.heartOnlyPillActive,
+                ]}
+                onPress={() => onSelectTab(tab.key)}
+                activeOpacity={0.75}
+              >
+                <Ionicons
+                  name="heart"
+                  size={17}
+                  color={isActive ? '#ffffff' : '#ef4444'}
+                />
+                {tab.badge > 0 && (
+                  <Text
+                    style={[
+                      styles.heartCountText,
+                      isActive && { color: '#ffffff' },
+                    ]}
+                  >
+                    {tab.badge > 99 ? '99+' : tab.badge}
+                  </Text>
+                )}
+              </TouchableOpacity>
+            );
+          }
+
           return (
             <TouchableOpacity
               key={tab.key}
@@ -33,16 +74,11 @@ export default function TabBar({ activeTab, onSelectTab, favoritesCount = 0 }) {
                 size={16}
                 color={isActive ? '#ffffff' : theme.colors.textSecondary}
               />
-              <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
-                {tab.label}
-              </Text>
-              {tab.badge && tab.badge > 0 ? (
-                <View style={[styles.badge, isActive && styles.badgeActive]}>
-                  <Text style={styles.badgeText}>
-                    {tab.badge > 99 ? '99+' : tab.badge}
-                  </Text>
-                </View>
-              ) : null}
+              {Boolean(tab.label) && (
+                <Text style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
+                  {tab.label}
+                </Text>
+              )}
             </TouchableOpacity>
           );
         })}
@@ -75,6 +111,23 @@ const styles = StyleSheet.create({
   },
   tabPillActive: {
     backgroundColor: theme.colors.primary,
+  },
+  heartOnlyPill: {
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.45)',
+    backgroundColor: 'rgba(239, 68, 68, 0.14)',
+    gap: 5,
+  },
+  heartOnlyPillActive: {
+    backgroundColor: '#ef4444',
+    borderColor: '#ef4444',
+  },
+  heartCountText: {
+    color: '#ef4444',
+    fontSize: 12,
+    fontWeight: '800',
   },
   tabLabel: {
     fontSize: 13,

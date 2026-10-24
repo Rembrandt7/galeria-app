@@ -14,7 +14,7 @@ import {
   BackHandler,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { Ionicons } from '@expo/vector-icons';
 
 import { theme } from './src/constants/theme';
@@ -217,6 +217,7 @@ export default function App() {
         first: 72,
         after: cursor,
         albumId: album ? album.id : null,
+        albumUri: album ? album.uri || null : null,
         mediaTypes: getMediaTypes(filter),
       });
 
@@ -243,12 +244,14 @@ export default function App() {
     }
   };
 
-  // Cambio de pestaña con carga perezosa de álbumes
+  // Cambio de pestaña con carga de álbumes o fotos
   const handleSelectTab = (tab) => {
     setSelectedAlbum(null);
     setActiveTab(tab);
-    if (tab === 'albums' && albums.length === 0) {
+    if (tab === 'albums') {
       loadAlbums();
+    } else if (tab === 'photos' && assets.length === 0) {
+      loadAssets({ reset: true, album: null, filter: filterType });
     }
   };
 
@@ -435,7 +438,7 @@ export default function App() {
       }
       if (filterType !== 'all') {
         setFilterType('all');
-        loadMedia(true, selectedAlbum?.id || null, 'all');
+        loadAssets({ reset: true, album: selectedAlbum, filter: 'all' });
         return true;
       }
       if (activeTab !== 'folder') {
@@ -607,6 +610,9 @@ export default function App() {
               onToggleHideFolder={handleToggleHideFolder}
               showAllFolders={showAllFolders}
               onToggleShowAllFolders={handleToggleShowAllFolders}
+              onPickNewFolder={handlePickFolder}
+              onAddMultipleFolders={handleAddMultipleFolders}
+              savedFolders={savedFolders}
             />
           ) : (
             <PhotoGrid

@@ -1,7 +1,7 @@
 import { NativeModules, DeviceEventEmitter } from 'react-native';
 import { File, Paths } from 'expo-file-system';
 import * as LegacyFS from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import { trim as fallbackTrimSingle } from 'react-native-video-trim';
 import { compressionService } from './compressionService';
 

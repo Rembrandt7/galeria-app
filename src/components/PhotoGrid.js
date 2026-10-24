@@ -20,9 +20,9 @@ import { mediaService } from '../services/mediaService';
 import { folderService } from '../services/folderService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const NUM_COLUMNS = 3;
+const NUM_COLUMNS = 4;
 const ITEM_MARGIN = 1;
-// Screen width minus spacing divided by 3
+// Screen width minus spacing divided by 4
 const ITEM_SIZE = Math.floor((SCREEN_WIDTH - ITEM_MARGIN * (NUM_COLUMNS * 2)) / NUM_COLUMNS);
 
 export default function PhotoGrid({
@@ -90,7 +90,7 @@ export default function PhotoGrid({
       if (Math.abs(delta) > 55) {
         const step = delta > 0 ? -1 : 1;
         setNumColumns((prev) => {
-          const next = Math.max(1, Math.min(4, prev + step));
+          const next = Math.max(1, Math.min(6, prev + step));
           if (next !== prev) {
             pinchRef.current.startDist = dist;
             pinchRef.current.startCols = next;
@@ -409,19 +409,9 @@ export default function PhotoGrid({
         assets.length > 0 && (
           <View style={styles.toolsBar}>
             <Text style={styles.toolsInfoText} numberOfLines={1}>
-              {assets.length} archivos · Pellizca con 2 dedos para zoom
+              {assets.length} archivos · Pellizca con 2 dedos para zoom ({numColumns} col)
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <TouchableOpacity
-                style={styles.compressBatchBtn}
-                onPress={cycleColumns}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="expand-outline" size={13} color={theme.colors.textSecondary} />
-                <Text style={[styles.compressBatchBtnText, { color: theme.colors.textSecondary }]}>
-                  {numColumns} col
-                </Text>
-              </TouchableOpacity>
               {photoAssets.length > 0 && photoReductionSummary.canCompress && (
                 <TouchableOpacity
                   style={[

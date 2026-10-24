@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Modal,
   View,
   Text,
   StyleSheet,
@@ -9,10 +8,11 @@ import {
   ActivityIndicator,
   StatusBar,
   SafeAreaView,
-  Dimensions,
+  BackHandler,
 } from 'react-native';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
+import * as FileSystem from 'expo-file-system/legacy';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
@@ -44,16 +44,40 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
   stealthLockedRef.current = stealthLocked;
   const [stealthHintVisible, setStealthHintVisible] = useState(false);
 
+  // Modo grabación en segundo plano mientras usas el resto de la app
+  const [isMinimized, setIsMinimized] = useState(false);
+  const isMinimizedRef = useRef(false);
+  isMinimizedRef.current = isMinimized;
+
   const timerRef = useRef(null);
   const lastTapRef = useRef(0);
 
   // Solicitar permisos al abrir si no están concedidos
   useEffect(() => {
     if (visible) {
+      setIsMinimized(false);
       if (!cameraPermission?.granted) requestCameraPermission();
       if (!micPermission?.granted) requestMicPermission();
     }
   }, [visible, cameraPermission, micPermission]);
+
+  // Botón físico Atrás de Android: si está grabando, minimiza a 2do plano en lugar de cortar la grabación
+  useEffect(() => {
+    if (!visible || isMinimized) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (stealthLocked) {
+        setStealthLocked(false);
+        return true;
+      }
+      if (isRecording) {
+        setIsMinimized(true);
+        return true;
+      }
+      onClose();
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, isMinimized, stealthLocked, isRecording, onClose]);
 
   // Manejar cronómetro y corte automático a los 10 minutos
   useEffect(() => {
@@ -79,9 +103,9 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     };
   }, [isRecording]);
 
-  // Manejar KeepAwake cuando entra a pantalla bloqueada
+  // Manejar KeepAwake cuando está grabando o en pantalla bloqueada
   useEffect(() => {
-    if (stealthLocked) {
+    if (stealthLocked || isRecording) {
       activateKeepAwakeAsync('stealth-recording').catch(() => {});
     } else {
       deactivateKeepAwake('stealth-recording').catch(() => {});
@@ -89,27 +113,47 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     return () => {
       deactivateKeepAwake('stealth-recording').catch(() => {});
     };
-  }, [stealthLocked]);
+  }, [stealthLocked, isRecording]);
 
+  const saveMediaFileToGallery = async (fileUri, prefix = 'IMG', ext = 'jpg') => {
+    let savedPhys = false;
+    try {
+      const targetDir = 'file:///storage/emulated/0/DCIM/Grabaciones';
+      await FileSystem.makeDirectoryAsync(targetDir, { intermediates: true }).catch(() => {});
+      const destUri = `${targetDir}/${prefix}_${Date.now()}.${ext}`;
+      await FileSystem.copyAsync({ from: fileUri, to: destUri });
+      savedPhys = true;
+    } catch (_ePhys) {}
+
+    try {
+      const asset = await MediaLibrary.createAssetAsync(fileUri);
+      let album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
+      if (!album) {
+        await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
+      } else {
+        await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+      }
+    } catch (err) {
+      try {
+        await MediaLibrary.saveToLibraryAsync(fileUri);
+      } catch (_e2) {
+        if (!savedPhys) throw err;
+      }
+    }
+  };
+
+  // Tomar foto 100% silenciosa (sin sonido de obturador ni destello de pantalla)
   const handleTakePhoto = async () => {
     if (!cameraRef.current || saving) return;
     setSaving(true);
     try {
-      const photo = await cameraRef.current.takePictureAsync({ quality: 0.92 });
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.92,
+        shutterSound: false,
+      });
       if (photo?.uri) {
-        try {
-          const asset = await MediaLibrary.createAssetAsync(photo.uri);
-          let album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
-          if (!album) {
-            await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
-          } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-          }
-        } catch (err) {
-          await MediaLibrary.saveToLibraryAsync(photo.uri);
-        }
+        await saveMediaFileToGallery(photo.uri, 'IMG', 'jpg');
         if (onVideoSaved) onVideoSaved();
-        Alert.alert('Foto guardada', `La fotografía se guardó en "${ALBUM_NAME}".`);
       }
     } catch (e) {
       Alert.alert('Error', 'No se pudo tomar la fotografía.');
@@ -127,45 +171,33 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
 
       const video = await videoPromise;
       const wasStealth = stealthLockedRef.current;
+      const wasMinimized = isMinimizedRef.current;
       if (video?.uri) {
         setSaving(true);
         try {
-          // Guardar directamente en el álbum "Grabaciones"
-          const asset = await MediaLibrary.createAssetAsync(video.uri);
-          let album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
-          if (!album) {
-            await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
-          } else {
-            await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-          }
-
-          if (!wasStealth) {
+          await saveMediaFileToGallery(video.uri, 'VID', 'mp4');
+          if (!wasStealth && !wasMinimized) {
             Alert.alert(
               'Grabación guardada',
-              `El video se guardó en la carpeta "${ALBUM_NAME}". Puedes encontrarlo en la pestaña Álbumes de esta app o en tu galería.`,
+              `El video se guardó en "${ALBUM_NAME}".`,
               [{ text: 'Entendido' }]
             );
           }
           if (onVideoSaved) onVideoSaved();
         } catch (saveErr) {
-          // Fallback a galería general si falla el álbum
-          try {
-            await MediaLibrary.saveToLibraryAsync(video.uri);
-            if (!wasStealth) {
-              Alert.alert('Grabación guardada', 'El video se guardó en la galería.');
-            }
-            if (onVideoSaved) onVideoSaved();
-          } catch (e2) {
-            if (!wasStealth) {
-              Alert.alert('Aviso', 'No se pudo guardar el archivo de video.');
-            }
+          if (!wasStealth) {
+            Alert.alert('Aviso', 'No se pudo guardar el archivo de video.');
           }
         }
         setSaving(false);
       }
+      if (wasMinimized) {
+        setIsMinimized(false);
+        onClose();
+      }
     } catch (e) {
       console.error('Error al grabar video:', e);
-      if (!stealthLockedRef.current) {
+      if (!stealthLockedRef.current && !isMinimizedRef.current) {
         Alert.alert('Error', 'No se pudo procesar la grabación.');
       }
     } finally {
@@ -211,9 +243,12 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     if (isRecording) {
       Alert.alert(
         'Grabación en curso',
-        '¿Deseas detener la grabación y salir?',
+        '¿Quieres seguir grabando en segundo plano mientras usas la app o detener la grabación?',
         [
-          { text: 'Continuar grabando', style: 'cancel' },
+          {
+            text: 'Seguir en 2do plano',
+            onPress: () => setIsMinimized(true),
+          },
           {
             text: 'Detener y guardar',
             style: 'destructive',
@@ -222,6 +257,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
               onClose();
             },
           },
+          { text: 'Cancelar', style: 'cancel' },
         ]
       );
     } else {
@@ -229,18 +265,26 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     }
   };
 
-  if (!visible) return null;
+  if (!visible && !isRecording) return null;
 
   const permissionsGranted = cameraPermission?.granted && micPermission?.granted;
 
   return (
-    <Modal visible={visible} animationType="fade" onRequestClose={handleClose} statusBarTranslucent>
-      <StatusBar
-        barStyle="light-content"
-        backgroundColor="#000000"
-        hidden={stealthLocked}
-      />
-      <SafeAreaView style={styles.container}>
+    <View
+      style={isMinimized ? styles.minimizedRootOverlay : styles.fullScreenOverlay}
+      pointerEvents={isMinimized ? 'box-none' : 'auto'}
+    >
+      {!isMinimized && (
+        <StatusBar
+          barStyle="light-content"
+          backgroundColor="#000000"
+          hidden={stealthLocked}
+        />
+      )}
+      <SafeAreaView
+        style={isMinimized ? styles.minimizedSafeWrap : styles.container}
+        pointerEvents={isMinimized ? 'box-none' : 'auto'}
+      >
         {!permissionsGranted ? (
           <View style={styles.permissionBox}>
             <Ionicons name="videocam-outline" size={64} color={theme.colors.primary} />
@@ -263,18 +307,53 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={styles.cameraWrapper}>
-            {/* Vista nativa de la cámara */}
+          <View
+            style={isMinimized ? styles.minimizedCameraContainer : styles.cameraWrapper}
+            pointerEvents={isMinimized ? 'box-none' : 'auto'}
+          >
+            {/* Vista nativa de la cámara (permanece montada 1x1 cuando está en 2do plano para no cortar la grabación) */}
             <CameraView
               ref={cameraRef}
-              style={StyleSheet.absoluteFillObject}
+              style={isMinimized ? styles.hiddenTinyCamera : StyleSheet.absoluteFillObject}
               facing={facing}
               mode={cameraMode}
               enableTorch={torchOn}
+              animateShutter={false}
+              mute={cameraMode === 'picture'}
             />
 
+            {/* PÍLDORA FLOTANTE CUANDO ESTÁ GRABANDO EN SEGUNDO PLANO */}
+            {isMinimized && (
+              <View style={styles.bgRecordingFloatingPill}>
+                <TouchableOpacity
+                  style={styles.bgRecLeftInfo}
+                  onPress={() => setIsMinimized(false)}
+                  activeOpacity={0.8}
+                >
+                  <View style={styles.recDot} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.bgRecTitle} numberOfLines={1}>
+                      Grabando en 2do plano ({formatTimer(elapsed)})
+                    </Text>
+                    <Text style={styles.bgRecSub} numberOfLines={1}>
+                      Toca aquí para abrir la cámara
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.bgRecStopBtn}
+                  onPress={handleStopRecording}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="stop" size={14} color="#ffffff" />
+                  <Text style={styles.bgRecStopText}>Detener</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* PANTALLA BLOQUEADA TOTAL (100% NEGRA, SIMULA TELÉFONO APAGADO) */}
-            {stealthLocked && (
+            {!isMinimized && stealthLocked && (
               <TouchableOpacity
                 style={styles.fullBlackScreen}
                 activeOpacity={1}
@@ -295,7 +374,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
             )}
 
             {/* Controles de la cámara */}
-            {!stealthLocked && (
+            {!isMinimized && !stealthLocked && (
               <View style={styles.overlayControls} pointerEvents="box-none">
                 {/* Barra Superior */}
                 <View style={styles.topRow}>
@@ -317,8 +396,10 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                     </View>
                   ) : (
                     <View style={styles.limitBadge}>
-                      <Ionicons name="folder-outline" size={13} color="#ffffff" />
-                      <Text style={styles.limitText}>Guarda en "{ALBUM_NAME}"</Text>
+                      <Ionicons name="volume-mute" size={13} color="#38bdf8" />
+                      <Text style={styles.limitText}>
+                        {cameraMode === 'picture' ? 'Foto silenciosa · Sin ruido' : `Guarda en "${ALBUM_NAME}"`}
+                      </Text>
                     </View>
                   )}
 
@@ -347,9 +428,20 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                   </View>
                 </View>
 
-                {/* Botón para entrar al Modo Pantalla Bloqueada / Oculta durante la grabación */}
+                {/* Botones de 2do plano y Pantalla Bloqueada durante la grabación */}
                 {isRecording && (
                   <View style={styles.stealthBtnContainer}>
+                    <TouchableOpacity
+                      style={[styles.stealthToggleBtn, { borderColor: '#38bdf8', backgroundColor: 'rgba(15, 23, 42, 0.9)' }]}
+                      onPress={() => setIsMinimized(true)}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="albums-outline" size={18} color="#38bdf8" />
+                      <Text style={[styles.stealthToggleText, { color: '#38bdf8' }]}>
+                        Grabar en 2do plano (usar la app mientras graba)
+                      </Text>
+                    </TouchableOpacity>
+
                     <TouchableOpacity
                       style={styles.stealthToggleBtn}
                       onPress={() => setStealthLocked(true)}
@@ -357,12 +449,9 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                     >
                       <Ionicons name="phone-portrait-outline" size={18} color="#ffffff" />
                       <Text style={styles.stealthToggleText}>
-                        Bloquear pantalla (grabar sin que se vea nada)
+                        Bloquear pantalla (100% negra)
                       </Text>
                     </TouchableOpacity>
-                    <Text style={styles.stealthInfoText}>
-                      La pantalla se pondrá 100% negra como si estuviera apagada.
-                    </Text>
                   </View>
                 )}
 
@@ -378,7 +467,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                         onPress={() => setCameraMode('picture')}
                       >
                         <Ionicons name="camera-outline" size={15} color="#fff" />
-                        <Text style={styles.modePillText}>Foto</Text>
+                        <Text style={styles.modePillText}>Foto (Sin ruido)</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[
@@ -388,7 +477,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
                         onPress={() => setCameraMode('video')}
                       >
                         <Ionicons name="videocam-outline" size={15} color="#fff" />
-                        <Text style={styles.modePillText}>Video (Discreto)</Text>
+                        <Text style={styles.modePillText}>Video (2do plano)</Text>
                       </TouchableOpacity>
                     </View>
                   )}
@@ -433,11 +522,84 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
           </View>
         )}
       </SafeAreaView>
-    </Modal>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  fullScreenOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000000',
+    zIndex: 9999,
+    elevation: 9999,
+  },
+  minimizedRootOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+    justifyContent: 'flex-end',
+  },
+  minimizedSafeWrap: {
+    width: '100%',
+    justifyContent: 'flex-end',
+  },
+  minimizedCameraContainer: {
+    width: '100%',
+    paddingHorizontal: 14,
+    paddingBottom: 16,
+  },
+  hiddenTinyCamera: {
+    position: 'absolute',
+    width: 1,
+    height: 1,
+    opacity: 0.01,
+    right: 0,
+    bottom: 0,
+  },
+  bgRecordingFloatingPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(15, 23, 42, 0.96)',
+    borderWidth: 1.5,
+    borderColor: '#ef4444',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 10,
+    elevation: 14,
+  },
+  bgRecLeftInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  bgRecTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  bgRecSub: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  bgRecStopBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#ef4444',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  bgRecStopText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
   container: {
     flex: 1,
     backgroundColor: '#000000',

@@ -8,7 +8,17 @@ const FOLDER_KEY = '@galeria_selected_folder';
 const FOLDERS_LIST_KEY = '@galeria_saved_folders_list';
 const MAX_DEPTH = 4;
 
+export const DOWNLOADED_VIDEOS_FOLDER_NAME = 'Videos Descargados';
+export const DOWNLOADED_VIDEOS_FOLDER_URI = 'file:///storage/emulated/0/Movies/Videos Descargados';
+
 export const COMMON_SYSTEM_FOLDERS = [
+  {
+    id: 'videos_descargados',
+    name: 'Videos Descargados',
+    uri: DOWNLOADED_VIDEOS_FOLDER_URI,
+    icon: 'cloud-download-outline',
+    description: 'Carpeta propia donde se guardan los videos descargados por enlace',
+  },
   {
     id: 'internal_root',
     name: 'Memoria Interna (Raíz)',
@@ -101,12 +111,56 @@ const byNameAsc = (a, b) => {
   return x < y ? -1 : x > y ? 1 : 0;
 };
 
+const MONTH_NAMES_ES = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+];
+
+const formatSegmentAsMonthYear = (seg) => {
+  if (!seg) return null;
+  const m = String(seg).trim().match(/^(20\d{2})[-_](0[1-9]|1[0-2])(?:[-_]?([A-Za-zÁÉÍÓÚáéíóúñÑ]+))?$/i);
+  if (!m) return null;
+  const year = m[1];
+  const monthIdx = parseInt(m[2], 10) - 1;
+  const rawMonth = m[3] || MONTH_NAMES_ES[monthIdx] || 'Mes';
+  const cleanMonth = rawMonth.charAt(0).toUpperCase() + rawMonth.slice(1).toLowerCase();
+  return `${cleanMonth} ${year}`;
+};
+
 export const folderService = {
+  formatFolderDisplayName(rawName, uri = '') {
+    const directMonth = formatSegmentAsMonthYear(rawName);
+    if (directMonth) return directMonth;
+
+    if (uri) {
+      try {
+        const decoded = decodeURIComponent(uri);
+        const parts = decoded.split(/[:/]/).filter(Boolean);
+        const last = parts[parts.length - 1] || rawName || '';
+        const prev = parts.length >= 2 ? parts[parts.length - 2] : '';
+
+        const lastMonth = formatSegmentAsMonthYear(last);
+        if (lastMonth) return lastMonth;
+
+        if (/^(fotos|videos|imágenes|imagenes)$/i.test(last) && prev) {
+          const prevMonth = formatSegmentAsMonthYear(prev);
+          if (prevMonth) return prevMonth;
+          if (!/^(storage|emulated|0|primary|dcim|pictures|media)$/i.test(prev)) {
+            return `${prev} (${last})`;
+          }
+        }
+      } catch (_e) {}
+    }
+
+    return rawName || 'Carpeta';
+  },
+
   folderName(uri) {
     try {
       const decoded = decodeURIComponent(uri);
       const parts = decoded.split(/[:/]/).filter(Boolean);
-      return parts[parts.length - 1] || 'Carpeta';
+      const last = parts[parts.length - 1] || 'Carpeta';
+      return folderService.formatFolderDisplayName(last, uri);
     } catch (e) {
       return 'Carpeta';
     }
@@ -130,7 +184,13 @@ export const folderService = {
         }
       }
 
-      return Array.isArray(list) ? list : [];
+      if (!Array.isArray(list)) return [];
+
+      // Actualizar nombres repetitivos ("Fotos", "2026-09_Septiembre") a formato Mes y Año ("Septiembre 2026")
+      return list.map((item) => ({
+        ...item,
+        name: folderService.formatFolderDisplayName(item.name, item.uri),
+      }));
     } catch (e) {
       console.warn('Error al obtener lista de carpetas guardadas:', e);
       return [];
@@ -263,6 +323,54 @@ export const folderService = {
   },
 
   /**
+   * Obtiene rápidamente la primera imagen/video (portada) y el conteo de archivos de una carpeta.
+   */
+  async getFolderCoverAndCount(uri, depth = 0) {
+    if (!uri || depth > 2) return { coverUri: null, count: 0 };
+    try {
+      const phys = folderService.toPhysicalUri(uri) || uri;
+      let entries = [];
+      if (phys.startsWith('file://')) {
+        const names = await LegacyFS.readDirectoryAsync(phys);
+        const base = phys.endsWith('/') ? phys : `${phys}/`;
+        entries = names.map((n) => ({ name: n, uri: base + encodeURIComponent(n) }));
+      } else if (uri.startsWith('content://')) {
+        const children = await LegacyFS.StorageAccessFramework.readDirectoryAsync(uri);
+        entries = children.map((u) => ({ name: nameFromUri(u), uri: u }));
+      }
+
+      const mediaEntries = [];
+      const subDirs = [];
+      for (const e of entries) {
+        if (!e.name || e.name.startsWith('.')) continue;
+        const mType = mediaTypeByName(e.name);
+        if (mType) {
+          mediaEntries.push(e);
+        } else if (!hasExtension(e.name)) {
+          subDirs.push(e);
+        }
+      }
+
+      if (mediaEntries.length > 0) {
+        mediaEntries.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
+        return {
+          coverUri: mediaEntries[0].uri,
+          count: mediaEntries.length,
+        };
+      }
+
+      // Si la carpeta raíz solo tiene subcarpetas (ej. DCIM -> Camera), buscar portada en la primera subcarpeta
+      for (const sub of subDirs.slice(0, 6)) {
+        const subRes = await folderService.getFolderCoverAndCount(sub.uri, depth + 1);
+        if (subRes.coverUri) {
+          return subRes;
+        }
+      }
+    } catch (_e) {}
+    return { coverUri: null, count: 0 };
+  },
+
+  /**
    * Lista un nivel de carpeta de forma RÁPIDA: una sola llamada nativa para obtener
    * los nombres y el tipo se deduce por extensión (sin consultar archivo por archivo).
    */
@@ -318,7 +426,8 @@ export const folderService = {
     const subfolders = dirEntries.map((e) => ({
       id: e.uri,
       uri: e.uri,
-      name: e.name || folderService.folderName(e.uri),
+      rawName: e.name,
+      name: folderService.formatFolderDisplayName(e.name, e.uri),
       isDirectory: true,
     }));
 
@@ -339,7 +448,8 @@ export const folderService = {
         subfolders.push({
           id: item.uri,
           uri: item.uri,
-          name: item.name || folderService.folderName(item.uri),
+          rawName: item.name,
+          name: folderService.formatFolderDisplayName(item.name, item.uri),
           isDirectory: true,
         });
       } else {
@@ -414,19 +524,62 @@ export const folderService = {
   },
 
   /**
-   * Lee la carpeta actual (rápido, ordenada de la más reciente a la más antigua) y enriquece tamaños.
+   * Lee la carpeta actual (rápido, ordenada de la más reciente a la más antigua) y enriquece tamaños y portadas de subcarpetas.
+   * Si la carpeta actual es una carpeta de mes que tenía subcarpetas "Fotos" y "Videos", aplana sus archivos automáticamente.
    */
   async readDirectory(uri, onBatch) {
     try {
-      const { subfolders, assets } = await folderService._listLevel(uri);
-      subfolders.sort(byNameAsc);
+      let { subfolders, assets } = await folderService._listLevel(uri);
+
+      // Si existen subcarpetas "Fotos" o "Videos" (creadas por versiones previas del organizador por meses),
+      // incorporar sus fotos/videos directamente en la vista del mes para no obligar a entrar a "Fotos".
+      const mediaSubfolders = subfolders.filter((s) =>
+        /^(fotos|videos)$/i.test((s.rawName || s.name || '').trim())
+      );
+      if (mediaSubfolders.length > 0) {
+        const flattened = await Promise.all(
+          mediaSubfolders.map((ms) => folderService._listLevel(ms.uri).catch(() => ({ subfolders: [], assets: [] })))
+        );
+        const removeSet = new Set();
+        flattened.forEach((res, idx) => {
+          if (res.assets && res.assets.length > 0) {
+            assets.push(...res.assets);
+          }
+          if (!res.subfolders || res.subfolders.length === 0) {
+            removeSet.add(mediaSubfolders[idx].uri);
+          }
+        });
+        if (removeSet.size > 0) {
+          subfolders = subfolders.filter((s) => !removeSet.has(s.uri));
+        }
+      }
+
+      subfolders.sort((a, b) => {
+        const ra = a.rawName || a.name || '';
+        const rb = b.rawName || b.name || '';
+        const isMonthA = /^20\d{2}[-_](0[1-9]|1[0-2])/.test(ra);
+        const isMonthB = /^20\d{2}[-_](0[1-9]|1[0-2])/.test(rb);
+        if (isMonthA && isMonthB) return rb.localeCompare(ra); // Meses más recientes primero
+        return byNameAsc(a, b);
+      });
       assets.sort(byFilenameDesc);
       if (onBatch) {
-        onBatch({ subfolders, assets: [...assets], isPartial: true });
+        onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: true });
       }
-      await folderService.enrichAssetsFileSizes(assets);
+      await Promise.all([
+        folderService.enrichAssetsFileSizes(assets),
+        Promise.all(
+          subfolders.slice(0, 40).map(async (sub) => {
+            if (!sub.coverUri) {
+              const info = await folderService.getFolderCoverAndCount(sub.uri, 0);
+              sub.coverUri = info.coverUri;
+              sub.count = info.count;
+            }
+          })
+        ),
+      ]);
       if (onBatch) {
-        onBatch({ subfolders, assets: [...assets], isPartial: false });
+        onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: false });
       }
       return { subfolders, assets };
     } catch (e) {
@@ -650,6 +803,25 @@ export const folderService = {
         }
       }
 
+      // Si tiene subcarpetas "Fotos" o "Videos" (ej. dentro de carpetas de mes 2026-09_Septiembre),
+      // sumar sus archivos directamente a la carpeta del mes y no sugerir "Fotos" por separado.
+      const remainingSubDirs = [];
+      for (const sd of subDirs) {
+        if (/^(fotos|videos)$/i.test(sd.name.trim())) {
+          try {
+            const subNames = await LegacyFS.readDirectoryAsync(sd.uri);
+            for (const sn of subNames) {
+              const sm = mediaTypeByName(sn);
+              if (sm === 'photo') photoCount++;
+              else if (sm === 'video') videoCount++;
+            }
+            visited.add(sd.uri.toLowerCase());
+            continue;
+          } catch (_e) {}
+        }
+        remainingSubDirs.push(sd);
+      }
+
       const totalMedia = photoCount + videoCount;
       const isAlreadySaved = existingSet.has(norm) || existingSet.has(normKey);
 
@@ -669,8 +841,8 @@ export const folderService = {
         }
       }
 
-      if (depth < maxDepth && subDirs.length > 0) {
-        const limited = subDirs.slice(0, 60);
+      if (depth < maxDepth && remainingSubDirs.length > 0) {
+        const limited = remainingSubDirs.slice(0, 60);
         for (let i = 0; i < limited.length; i += 20) {
           const slice = limited.slice(i, i + 20);
           const infos = await Promise.all(
@@ -719,6 +891,23 @@ export const folderService = {
       } catch (_e) {}
     }
     return uri.replace(/\/+$/, '');
+  },
+
+  async ensureDownloadedVideosFolder() {
+    let finalUri = DOWNLOADED_VIDEOS_FOLDER_URI;
+    try {
+      const created = await folderService.createSubfolder(
+        'file:///storage/emulated/0/Movies',
+        DOWNLOADED_VIDEOS_FOLDER_NAME
+      );
+      if (created) finalUri = created;
+    } catch (_e) {
+      // Si el permiso físico aún no está activo, igual registrar la ruta estándar
+    }
+    try {
+      await folderService.addSavedFolder(finalUri, DOWNLOADED_VIDEOS_FOLDER_NAME);
+    } catch (_e2) {}
+    return finalUri;
   },
 
   async createSubfolder(parentDirUri, subName) {

@@ -1,7 +1,16 @@
+import { NativeModules } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
+import * as MediaLibrary from 'expo-media-library/legacy';
+import {
+  folderService,
+  DOWNLOADED_VIDEOS_FOLDER_NAME,
+  DOWNLOADED_VIDEOS_FOLDER_URI,
+} from './folderService';
 
-const DOWNLOAD_ALBUM_NAME = 'Descargas';
+export const DOWNLOAD_ALBUM_NAME = DOWNLOADED_VIDEOS_FOLDER_NAME;
+export const DOWNLOAD_FOLDER_URI = DOWNLOADED_VIDEOS_FOLDER_URI;
+const DOWNLOAD_QUEUE_STORAGE_KEY = '@galeria_video_downloads_list_v1';
 
 const USER_AGENT =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
@@ -84,14 +93,31 @@ async function resolveTikTok(url, signal) {
 }
 
 /**
- * 2. Extractor para X / Twitter (vía vxtwitter / fxtwitter API)
+ * 2. Extractor para X / Twitter (vía vxtwitter / fxtwitter / Syndication API / TwitSave)
  */
 async function resolveTwitter(url, signal) {
-  const match = url.match(/(?:twitter\.com|x\.com)\/([^/]+)\/status\/(\d+)/i);
+  let targetUrl = url;
+  if (/^https?:\/\/t\.co\//i.test(targetUrl)) {
+    try {
+      const redir = await fetch(targetUrl, {
+        method: 'GET',
+        headers: { 'User-Agent': USER_AGENT },
+        signal,
+      });
+      if (redir?.url) targetUrl = redir.url;
+    } catch (_e) {
+      if (signal?.aborted) throw _e;
+    }
+  }
+
+  const match =
+    targetUrl.match(/(?:twitter\.com|x\.com|vxtwitter\.com|fxtwitter\.com)\/(?:([^/]+)\/status|i\/web\/status|i\/status)\/(\d+)/i) ||
+    targetUrl.match(/status\/(\d+)/i);
   if (!match) {
     throw new Error('Enlace de X/Twitter no contiene un ID de publicación válido');
   }
-  const [, user, statusId] = match;
+  const statusId = match[2] || match[1];
+  const user = (match[2] ? match[1] : 'i') || 'i';
 
   // Intento 1: api.vxtwitter.com
   try {
@@ -111,27 +137,107 @@ async function resolveTwitter(url, signal) {
           source: 'X / Twitter',
         };
       }
+      if (Array.isArray(data.mediaURLs) && data.mediaURLs.length > 0) {
+        const mp4Url = data.mediaURLs.find((u) => /\.mp4/i.test(u));
+        if (mp4Url) {
+          return {
+            downloadUrl: mp4Url,
+            title: data.text ? data.text.slice(0, 50) : `twitter_${statusId}`,
+            source: 'X / Twitter',
+          };
+        }
+      }
     }
   } catch (e) {
     if (signal?.aborted) throw e;
   }
 
   // Intento 2: api.fxtwitter.com
-  const fxRes = await fetch(`https://api.fxtwitter.com/${user}/status/${statusId}`, {
-    headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
-    signal,
-  });
-  if (fxRes.ok) {
-    const data = await fxRes.json();
-    const videos = data?.tweet?.media?.videos || [];
-    if (videos.length > 0 && videos[0].url) {
-      return {
-        downloadUrl: videos[0].url,
-        title: data?.tweet?.text ? data.tweet.text.slice(0, 50) : `twitter_${statusId}`,
-        thumbnail: videos[0].thumbnail_url || null,
-        source: 'X / Twitter',
-      };
+  try {
+    const fxRes = await fetch(`https://api.fxtwitter.com/${user}/status/${statusId}`, {
+      headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+      signal,
+    });
+    if (fxRes.ok) {
+      const data = await fxRes.json();
+      const videos = data?.tweet?.media?.videos || data?.tweet?.media?.all?.filter((m) => m.type === 'video' || m.type === 'gif') || [];
+      if (videos.length > 0 && videos[0].url) {
+        return {
+          downloadUrl: videos[0].url,
+          title: data?.tweet?.text ? data.tweet.text.slice(0, 50) : `twitter_${statusId}`,
+          thumbnail: videos[0].thumbnail_url || null,
+          source: 'X / Twitter',
+        };
+      }
     }
+  } catch (e) {
+    if (signal?.aborted) throw e;
+  }
+
+  // Intento 3: Twitter Syndication Embed API oficial
+  try {
+    const token = ((Number(statusId) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, '');
+    const synRes = await fetch(
+      `https://cdn.syndication.twimg.com/tweet-result?id=${statusId}&lang=es&token=${token || 'a'}`,
+      {
+        headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
+        signal,
+      }
+    );
+    if (synRes.ok) {
+      const synData = await synRes.json();
+      const mediaDetails = synData?.mediaDetails || [];
+      for (const m of mediaDetails) {
+        const variants = m?.video_info?.variants || [];
+        const mp4Variants = variants
+          .filter((v) => v.url && (v.content_type === 'video/mp4' || /\.mp4/i.test(v.url)))
+          .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+        if (mp4Variants.length > 0) {
+          return {
+            downloadUrl: mp4Variants[0].url,
+            title: synData?.text ? synData.text.slice(0, 50) : `twitter_${statusId}`,
+            thumbnail: m.media_url_https || null,
+            source: 'X / Twitter HD',
+          };
+        }
+      }
+      if (synData?.video?.variants) {
+        const mp4s = synData.video.variants.filter((v) => v.src && /\.mp4/i.test(v.src));
+        if (mp4s.length > 0) {
+          return {
+            downloadUrl: mp4s[mp4s.length - 1].src,
+            title: `twitter_${statusId}`,
+            source: 'X / Twitter',
+          };
+        }
+      }
+    }
+  } catch (e) {
+    if (signal?.aborted) throw e;
+  }
+
+  // Intento 4: TwitSave extractor
+  try {
+    const tsRes = await fetch(
+      `https://twitsave.com/info?url=${encodeURIComponent(`https://x.com/${user}/status/${statusId}`)}`,
+      {
+        headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
+        signal,
+      }
+    );
+    if (tsRes.ok) {
+      const html = await tsRes.text();
+      const matchMp4 = html.match(/https?:\/\/video\.twimg\.com\/[^"'\s<>]+\.mp4[^"'\s<>]*/i);
+      if (matchMp4 && matchMp4[0]) {
+        return {
+          downloadUrl: unescapeUrl(matchMp4[0]),
+          title: `twitter_${statusId}`,
+          source: 'X / Twitter',
+        };
+      }
+    }
+  } catch (e) {
+    if (signal?.aborted) throw e;
   }
 
   throw new Error('No se encontró video en esta publicación de X/Twitter');
@@ -576,20 +682,72 @@ export const videoDownloadService = {
       throw new Error('CANCELLED');
     }
 
-    if (onStatus) onStatus('Guardando video en tu galería…');
+    if (onStatus) onStatus(`Guardando en carpeta "${DOWNLOAD_ALBUM_NAME}"…`);
 
     let savedAsset = null;
+    let folderUri = DOWNLOAD_FOLDER_URI;
+    let savedPhysically = false;
+
+    // 1. Asegurar que exista la carpeta propia "Videos Descargados" y registrarla en Mi Carpeta
     try {
-      const asset = await MediaLibrary.createAssetAsync(result.uri);
-      savedAsset = asset;
-      let album = await MediaLibrary.getAlbumAsync(DOWNLOAD_ALBUM_NAME);
-      if (!album) {
-        await MediaLibrary.createAlbumAsync(DOWNLOAD_ALBUM_NAME, asset, false);
+      folderUri = await folderService.ensureDownloadedVideosFolder();
+    } catch (_fErr) {}
+
+    // 2. Mover/guardar directamente en la carpeta física "Videos Descargados" (e indexar en MediaStore sin duplicar)
+    try {
+      if (NativeModules?.VideoEngineModule?.moveFileToSubfolderNative) {
+        const destUri = await NativeModules.VideoEngineModule.moveFileToSubfolderNative(
+          result.uri,
+          'file:///storage/emulated/0/Movies',
+          DOWNLOAD_ALBUM_NAME,
+          filename
+        );
+        savedPhysically = true;
+        savedAsset = {
+          id: destUri || `${folderUri}/${filename}`,
+          uri: destUri || `${folderUri}/${filename}`,
+          filename,
+          mediaType: 'video',
+          fileSize: fileInfo.size || 0,
+          creationTime: Date.now(),
+        };
       } else {
-        await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+        await FileSystem.makeDirectoryAsync(folderUri, { intermediates: true }).catch(() => {});
+        const destFileUri = `${folderUri}/${filename}`;
+        await FileSystem.copyAsync({ from: result.uri, to: destFileUri });
+        savedPhysically = true;
+        savedAsset = {
+          id: destFileUri,
+          uri: destFileUri,
+          filename,
+          mediaType: 'video',
+          fileSize: fileInfo.size || 0,
+          creationTime: Date.now(),
+        };
       }
-    } catch (albumErr) {
-      await MediaLibrary.saveToLibraryAsync(result.uri);
+    } catch (_physErr) {
+      savedPhysically = false;
+    }
+
+    // 3. Respaldo en MediaLibrary (Álbum "Videos Descargados") si el guardado físico directo no estuvo disponible
+    if (!savedPhysically) {
+      try {
+        try {
+          await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
+        } catch (_permE) {
+          await MediaLibrary.requestPermissionsAsync().catch(() => {});
+        }
+        const asset = await MediaLibrary.createAssetAsync(result.uri);
+        if (asset) savedAsset = asset;
+        let album = await MediaLibrary.getAlbumAsync(DOWNLOAD_ALBUM_NAME);
+        if (!album) {
+          await MediaLibrary.createAlbumAsync(DOWNLOAD_ALBUM_NAME, asset, false);
+        } else {
+          await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
+        }
+      } catch (albumErr) {
+        await MediaLibrary.saveToLibraryAsync(result.uri);
+      }
     }
 
     try {
@@ -606,6 +764,51 @@ export const videoDownloadService = {
       sizeBytes: fileInfo.size || 0,
       asset: savedAsset,
       albumName: DOWNLOAD_ALBUM_NAME,
+      folderUri,
     };
+  },
+
+  async getStoredDownloadItems() {
+    try {
+      const raw = await AsyncStorage.getItem(DOWNLOAD_QUEUE_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      // Si había alguna descarga "downloading" o "paused" de una sesión anterior cerrada, marcarla como interrumpida para poder reintentar
+      return parsed.map((item) =>
+        item.status === 'downloading' || item.status === 'paused'
+          ? {
+              ...item,
+              status: 'error',
+              errorMessage: 'Descarga interrumpida al cerrar la app. Toca Reintentar.',
+            }
+          : item
+      );
+    } catch (_e) {
+      return [];
+    }
+  },
+
+  async saveStoredDownloadItems(items = []) {
+    try {
+      const toStore = (items || []).slice(0, 60).map((it) => ({
+        id: it.id,
+        url: it.url,
+        title: it.title,
+        filename: it.filename,
+        platform: it.platform,
+        status: it.status,
+        percent: it.percent || 0,
+        writtenBytes: it.writtenBytes || 0,
+        totalBytes: it.totalBytes || 0,
+        sizeBytes: it.sizeBytes || 0,
+        albumName: it.albumName || DOWNLOAD_ALBUM_NAME,
+        folderUri: it.folderUri || DOWNLOAD_FOLDER_URI,
+        asset: it.asset || null,
+        errorMessage: it.errorMessage || null,
+        date: it.date || '',
+      }));
+      await AsyncStorage.setItem(DOWNLOAD_QUEUE_STORAGE_KEY, JSON.stringify(toStore));
+    } catch (_e) {}
   },
 };

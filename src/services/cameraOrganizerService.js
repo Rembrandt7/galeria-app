@@ -318,21 +318,11 @@ export const cameraOrganizerService = {
     for (const monthName of monthFolderNames) {
       const group = groups[monthName];
       let monthDir = null;
-      let photosDir = null;
-      let videosDir = null;
 
       try {
         if (!usingSaf && NativeModules?.VideoEngineModule?.ensureSubfolderNative) {
           try {
-            if (group.photos.length > 0) {
-              await NativeModules.VideoEngineModule.ensureSubfolderNative(physicalBaseUri, `${monthName}/Fotos`);
-            }
-            if (group.videos.length > 0) {
-              await NativeModules.VideoEngineModule.ensureSubfolderNative(physicalBaseUri, `${monthName}/Videos`);
-            }
-            if (group.photos.length === 0 && group.videos.length === 0) {
-              await NativeModules.VideoEngineModule.ensureSubfolderNative(physicalBaseUri, monthName);
-            }
+            await NativeModules.VideoEngineModule.ensureSubfolderNative(physicalBaseUri, monthName);
           } catch (_eNatDir) {
             // continuar con getOrCreateSubdirectory
           }
@@ -351,19 +341,13 @@ export const cameraOrganizerService = {
           }
         }
 
-        if (group.photos.length > 0) {
-          photosDir = getOrCreateSubdirectory(monthDir, 'Fotos');
-        }
-        if (group.videos.length > 0) {
-          videosDir = getOrCreateSubdirectory(monthDir, 'Videos');
-        }
         monthsActuallyCreated++;
       } catch (errDir) {
         errors.push({ file: monthName, error: String(errDir?.message || errDir) });
         continue;
       }
 
-      // Mover fotos a su carpeta del mes / Fotos
+      // Mover fotos directamente a la carpeta del mes (ej. 2026-09_Septiembre -> mostrada como "Septiembre 2026")
       for (const photo of group.photos) {
         if (control?.waitIfPaused) await control.waitIfPaused();
         if (control?.isCancelled) {
@@ -387,7 +371,7 @@ export const cameraOrganizerService = {
               const newUri = await NativeModules.VideoEngineModule.moveFileToSubfolderNative(
                 toPhysicalFileUri(photo.uri),
                 physicalBaseUri,
-                `${monthName}/Fotos`,
+                monthName,
                 filename
               );
               photo.uri = newUri;
@@ -403,12 +387,12 @@ export const cameraOrganizerService = {
               }
               continue;
             } catch (_eNatMove) {
-              // fallback a srcFile.move(photosDir)
+              // fallback a srcFile.move(monthDir)
             }
           }
           const srcUri = usingSaf ? photo.uri : toPhysicalFileUri(photo.uri);
           const srcFile = new File(srcUri);
-          await Promise.resolve(srcFile.move(photosDir));
+          await Promise.resolve(srcFile.move(monthDir));
           photo.uri = srcFile.uri;
           moved++;
         } catch (errMove) {
@@ -426,7 +410,7 @@ export const cameraOrganizerService = {
         }
       }
 
-      // Mover videos a su carpeta del mes / Videos
+      // Mover videos directamente a la carpeta del mes
       for (const video of group.videos) {
         if (control?.waitIfPaused) await control.waitIfPaused();
         if (control?.isCancelled) {
@@ -450,7 +434,7 @@ export const cameraOrganizerService = {
               const newUri = await NativeModules.VideoEngineModule.moveFileToSubfolderNative(
                 toPhysicalFileUri(video.uri),
                 physicalBaseUri,
-                `${monthName}/Videos`,
+                monthName,
                 filename
               );
               video.uri = newUri;
@@ -466,12 +450,12 @@ export const cameraOrganizerService = {
               }
               continue;
             } catch (_eNatMove) {
-              // fallback a srcFile.move(videosDir)
+              // fallback a srcFile.move(monthDir)
             }
           }
           const srcUri = usingSaf ? video.uri : toPhysicalFileUri(video.uri);
           const srcFile = new File(srcUri);
-          await Promise.resolve(srcFile.move(videosDir));
+          await Promise.resolve(srcFile.move(monthDir));
           video.uri = srcFile.uri;
           moved++;
         } catch (errMove) {
