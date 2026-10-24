@@ -12,6 +12,7 @@ import {
   BackHandler,
   useWindowDimensions,
   ActivityIndicator,
+  Modal,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -474,8 +475,109 @@ export default function FullScreenViewer({
     ? Boolean(favorites[currentAsset.id])
     : Boolean(isFavorite);
 
+  // Cuando se abre el reproductor de video, el recortador o el tapón de clonar, renderizarlo en su propio Modal exclusivo a pantalla completa desde arriba (0,0) sin hermanos debajo
+  if (playerAsset) {
+    return (
+      <Modal
+        visible={true}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => {
+          setPlayerAsset(null);
+          if (openedDirectlyAsVideo && onClose) {
+            setOpenedDirectlyAsVideo(false);
+            onClose();
+          }
+        }}
+      >
+        <VideoPlayerScreen
+          asset={playerAsset}
+          initialMode={playerInitialMode}
+          onClose={() => {
+            setPlayerAsset(null);
+            if (openedDirectlyAsVideo && onClose) {
+              setOpenedDirectlyAsVideo(false);
+              onClose();
+            }
+          }}
+          onSaved={onMediaSaved}
+          onShare={onShare ? () => onShare(playerAsset) : undefined}
+          onDelete={
+            onDelete
+              ? () => {
+                  Alert.alert(
+                    '¿Eliminar video?',
+                    'Esta acción solicitará permiso al sistema para eliminar este video de tu teléfono.',
+                    [
+                      { text: 'Cancelar', style: 'cancel' },
+                      {
+                        text: 'Eliminar',
+                        style: 'destructive',
+                        onPress: () => {
+                          setPlayerAsset(null);
+                          onDelete(playerAsset);
+                        },
+                      },
+                    ]
+                  );
+                }
+              : undefined
+          }
+        />
+      </Modal>
+    );
+  }
+
+  if (cropAsset) {
+    return (
+      <Modal
+        visible={true}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => setCropAsset(null)}
+      >
+        <ImageCropper
+          asset={cropAsset}
+          onClose={() => setCropAsset(null)}
+          onSaved={() => {
+            setImageRev((r) => r + 1);
+            if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
+            if (onMediaSaved) onMediaSaved();
+          }}
+        />
+      </Modal>
+    );
+  }
+
+  if (cloneAsset) {
+    return (
+      <Modal
+        visible={true}
+        animationType="fade"
+        transparent={false}
+        onRequestClose={() => setCloneAsset(null)}
+      >
+        <CloneStampEditor
+          asset={cloneAsset}
+          onClose={() => setCloneAsset(null)}
+          onSaved={() => {
+            setImageRev((r) => r + 1);
+            if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
+            if (onMediaSaved) onMediaSaved();
+          }}
+        />
+      </Modal>
+    );
+  }
+
   return (
-    <View style={styles.fullscreenOverlay}>
+    <Modal
+      visible={visible}
+      animationType="fade"
+      transparent={false}
+      onRequestClose={handleCloseViewer}
+    >
+      <View style={styles.fullscreenOverlay}>
       <StatusBar hidden={!showControls} barStyle="light-content" backgroundColor="#000000" />
       <SafeAreaView style={styles.container}>
         {/* Barra Superior de Controles */}
@@ -923,83 +1025,18 @@ export default function FullScreenViewer({
             </TouchableOpacity>
           </View>
         )}
-
-        {/* Sub-pantallas sobrepuestas protegidas */}
-        {playerAsset && (
-          <VideoPlayerScreen
-            asset={playerAsset}
-            initialMode={playerInitialMode}
-            onClose={() => {
-              setPlayerAsset(null);
-              if (openedDirectlyAsVideo && onClose) {
-                setOpenedDirectlyAsVideo(false);
-                onClose();
-              }
-            }}
-            onSaved={onMediaSaved}
-            onShare={onShare ? () => onShare(playerAsset) : undefined}
-            onDelete={
-              onDelete
-                ? () => {
-                    Alert.alert(
-                      '¿Eliminar video?',
-                      'Esta acción solicitará permiso al sistema para eliminar este video de tu teléfono.',
-                      [
-                        { text: 'Cancelar', style: 'cancel' },
-                        {
-                          text: 'Eliminar',
-                          style: 'destructive',
-                          onPress: () => {
-                            setPlayerAsset(null);
-                            onDelete(playerAsset);
-                          },
-                        },
-                      ]
-                    );
-                  }
-                : undefined
-            }
-          />
-        )}
-        {cropAsset && (
-          <ImageCropper
-            asset={cropAsset}
-            onClose={() => setCropAsset(null)}
-            onSaved={() => {
-              setImageRev((r) => r + 1);
-              if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
-              if (onMediaSaved) onMediaSaved();
-            }}
-          />
-        )}
-        {cloneAsset && (
-          <CloneStampEditor
-            asset={cloneAsset}
-            onClose={() => setCloneAsset(null)}
-            onSaved={() => {
-              setImageRev((r) => r + 1);
-              if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
-              if (onMediaSaved) onMediaSaved();
-            }}
-          />
-        )}
       </SafeAreaView>
-    </View>
+      </View>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
   fullscreenOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    flex: 1,
     width: '100%',
     height: '100%',
     backgroundColor: '#000000',
-    zIndex: 99999,
-    elevation: 99999,
   },
   container: {
     flex: 1,

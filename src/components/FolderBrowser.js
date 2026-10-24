@@ -619,13 +619,7 @@ export default function FolderBrowser({
 
   const handleShareSelected = async () => {
     if (selectedAssets.length === 0) return;
-    try {
-      const available = await Sharing.isAvailableAsync();
-      if (!available) return;
-      await Sharing.shareAsync(selectedAssets[0].uri);
-    } catch (e) {
-      Alert.alert('Error', 'No se pudo compartir el archivo.');
-    }
+    await mediaService.shareAsset(selectedAssets[0]);
   };
 
   const handleMoveSelectedTo = async (targetDirUri, relativeSubfolder = '', targetLabel = 'carpeta destino') => {

@@ -716,6 +716,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 var muxerVideoTrack = -1
                 var muxerAudioTrack = -1
                 var maxBufferSize = 2 * 1024 * 1024
+                var candidateAudioFormat: MediaFormat? = null
 
                 muxer = MediaMuxer(outPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
                 if (rotation != 0) {
@@ -733,7 +734,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         }
                     } else if (mime.startsWith("audio/") && audioTrackIdx == -1) {
                         audioTrackIdx = i
-                        muxerAudioTrack = muxer.addTrack(format)
+                        candidateAudioFormat = format
                         if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
                             maxBufferSize = maxOf(maxBufferSize, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE))
                         }
@@ -742,6 +743,32 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 if (videoTrackIdx == -1) {
                     throw IllegalStateException("No se encontró pista de video válida.")
+                }
+
+                // Verificar si existen muestras de audio dentro de los tramos antes de registrar la pista en MediaMuxer
+                if (audioTrackIdx != -1 && candidateAudioFormat != null) {
+                    audioExtractor.selectTrack(audioTrackIdx)
+                    var hasValidAudio = false
+                    for (seg in segList) {
+                        audioExtractor.seekTo(seg.startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                        while (true) {
+                            val st = audioExtractor.sampleTime
+                            if (st < 0 || st > seg.endUs) break
+                            if (st >= seg.startUs) {
+                                hasValidAudio = true
+                                break
+                            }
+                            if (!audioExtractor.advance()) break
+                        }
+                        if (hasValidAudio) break
+                    }
+                    if (hasValidAudio) {
+                        try {
+                            muxerAudioTrack = muxer.addTrack(candidateAudioFormat)
+                        } catch (_: Exception) {
+                            muxerAudioTrack = -1
+                        }
+                    }
                 }
 
                 muxer.start()
@@ -755,9 +782,15 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 var runningOffsetUs = 0L
 
                 for ((segIdx, seg) in segList.withIndex()) {
-                    videoExtractor.seekTo(seg.startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                    videoExtractor.seekTo(seg.startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                    val closestSyncTime = videoExtractor.sampleTime
+                    if (closestSyncTime < 0 || closestSyncTime > seg.endUs) {
+                        videoExtractor.seekTo(seg.startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                    }
+
                     var firstSamplePts = -1L
                     var lastSampleInSegPts = seg.startUs
+                    var writtenInSeg = 0
 
                     while (true) {
                         bufferInfo.offset = 0
@@ -765,7 +798,8 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         if (bufferInfo.size < 0) break
 
                         val sampleTime = videoExtractor.sampleTime
-                        if (sampleTime < 0 || sampleTime > seg.endUs) break
+                        if (sampleTime < 0) break
+                        if (sampleTime > seg.endUs && writtenInSeg > 0) break
 
                         if (firstSamplePts == -1L) {
                             firstSamplePts = sampleTime
@@ -785,7 +819,9 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             0
                         }
                         muxer.writeSampleData(muxerVideoTrack, buffer, bufferInfo)
-                        videoExtractor.advance()
+                        writtenInSeg++
+                        if (sampleTime > seg.endUs) break
+                        if (!videoExtractor.advance()) break
                     }
 
                     val actualStart = if (firstSamplePts >= 0L) firstSamplePts else seg.startUs
@@ -798,7 +834,6 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 // 2. Copiar tramos de audio sincronizados con el inicio real de cada tramo de video
                 if (audioTrackIdx != -1 && muxerAudioTrack != -1) {
-                    audioExtractor.selectTrack(audioTrackIdx)
                     var lastAudioPtsUs = -1L
                     for (seg in actualSegmentStartOffsets) {
                         audioExtractor.seekTo(seg.startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
@@ -824,13 +859,21 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                 }
                                 muxer.writeSampleData(muxerAudioTrack, buffer, bufferInfo)
                             }
-                            audioExtractor.advance()
+                            if (!audioExtractor.advance()) break
                         }
                     }
                 }
 
+                // Finalizar y volcar el contenedor MP4 a disco ANTES de leer su tamaño y resolver la promesa
+                muxer.stop()
+                muxer.release()
+                muxer = null
+
                 emitProgress(1.0, "¡Tramos listos!")
                 val outFile = File(outPath)
+                try {
+                    MediaScannerConnection.scanFile(reactContext, arrayOf(outFile.absolutePath), null, null)
+                } catch (_: Exception) {}
                 val res = Arguments.createMap().apply {
                     putString("outputPath", "file://" + outFile.absolutePath)
                     putDouble("sizeBytes", outFile.length().toDouble())
@@ -969,10 +1012,27 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 var muxerAudioTrack = -1
                 if (audioTrackIdx != -1 && inputAudioFormat != null) {
-                    try {
-                        muxerAudioTrack = muxer.addTrack(inputAudioFormat)
-                    } catch (_: Exception) {
-                        muxerAudioTrack = -1
+                    audioExtractor.selectTrack(audioTrackIdx)
+                    var hasAudioInSegs = false
+                    for (seg in segList) {
+                        audioExtractor.seekTo(seg.startUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                        while (true) {
+                            val st = audioExtractor.sampleTime
+                            if (st < 0 || st > seg.endUs) break
+                            if (st >= seg.startUs) {
+                                hasAudioInSegs = true
+                                break
+                            }
+                            if (!audioExtractor.advance()) break
+                        }
+                        if (hasAudioInSegs) break
+                    }
+                    if (hasAudioInSegs) {
+                        try {
+                            muxerAudioTrack = muxer.addTrack(inputAudioFormat)
+                        } catch (_: Exception) {
+                            muxerAudioTrack = -1
+                        }
                     }
                 }
 
@@ -1129,8 +1189,25 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }
                 }
 
+                try { decoder?.stop() } catch (_: Exception) {}
+                try { decoder?.release() } catch (_: Exception) {}
+                decoder = null
+                try { encoder?.stop() } catch (_: Exception) {}
+                try { encoder?.release() } catch (_: Exception) {}
+                encoder = null
+                try { surfaceBridge?.release() } catch (_: Exception) {}
+                surfaceBridge = null
+                if (muxerStarted) {
+                    muxer?.stop()
+                }
+                muxer?.release()
+                muxer = null
+
                 emitProgress(1.0, "¡Compresión completada!")
                 val outFile = File(outPath)
+                try {
+                    MediaScannerConnection.scanFile(reactContext, arrayOf(outFile.absolutePath), null, null)
+                } catch (_: Exception) {}
                 val res = Arguments.createMap().apply {
                     putString("outputPath", "file://" + outFile.absolutePath)
                     putDouble("sizeBytes", outFile.length().toDouble())

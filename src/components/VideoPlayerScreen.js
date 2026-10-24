@@ -45,10 +45,15 @@ export default function VideoPlayerScreen({
   onShare,
   onDelete,
 }) {
-  // 1. Pasar el URI original directamente a useVideoPlayer (idéntico al núcleo probado que siempre reproduce)
+  // 1. Resolver URI reproducible óptimo (convierte SAF primary: a file:// directo cuando existe para carga instantánea)
+  const playableUri = useMemo(
+    () => videoEngineService.getPlayableVideoUri(asset) || asset?.uri || null,
+    [asset]
+  );
+
   const videoSource = useMemo(
-    () => (asset?.uri ? { uri: asset.uri } : null),
-    [asset?.uri]
+    () => (playableUri ? { uri: playableUri } : null),
+    [playableUri]
   );
 
   const player = useVideoPlayer(videoSource, (p) => {
@@ -363,11 +368,105 @@ export default function VideoPlayerScreen({
     })
   ).current;
 
+  // Manija dedicada para INICIO (arrastre directo 100% preciso)
+  const startHandlePanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => {
+        isScrubbingRef.current = true;
+        setPreviewingCut(false);
+        try {
+          player.pause();
+        } catch (_e) {}
+        setActiveHandle('start');
+        dragInitialStartRef.current = trimStartRef.current || 0;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const w = timelineWidthRef.current || 1;
+        const dur = durationRef.current || 1;
+        const deltaSec = (gestureState.dx / w) * dur;
+        const currentEnd = trimEndRef.current > 0 ? trimEndRef.current : dur;
+        const maxStart = Math.max(0, currentEnd - 0.2);
+        const nextStart = clamp(dragInitialStartRef.current + deltaSec, 0, maxStart);
+        setTrimStart(nextStart);
+        seekTo(nextStart);
+      },
+      onPanResponderRelease: () => {
+        isScrubbingRef.current = false;
+      },
+      onPanResponderTerminate: () => {
+        isScrubbingRef.current = false;
+      },
+    })
+  ).current;
+
+  // Manija dedicada para FIN (arrastre directo 100% preciso)
+  const endHandlePanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderGrant: () => {
+        isScrubbingRef.current = true;
+        setPreviewingCut(false);
+        try {
+          player.pause();
+        } catch (_e) {}
+        setActiveHandle('end');
+        const dur = durationRef.current || 1;
+        dragInitialEndRef.current = trimEndRef.current > 0 ? trimEndRef.current : dur;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const w = timelineWidthRef.current || 1;
+        const dur = durationRef.current || 1;
+        const deltaSec = (gestureState.dx / w) * dur;
+        const minEnd = Math.min(dur, (trimStartRef.current || 0) + 0.2);
+        const nextEnd = clamp(dragInitialEndRef.current + deltaSec, minEnd, dur);
+        setTrimEnd(nextEnd);
+        seekTo(nextEnd);
+      },
+      onPanResponderRelease: () => {
+        isScrubbingRef.current = false;
+      },
+      onPanResponderTerminate: () => {
+        isScrubbingRef.current = false;
+      },
+    })
+  ).current;
+
+  const nudgeTrimPoint = (which, deltaSec) => {
+    const dur = durationRef.current || duration || 1;
+    setPreviewingCut(false);
+    try {
+      player.pause();
+    } catch (_e) {}
+    if (which === 'start') {
+      const currentEnd = trimEnd > 0 ? trimEnd : dur;
+      const maxS = Math.max(0, currentEnd - 0.2);
+      const nextS = clamp((trimStart || 0) + deltaSec, 0, maxS);
+      setTrimStart(nextS);
+      seekTo(nextS);
+    } else {
+      const currentEnd = trimEnd > 0 ? trimEnd : dur;
+      const minE = Math.min(dur, (trimStart || 0) + 0.2);
+      const nextE = clamp(currentEnd + deltaSec, minE, dur);
+      setTrimEnd(nextE);
+      seekTo(nextE);
+    }
+  };
+
   // Barra interactiva de Recorte (manijas Inicio / Fin y aguja)
   const timelinePanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
+      onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: (e) => {
         isScrubbingRef.current = true;
         setPreviewingCut(false);
@@ -382,7 +481,7 @@ export default function VideoPlayerScreen({
 
         const distStart = Math.abs(touchX - startX);
         const distEnd = Math.abs(touchX - endX);
-        const HANDLE_RADIUS = 34;
+        const HANDLE_RADIUS = 38;
 
         if (distStart <= HANDLE_RADIUS && distStart <= distEnd) {
           timelineDragModeRef.current = 'start';
@@ -744,19 +843,22 @@ export default function VideoPlayerScreen({
           </View>
         </View>
 
-        {/* 2. ÁREA DEL VIDEO (Mismo patrón directo que garantizó reproducción al 100%) */}
-        <TouchableOpacity
-          style={styles.videoArea}
-          activeOpacity={1}
-          onPress={useNativeControls ? undefined : togglePlay}
-        >
+        {/* 2. ÁREA DEL VIDEO (Contenedor View real con dimensiones absolutas explícitas para ExoPlayer) */}
+        <View style={styles.videoArea}>
           <VideoView
             player={player}
             style={styles.video}
             contentFit="contain"
             nativeControls={useNativeControls}
-            surfaceType="textureView"
           />
+
+          {!useNativeControls && (
+            <TouchableOpacity
+              style={StyleSheet.absoluteFill}
+              activeOpacity={1}
+              onPress={togglePlay}
+            />
+          )}
 
           {!playing && !useNativeControls && (
             <View pointerEvents="none" style={styles.centerPlayOverlay}>
@@ -786,7 +888,7 @@ export default function VideoPlayerScreen({
               </Text>
             </View>
           )}
-        </TouchableOpacity>
+        </View>
 
         {/* 3. PANEL INFERIOR SÚPER AMIGABLE CON BOTONES GRANDES Y TEXTO CLARO */}
         <View style={styles.bottomStudioDock}>
@@ -1017,7 +1119,14 @@ export default function VideoPlayerScreen({
                     styles.trimSubmodePill,
                     trimMode === 'cut_middle' && styles.trimSubmodePillDeleteCenter,
                   ]}
-                  onPress={() => setTrimMode('cut_middle')}
+                  onPress={() => {
+                    setTrimMode('cut_middle');
+                    const d = duration || 0;
+                    if (d > 0.6 && trimStart <= 0.1 && (!trimEnd || Math.abs(trimEnd - d) <= 0.1)) {
+                      setTrimStart(Number((d * 0.3).toFixed(1)));
+                      setTrimEnd(Number((d * 0.7).toFixed(1)));
+                    }
+                  }}
                 >
                   <Ionicons
                     name="trash-outline"
@@ -1057,25 +1166,53 @@ export default function VideoPlayerScreen({
                 </TouchableOpacity>
               </View>
 
-              {/* Paso 2: Barra visual grande con INICIO y FIN claros */}
+              {/* Paso 2: Barra visual grande con INICIO y FIN claros + botones rápidos -1s / +1s */}
               <View style={styles.timelineWrapper}>
                 <View style={styles.timelineInfoHeader}>
-                  <Text style={styles.friendlyTimeInfo}>
-                    Inicio: <Text style={styles.friendlyTimeBold}>{formatTime(trimStart, true)}</Text>
-                  </Text>
+                  <View style={styles.timeStepperGroup}>
+                    <TouchableOpacity
+                      style={styles.microStepBtn}
+                      onPress={() => nudgeTrimPoint('start', -1)}
+                    >
+                      <Text style={styles.microStepBtnText}>-1s</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.friendlyTimeInfo}>
+                      Inicio: <Text style={styles.friendlyTimeBold}>{formatTime(trimStart, true)}</Text>
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.microStepBtn}
+                      onPress={() => nudgeTrimPoint('start', 1)}
+                    >
+                      <Text style={styles.microStepBtnText}>+1s</Text>
+                    </TouchableOpacity>
+                  </View>
 
                   <View style={styles.resultDurationPill}>
                     <Text style={styles.resultDurationText}>
-                      Durará: {formatTime(totalResultDuration, true)}
+                      {formatTime(totalResultDuration, true)}
                     </Text>
                   </View>
 
-                  <Text style={styles.friendlyTimeInfo}>
-                    Fin:{' '}
-                    <Text style={styles.friendlyTimeBold}>
-                      {formatTime(trimEnd || duration, true)}
+                  <View style={styles.timeStepperGroup}>
+                    <TouchableOpacity
+                      style={styles.microStepBtn}
+                      onPress={() => nudgeTrimPoint('end', -1)}
+                    >
+                      <Text style={styles.microStepBtnText}>-1s</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.friendlyTimeInfo}>
+                      Fin:{' '}
+                      <Text style={styles.friendlyTimeBold}>
+                        {formatTime(trimEnd || duration, true)}
+                      </Text>
                     </Text>
-                  </Text>
+                    <TouchableOpacity
+                      style={styles.microStepBtn}
+                      onPress={() => nudgeTrimPoint('end', 1)}
+                    >
+                      <Text style={styles.microStepBtnText}>+1s</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
 
                 <View
@@ -1148,10 +1285,11 @@ export default function VideoPlayerScreen({
                     </View>
                   )}
 
-                  {/* Manija Izquierda INICIO */}
+                  {/* Manija Izquierda INICIO (Arrastrable directamente) */}
                   <View
-                    pointerEvents="none"
                     style={[styles.handleHitBox, { left: `${startPct}%` }]}
+                    hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+                    {...startHandlePanResponder.panHandlers}
                   >
                     <View
                       style={[
@@ -1166,10 +1304,11 @@ export default function VideoPlayerScreen({
                     </View>
                   </View>
 
-                  {/* Manija Derecha FIN */}
+                  {/* Manija Derecha FIN (Arrastrable directamente) */}
                   <View
-                    pointerEvents="none"
                     style={[styles.handleHitBox, { left: `${endPct}%` }]}
+                    hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+                    {...endHandlePanResponder.panHandlers}
                   >
                     <View
                       style={[
@@ -1476,13 +1615,14 @@ export default function VideoPlayerScreen({
 
 const styles = StyleSheet.create({
   fullscreenOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#000000',
-    zIndex: 100000,
-    elevation: 100000,
   },
   container: {
     flex: 1,
+    width: '100%',
     backgroundColor: '#06080d',
   },
   topBar: {
@@ -1572,12 +1712,14 @@ const styles = StyleSheet.create({
     flex: 1,
     width: '100%',
     backgroundColor: '#000000',
-    minHeight: 200,
+    minHeight: 220,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
+    overflow: 'hidden',
   },
   video: {
+    ...StyleSheet.absoluteFillObject,
     width: '100%',
     height: '100%',
   },
@@ -1873,11 +2015,29 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 4,
+    paddingHorizontal: 2,
+  },
+  timeStepperGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  microStepBtn: {
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  microStepBtnText: {
+    color: '#fde68a',
+    fontSize: 10.5,
+    fontWeight: '800',
   },
   friendlyTimeInfo: {
     color: '#94a3b8',
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '600',
   },
   friendlyTimeBold: {
@@ -1985,13 +2145,13 @@ const styles = StyleSheet.create({
   },
   handleHitBox: {
     position: 'absolute',
-    top: -4,
-    bottom: -4,
-    width: 26,
-    marginLeft: -13,
+    top: -6,
+    bottom: -6,
+    width: 38,
+    marginLeft: -19,
     alignItems: 'center',
     justifyContent: 'center',
-    zIndex: 20,
+    zIndex: 35,
   },
   handleBarVisual: {
     width: 16,

@@ -728,10 +728,10 @@ export default function CloneStampEditor({ asset, onClose, onSaved }) {
 
 const styles = StyleSheet.create({
   fullscreenOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#07090e',
-    zIndex: 9999,
-    elevation: 9999,
   },
   container: {
     flex: 1,

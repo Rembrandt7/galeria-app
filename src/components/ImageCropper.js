@@ -10,15 +10,78 @@ import {
   StatusBar,
   SafeAreaView,
   BackHandler,
+  NativeModules,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Image as RNImage } from 'react-native';
 import { File, Paths } from 'expo-file-system';
+import * as LegacyFS from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as MediaLibrary from 'expo-media-library';
 import { compressionService } from '../services/compressionService';
 import { theme } from '../constants/theme';
+
+const { VideoEngineModule } = NativeModules;
+
+function extractPhysicalFileUri(uri) {
+  if (!uri || typeof uri !== 'string') return null;
+  if (uri.startsWith('file://')) return uri;
+  if (uri.startsWith('/')) return `file://${uri}`;
+  if (uri.startsWith('content://')) {
+    try {
+      const docMatch = uri.match(/\/document\/([^/?#]+)/i);
+      if (docMatch && docMatch[1]) {
+        const docId = decodeURIComponent(docMatch[1]);
+        if (/^primary:/i.test(docId)) {
+          const relPath = docId.replace(/^primary:/i, '').replace(/^\/+/, '');
+          return `file:///storage/emulated/0/${relPath}`;
+        }
+        const sdMatch = docId.match(/^([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}):(.+)$/);
+        if (sdMatch) {
+          return `file:///storage/${sdMatch[1]}/${sdMatch[2].replace(/^\/+/, '')}`;
+        }
+      }
+    } catch (_e) {}
+  }
+  return null;
+}
+
+async function resolveReadableImageUri(uri, isPng = false) {
+  const phys = extractPhysicalFileUri(uri);
+  const ext = isPng ? 'png' : 'jpg';
+  const tempDest = new File(Paths.cache, `crop_in_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`);
+
+  if (VideoEngineModule?.copyToCacheNative) {
+    try {
+      const copied = await VideoEngineModule.copyToCacheNative(phys || uri, tempDest.uri);
+      if (tempDest.exists && tempDest.size > 0) {
+        return { uri: copied || tempDest.uri, tempFile: tempDest };
+      }
+    } catch (_e) {
+      try {
+        const copied2 = await VideoEngineModule.copyToCacheNative(uri, tempDest.uri);
+        if (tempDest.exists && tempDest.size > 0) {
+          return { uri: copied2 || tempDest.uri, tempFile: tempDest };
+        }
+      } catch (_e2) {}
+    }
+  }
+
+  if (phys) {
+    try {
+      await LegacyFS.copyAsync({ from: phys, to: tempDest.uri });
+      return { uri: tempDest.uri, tempFile: tempDest };
+    } catch (_e) {}
+  }
+
+  try {
+    await LegacyFS.copyAsync({ from: uri, to: tempDest.uri });
+    return { uri: tempDest.uri, tempFile: tempDest };
+  } catch (_e) {
+    return { uri: phys || uri, tempFile: null };
+  }
+}
 
 const MIN = 40; // tamaño mínimo del recorte (px en pantalla)
 const HANDLE = 44;
@@ -149,21 +212,39 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
     }),
   }).current;
 
-  // Tamaño REAL de la imagen original (sin reducciones del visor)
+  // Tamaño REAL de la imagen original (compatible con Galería y Carpetas SAF)
   useEffect(() => {
     let alive = true;
     if (!asset?.uri) return undefined;
+
+    if (asset.width > 0 && asset.height > 0) {
+      setNatural({ w: asset.width, h: asset.height });
+    }
+
+    const candidateUri = extractPhysicalFileUri(asset.uri) || asset.uri;
     RNImage.getSize(
-      asset.uri,
+      candidateUri,
       (w, h) => {
         if (alive && w > 0 && h > 0) setNatural({ w, h });
       },
       async () => {
+        let tempObj = null;
         try {
-          const probe = await ImageManipulator.manipulate(asset.uri).renderAsync();
-          if (alive) setNatural({ w: probe.width, h: probe.height });
-        } catch (e) {
-          if (alive) Alert.alert('No se pudo abrir la imagen', 'No fue posible leer este archivo para recortarlo.');
+          tempObj = await resolveReadableImageUri(asset.uri);
+          const probe = await ImageManipulator.manipulate(tempObj.uri).renderAsync();
+          if (alive && probe?.width > 0 && probe?.height > 0) {
+            setNatural({ w: probe.width, h: probe.height });
+          }
+        } catch (_e) {
+          if (alive) {
+            setNatural((prev) => prev || { w: 1200, h: 1200 });
+          }
+        } finally {
+          if (tempObj?.tempFile?.exists) {
+            try {
+              tempObj.tempFile.delete();
+            } catch (_e2) {}
+          }
         }
       }
     );
@@ -173,14 +254,16 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
   }, [asset?.uri]);
 
   const handleSave = async (replaceOriginal = false) => {
+    const shouldReplace = replaceOriginal === true;
     if (!rect || !disp.w || !disp.h) return;
     setBusy(true);
+    let tempObj = null;
     try {
       // El recorte se guarda como fracción de la imagen mostrada: funciona con cualquier resolución
-      const fx = rect.x / disp.w;
-      const fy = rect.y / disp.h;
-      const fw = rect.w / disp.w;
-      const fh = rect.h / disp.h;
+      const fx = clamp(rect.x / disp.w, 0, 0.99);
+      const fy = clamp(rect.y / disp.h, 0, 0.99);
+      const fw = clamp(rect.w / disp.w, 0.01, 1 - fx);
+      const fh = clamp(rect.h / disp.h, 0.01, 1 - fy);
       const isPng = /\.png$/i.test(asset.filename || asset.uri || '');
 
       const cropFrom = async (src) => {
@@ -202,21 +285,10 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
         );
       };
 
-      let out;
-      try {
-        out = await cropFrom(asset.uri);
-      } catch (firstErr) {
-        // Si la ruta es de acceso por carpeta (content://), copiar a caché y reintentar
-        if (String(asset.uri).startsWith('content://')) {
-          const dest = new File(Paths.cache, `crop_src_${Date.now()}.${isPng ? 'png' : 'jpg'}`);
-          await new File(asset.uri).copy(dest);
-          out = await cropFrom(dest.uri);
-        } else {
-          throw firstErr;
-        }
-      }
+      tempObj = await resolveReadableImageUri(asset.uri, isPng);
+      const out = await cropFrom(tempObj.uri);
 
-      if (replaceOriginal) {
+      if (shouldReplace) {
         const replaced = await compressionService.overwriteOriginalFile(out.uri, asset.uri, 0, 0);
         if (!replaced) {
           throw new Error(
@@ -236,21 +308,47 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
         return;
       }
 
+      // Si es "Guardar copia", guardarla también en la misma carpeta física si viene de Carpetas
+      const origPhys = extractPhysicalFileUri(asset.uri);
+      if (origPhys && VideoEngineModule?.moveFileNative) {
+        try {
+          const cleanOrig = decodeURIComponent(origPhys.replace(/^file:\/+/i, '/'));
+          const lastSlash = cleanOrig.lastIndexOf('/');
+          if (lastSlash > 0) {
+            const parentDir = cleanOrig.substring(0, lastSlash);
+            const ext = isPng ? '.png' : '.jpg';
+            const baseName = (asset.filename || 'foto').replace(/\.[^.]+$/, '');
+            const copyName = `${baseName}_recorte_${Date.now().toString().slice(-4)}${ext}`;
+            const tempCopy = new File(Paths.cache, copyName);
+            await LegacyFS.copyAsync({ from: out.uri, to: tempCopy.uri });
+            await VideoEngineModule.moveFileNative(tempCopy.uri, parentDir, copyName);
+          }
+        } catch (_e) {}
+      }
+
       try {
         await MediaLibrary.createAssetAsync(out.uri);
-      } catch (saveErr) {
-        await MediaLibrary.saveToLibraryAsync(out.uri);
+      } catch (_saveErr) {
+        try {
+          await MediaLibrary.saveToLibraryAsync(out.uri);
+        } catch (_saveErr2) {}
       }
 
       setBusy(false);
-      Alert.alert('Listo', 'La imagen recortada se guardó en tu galería como una copia nueva.');
+      Alert.alert('¡Recorte guardado!', 'La imagen recortada se guardó como una copia nueva.');
       if (onSaved) onSaved();
       onClose();
       return;
     } catch (e) {
       Alert.alert('No se pudo recortar', String(e?.message || e));
+    } finally {
+      if (tempObj?.tempFile?.exists) {
+        try {
+          tempObj.tempFile.delete();
+        } catch (_e) {}
+      }
+      setBusy(false);
     }
-    setBusy(false);
   };
 
   const box = rect
@@ -268,6 +366,8 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
 
   if (!asset?.uri) return null;
 
+  const displayUri = extractPhysicalFileUri(asset.uri) || asset.uri;
+
   return (
     <View style={styles.fullscreenOverlay}>
       <StatusBar barStyle="light-content" backgroundColor="#000000" />
@@ -277,7 +377,7 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
             <Ionicons name="close" size={26} color="#fff" />
           </TouchableOpacity>
           <Text style={styles.title}>Recortar imagen</Text>
-          <TouchableOpacity onPress={handleSave} style={styles.iconBtn} disabled={busy}>
+          <TouchableOpacity onPress={() => handleSave(false)} style={styles.iconBtn} disabled={busy}>
             {busy ? (
               <ActivityIndicator color="#fff" />
             ) : (
@@ -292,9 +392,16 @@ export default function ImageCropper({ asset, onClose, onSaved }) {
         >
           {disp.w > 0 && (
             <Image
-              source={{ uri: asset.uri }}
+              source={{ uri: displayUri }}
               style={{ position: 'absolute', left: disp.x, top: disp.y, width: disp.w, height: disp.h }}
               contentFit="fill"
+              onLoad={(e) => {
+                const sw = e?.source?.width;
+                const sh = e?.source?.height;
+                if (sw > 0 && sh > 0 && (!natural || natural.w !== sw || natural.h !== sh)) {
+                  setNatural({ w: sw, h: sh });
+                }
+              }}
             />
           )}
           {!natural && (
@@ -394,10 +501,10 @@ function Handle({ pos, r }) {
 
 const styles = StyleSheet.create({
   fullscreenOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#000000',
-    zIndex: 100000,
-    elevation: 100000,
   },
   container: { flex: 1, backgroundColor: '#000' },
   topBar: {

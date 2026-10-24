@@ -288,7 +288,7 @@ export default function App() {
   // Compartir foto o video
   const handleShare = async (asset) => {
     if (asset?.uri) {
-      await mediaService.shareAsset(asset.uri);
+      await mediaService.shareAsset(asset);
     }
   };
 

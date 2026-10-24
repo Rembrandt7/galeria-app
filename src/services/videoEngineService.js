@@ -310,15 +310,28 @@ export const videoEngineService = {
           );
           outputUri = res?.outputPath || outTempFile.uri;
           newSizeBytes = res?.sizeBytes || (await compressionService.getFileSize(outputUri, { forceFresh: true }));
+          if (!newSizeBytes || newSizeBytes <= 0) {
+            throw new Error('Archivo recortado vacío, usando motor alternativo.');
+          }
         } catch (nativeTrimErr) {
-          if (normalizedSegments.length === 1) {
+          if (VideoEngineModule?.compressVideo) {
+            const transRes = await VideoEngineModule.compressVideo(
+              inputObj.path,
+              outTempFile.uri,
+              0.78,
+              normalizedSegments
+            );
+            outputUri = transRes?.outputPath || outTempFile.uri;
+            newSizeBytes =
+              transRes?.sizeBytes || (await compressionService.getFileSize(outputUri, { forceFresh: true }));
+          } else if (normalizedSegments.length === 1) {
             const fallbackRes = await fallbackTrimSingle(inputObj.path, {
               startTime: normalizedSegments[0].startMs,
               endTime: normalizedSegments[0].endMs,
             });
-            outputUri = fallbackRes.outputPath.startsWith('file://')
-              ? fallbackRes.outputPath
-              : `file://${fallbackRes.outputPath}`;
+            const rawOut = typeof fallbackRes === 'string' ? fallbackRes : fallbackRes?.outputPath;
+            if (!rawOut) throw nativeTrimErr;
+            outputUri = rawOut.startsWith('file://') ? rawOut : `file://${rawOut}`;
             newSizeBytes = await compressionService.getFileSize(outputUri, { forceFresh: true });
           } else {
             throw nativeTrimErr;
@@ -329,9 +342,9 @@ export const videoEngineService = {
           startTime: normalizedSegments[0].startMs,
           endTime: normalizedSegments[0].endMs,
         });
-        outputUri = fallbackRes.outputPath.startsWith('file://')
-          ? fallbackRes.outputPath
-          : `file://${fallbackRes.outputPath}`;
+        const rawOut = typeof fallbackRes === 'string' ? fallbackRes : fallbackRes?.outputPath;
+        if (!rawOut) throw new Error('No se pudo recortar el video.');
+        outputUri = rawOut.startsWith('file://') ? rawOut : `file://${rawOut}`;
         newSizeBytes = await compressionService.getFileSize(outputUri, { forceFresh: true });
       }
 
@@ -348,12 +361,37 @@ export const videoEngineService = {
           outputUri: asset.uri,
         };
       } else {
-        await MediaLibrary.saveToLibraryAsync(outputUri);
+        let savedCopyUri = outputUri;
+        // Si el video pertenece a una carpeta física, guardar también la copia en la misma carpeta para que sea visible de inmediato
+        const origPhys = extractPhysicalFilePath(asset.uri);
+        if (origPhys) {
+          try {
+            const cleanOrig = decodeURIComponent(origPhys.replace(/^file:\/+/i, '/'));
+            const lastSlash = cleanOrig.lastIndexOf('/');
+            if (lastSlash > 0) {
+              const parentDir = cleanOrig.substring(0, lastSlash);
+              const baseName = (asset.filename || 'video.mp4').replace(/\.[^.]+$/, '');
+              const copyName = `${baseName}_recorte_${Date.now().toString().slice(-4)}.mp4`;
+              if (VideoEngineModule?.moveFileNative) {
+                const tempForMove = new File(Paths.cache, copyName);
+                await LegacyFS.copyAsync({ from: outputUri, to: tempForMove.uri });
+                savedCopyUri = await VideoEngineModule.moveFileNative(tempForMove.uri, parentDir, copyName);
+              }
+            }
+          } catch (_e) {}
+        }
+        try {
+          await MediaLibrary.createAssetAsync(outputUri);
+        } catch (_e1) {
+          try {
+            await MediaLibrary.saveToLibraryAsync(outputUri);
+          } catch (_e2) {}
+        }
         return {
           success: true,
           replacedOriginal: false,
           newSizeBytes,
-          outputUri,
+          outputUri: savedCopyUri,
         };
       }
     } finally {

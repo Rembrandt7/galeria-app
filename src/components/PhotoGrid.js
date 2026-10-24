@@ -178,16 +178,7 @@ export default function PhotoGrid({
 
   const handleShareSelected = async () => {
     if (selectedAssets.length === 0) return;
-    try {
-      const available = await Sharing.isAvailableAsync();
-      if (!available) {
-        Alert.alert('No disponible', 'Compartir no está disponible en este dispositivo.');
-        return;
-      }
-      await Sharing.shareAsync(selectedAssets[0].uri);
-    } catch (e) {
-      Alert.alert('Error', 'No se pudo compartir el archivo.');
-    }
+    await mediaService.shareAsset(selectedAssets[0]);
   };
 
   const handleCompressAll = () => {
