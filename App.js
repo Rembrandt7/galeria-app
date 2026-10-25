@@ -17,7 +17,10 @@ import {
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as MediaLibrary from 'expo-media-library/legacy';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+
+const ALBUMS_FAST_CACHE_KEY = '@galeria_albums_fast_cache_v1';
 
 import { theme } from './src/constants/theme';
 import { mediaService } from './src/services/mediaService';
@@ -87,6 +90,18 @@ export default function App() {
   // Inicializar permisos y datos de arranque (ultra rápido)
   useEffect(() => {
     (async () => {
+      // 0. Hidratar álbumes desde caché local instantáneamente (< 0.1s) para que la pantalla aparezca al instante
+      AsyncStorage.getItem(ALBUMS_FAST_CACHE_KEY)
+        .then((raw) => {
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setAlbums((prev) => (prev.length === 0 ? parsed : prev));
+            }
+          }
+        })
+        .catch(() => {});
+
       // 1. Cargar favoritos en segundo plano
       storageService.getFavorites().then(setFavorites);
 
@@ -108,16 +123,15 @@ export default function App() {
           });
         });
 
-      // 3. Revisar permisos
+      // 3. Revisar permisos y quitar pantalla de carga de inmediato
       const granted = await mediaService.checkAndRequestPermissions();
       setHasPermission(granted);
+      setInitialLoading(false);
 
       if (granted) {
-        // Cargar álbumes estilo Samsung Galaxy y el primer bloque de fotos en paralelo
-        await Promise.all([
-          loadAlbums(),
-          loadAssets({ reset: true }),
-        ]);
+        // Actualizar álbumes y el primer bloque de fotos en paralelo sin bloquear la apertura
+        loadAlbums();
+        loadAssets({ reset: true });
       } else if (!(await mediaService.canAskAgain())) {
         Linking.openSettings();
       }
@@ -129,9 +143,6 @@ export default function App() {
           if (res?.hasUpdate) setHasUpdateAvailable(true);
         })
         .catch(() => {});
-
-      // Quitar pantalla de carga INMEDIATAMENTE (< 1 segundo)
-      setInitialLoading(false);
     })();
   }, []);
 
@@ -284,6 +295,7 @@ export default function App() {
         after: cursor,
         albumId: album ? album.id : null,
         albumUri: album ? album.uri || null : null,
+        childAlbums: album?.childAlbums || null,
         mediaTypes: getMediaTypes(filter),
       });
 
@@ -300,11 +312,14 @@ export default function App() {
     }
   };
 
-  // Cargar lista de álbumes bajo demanda
+  // Cargar lista de álbumes bajo demanda y guardar en caché rápida
   const loadAlbums = async () => {
     try {
       const albumList = await mediaService.getAlbums();
       setAlbums(albumList);
+      if (Array.isArray(albumList) && albumList.length > 0) {
+        AsyncStorage.setItem(ALBUMS_FAST_CACHE_KEY, JSON.stringify(albumList)).catch(() => {});
+      }
     } catch (error) {
       console.error('Error al cargar álbumes:', error);
     }
@@ -352,8 +367,17 @@ export default function App() {
   };
 
   // Seleccionar un álbum o carpeta desde la cuadrícula estilo Samsung Galaxy:
+  // Si es la tarjeta agrupada "Varios", abrimos todas sus fotos juntas en PhotoGrid.
   // Si tiene ruta de carpeta (uri), entramos con FolderBrowser para ver sus subcarpetas y herramientas.
   const handleSelectAlbum = (album) => {
+    if (album?.isVariosCard) {
+      setSelectedAlbum(album);
+      setAssets([]);
+      setEndCursor(null);
+      setHasNextPage(false);
+      loadAssets({ reset: true, album });
+      return;
+    }
     if (album?.uri) {
       setSelectedAlbum(null);
       setFolderUri(album.uri);

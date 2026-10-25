@@ -542,7 +542,7 @@ export default function FolderBrowser({
 
     Alert.alert(
       'Comprimir fotos de la carpeta',
-      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas sin perder resolución?\n\n• Las fotos que ya estén en Verde (≤ 2 MB) se omitirán automáticamente.\n• Solo se comprimirán las que estén en Naranja o Rojo manteniendo el 100% de su resolución.`,
+      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas manteniendo el 100% de su resolución original y reemplazando el archivo original sin crear copias?`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -557,14 +557,28 @@ export default function FolderBrowser({
                 (prog) => setCompressProgress(prog),
                 ctrl
               );
-              const skippedMsg =
-                res.skippedGreenCount > 0
-                  ? `\nOmitidas por estar en Verde: ${res.skippedGreenCount}`
-                  : '';
-              Alert.alert(
-                res.cancelled ? 'Proceso cancelado' : '¡Compresión finalizada!',
-                `Fotos comprimidas (Naranja/Rojo): ${res.compressedCount || 0} de ${targetPhotos.length}${skippedMsg}\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
-              );
+              if (res.permissionRequired && (res.compressedCount || 0) === 0) {
+                Alert.alert(
+                  'Permiso requerido para modificar originales',
+                  'Android bloqueó la modificación directa del archivo original. Activa "Acceso a todos los archivos" para comprimir sin crear copias.',
+                  [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                      text: 'Activar permiso en Ajustes',
+                      onPress: () => folderService.openAllFilesAccessSettings(),
+                    },
+                  ]
+                );
+              } else {
+                const skippedMsg =
+                  res.skippedGreenCount > 0
+                    ? `\nYa estaban ligeras: ${res.skippedGreenCount}`
+                    : '';
+                Alert.alert(
+                  res.cancelled ? 'Proceso cancelado' : '¡Compresión finalizada!',
+                  `Fotos optimizadas (100% resolución): ${res.compressedCount || 0} de ${targetPhotos.length}${skippedMsg}\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+                );
+              }
               handleRefresh();
             } catch (e) {
               Alert.alert('Error', 'Ocurrió un problema durante la compresión: ' + (e?.message || String(e)));
@@ -581,15 +595,31 @@ export default function FolderBrowser({
   };
 
   // Comprimir videos de la carpeta manteniendo el 100% de la resolución original
-  const handleCompressVideosFolder = () => {
-    if (folderVideos.length === 0) {
-      Alert.alert('Sin videos', 'No hay videos en esta vista para comprimir.');
+  const handleCompressVideosFolder = async () => {
+    let targetVideos = folderVideos;
+
+    if (targetVideos.length === 0 && currentFolder?.uri) {
+      setIsCompressingFolder(true);
+      setCompressProgress({ current: 0, total: 1, percent: 0, savedFormatted: 'Buscando videos en subcarpetas…' });
+      try {
+        const recursiveAssets = await folderService.loadFolderAssets(currentFolder.uri);
+        targetVideos = (recursiveAssets || []).filter((a) => a.mediaType === 'video');
+      } catch (e) {
+        targetVideos = [];
+      } finally {
+        setIsCompressingFolder(false);
+        setCompressProgress(null);
+      }
+    }
+
+    if (targetVideos.length === 0) {
+      Alert.alert('Sin videos', 'No se encontraron videos en esta carpeta para comprimir.');
       return;
     }
 
     Alert.alert(
       'Comprimir videos (100% Resolución)',
-      `¿Deseas comprimir los ${folderVideos.length} videos de esta carpeta manteniendo el 100% de su resolución original y reemplazando cada original sin duplicados?`,
+      `¿Deseas comprimir los ${targetVideos.length} videos encontrados manteniendo el 100% de su resolución original y reemplazando cada original sin duplicados?`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -599,19 +629,19 @@ export default function FolderBrowser({
             setIsCompressingFolder(true);
             setCompressProgress({
               current: 0,
-              total: folderVideos.length,
+              total: targetVideos.length,
               percent: 0,
               savedFormatted: '0 B',
             });
             try {
-              const res = await videoEngineService.compressVideosBatch(folderVideos, {
+              const res = await videoEngineService.compressVideosBatch(targetVideos, {
                 presetId: 'balanced',
                 onProgress: (prog) => setCompressProgress(prog),
                 control: ctrl,
               });
               Alert.alert(
                 res.cancelled ? 'Proceso cancelado' : '¡Videos comprimidos!',
-                `Se optimizaron ${res.compressedCount} de ${folderVideos.length} videos al 100% de su resolución original.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
+                `Se optimizaron ${res.compressedCount} de ${targetVideos.length} videos al 100% de su resolución original.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
               );
               handleRefresh();
             } catch (e) {
@@ -988,15 +1018,42 @@ export default function FolderBrowser({
     onExitFolder,
   ]);
 
-  // Subcarpetas visibles filtradas por el modo oculto y buscador
+  const [expandSmallSubfolders, setExpandSmallSubfolders] = useState(false);
+
+  // Subcarpetas visibles filtradas por el modo oculto y buscador, ordenadas de mayor a menor cantidad
   const visibleSubfolders = useMemo(() => {
     const base = showAllFolders
       ? subfolders
       : subfolders.filter((item) => !(hiddenFolders[item.uri] || hiddenFolders[item.name]));
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter((item) => (item.name || '').toLowerCase().includes(q));
+    const list = q
+      ? base.filter((item) => (item.name || '').toLowerCase().includes(q))
+      : [...base];
+    list.sort((a, b) => (Number(b.count || 0) - Number(a.count || 0)));
+    return list;
   }, [subfolders, hiddenFolders, showAllFolders, searchQuery]);
+
+  const { mainSubfolders, smallSubfolders } = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (q || expandSmallSubfolders) {
+      return { mainSubfolders: visibleSubfolders, smallSubfolders: [] };
+    }
+    const main = [];
+    const small = [];
+    for (const sub of visibleSubfolders) {
+      const cnt = Number(sub.count || 0);
+      if (cnt > 0 && cnt < 5) {
+        small.push(sub);
+      } else {
+        main.push(sub);
+      }
+    }
+    // Si solo hay 1 subcarpeta pequeña, no hace falta agruparla en Varios
+    if (small.length <= 1) {
+      return { mainSubfolders: visibleSubfolders, smallSubfolders: [] };
+    }
+    return { mainSubfolders: main, smallSubfolders: small };
+  }, [visibleSubfolders, searchQuery, expandSmallSubfolders]);
 
   const hiddenSubfolderCount = useMemo(() => {
     return subfolders.filter((item) => Boolean(hiddenFolders[item.uri] || hiddenFolders[item.name])).length;
@@ -1041,17 +1098,26 @@ export default function FolderBrowser({
               Subcarpetas ({visibleSubfolders.length})
             </Text>
           </View>
-          {hiddenSubfolderCount > 0 && (
-            <TouchableOpacity onPress={onToggleShowAllFolders}>
-              <Text style={{ color: '#60a5fa', fontSize: 12, fontWeight: '700' }}>
-                {showAllFolders ? 'Ocultar privadas' : `Ver ocultas (${hiddenSubfolderCount})`}
-              </Text>
-            </TouchableOpacity>
-          )}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+            {expandSmallSubfolders && (
+              <TouchableOpacity onPress={() => setExpandSmallSubfolders(false)}>
+                <Text style={{ color: '#a78bfa', fontSize: 12, fontWeight: '700' }}>
+                  Agrupar &lt;5 en Varios
+                </Text>
+              </TouchableOpacity>
+            )}
+            {hiddenSubfolderCount > 0 && (
+              <TouchableOpacity onPress={onToggleShowAllFolders}>
+                <Text style={{ color: '#60a5fa', fontSize: 12, fontWeight: '700' }}>
+                  {showAllFolders ? 'Ocultar privadas' : `Ver ocultas (${hiddenSubfolderCount})`}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         <View style={styles.subfoldersGalaxyGrid}>
-          {visibleSubfolders.map((sub) => {
+          {mainSubfolders.map((sub) => {
             const isHidden = Boolean(hiddenFolders[sub.uri] || hiddenFolders[sub.name]);
             const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
             const coverToUse = sub.coverUri || getSubfolderFallbackCover(displayLabel);
@@ -1119,6 +1185,47 @@ export default function FolderBrowser({
               </TouchableOpacity>
             );
           })}
+
+          {smallSubfolders.length > 0 && (
+            <TouchableOpacity
+              key="sub_galaxy_varios_grouped"
+              style={[
+                styles.subfolderGalaxyCard,
+                { borderColor: 'rgba(167, 139, 250, 0.6)', borderWidth: 1.5 },
+              ]}
+              onPress={() => setExpandSmallSubfolders(true)}
+              activeOpacity={0.82}
+            >
+              <Image
+                source={{
+                  uri:
+                    smallSubfolders.find((s) => s.coverUri)?.coverUri ||
+                    getSubfolderFallbackCover('Varios'),
+                }}
+                style={[styles.subfolderGalaxyImg, { opacity: 0.72 }]}
+                resizeMode="cover"
+              />
+              <View style={styles.subfolderGalaxyScrim} />
+
+              <View
+                style={[
+                  styles.subfolderGalaxyTopBadge,
+                  { backgroundColor: 'rgba(109, 40, 217, 0.85)' },
+                ]}
+              >
+                <Ionicons name="file-tray-stacked" size={12} color="#ffffff" />
+              </View>
+
+              <View style={styles.subfolderGalaxyBottomInfo}>
+                <Text style={styles.subfolderGalaxyCardTitle} numberOfLines={1}>
+                  Varios
+                </Text>
+                <Text style={[styles.subfolderGalaxyCardSub, { color: '#ddd6fe' }]}>
+                  {smallSubfolders.length} carpetas (&lt;5)
+                </Text>
+              </View>
+            </TouchableOpacity>
+          )}
         </View>
 
         {paginatedAssets.length > 0 && (
@@ -1201,14 +1308,20 @@ export default function FolderBrowser({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.optionsBoxesScroll}
         >
-          {/* Opción 1: Comprimir Fotos (SOLO si existen fotos que NO estén todas en Verde) */}
-          {folderPhotos.length > 0 && photoReductionSummary.canCompress && (
+          {/* Opción 1: Comprimir Fotos (disponible si hay fotos en este nivel o dentro de subcarpetas) */}
+          {(folderPhotos.length > 0 || subfolders.length > 0) && (
             <TouchableOpacity
               style={[
                 styles.optionSquareCard,
                 {
-                  backgroundColor: photoReductionSummary.bgColor,
-                  borderColor: photoReductionSummary.borderColor,
+                  backgroundColor:
+                    folderPhotos.length > 0
+                      ? photoReductionSummary.bgColor
+                      : 'rgba(56, 189, 248, 0.16)',
+                  borderColor:
+                    folderPhotos.length > 0
+                      ? photoReductionSummary.borderColor
+                      : '#38bdf8',
                 },
               ]}
               onPress={handleCompressFolder}
@@ -1216,30 +1329,48 @@ export default function FolderBrowser({
               activeOpacity={0.8}
             >
               <View style={styles.actionToolHeader}>
-                <Ionicons name="sparkles" size={15} color={photoReductionSummary.color} />
+                <Ionicons
+                  name="sparkles"
+                  size={15}
+                  color={folderPhotos.length > 0 ? photoReductionSummary.color : '#38bdf8'}
+                />
                 <Text
                   style={[
                     styles.actionToolTitle,
-                    { color: photoReductionSummary.textColor || photoReductionSummary.color },
+                    {
+                      color:
+                        folderPhotos.length > 0
+                          ? photoReductionSummary.textColor || photoReductionSummary.color
+                          : '#bae6fd',
+                    },
                   ]}
                   numberOfLines={1}
                 >
-                  Comprimir fotos ({photoReductionSummary.compressibleCount})
+                  {folderPhotos.length > 0
+                    ? `Comprimir fotos (${photoReductionSummary.compressibleCount || folderPhotos.length})`
+                    : 'Comprimir fotos'}
                 </Text>
               </View>
               <Text
-                style={[styles.actionToolSub, { color: photoReductionSummary.color }]}
+                style={[
+                  styles.actionToolSub,
+                  { color: folderPhotos.length > 0 ? photoReductionSummary.color : '#38bdf8' },
+                ]}
                 numberOfLines={1}
               >
-                {photoReductionSummary.level === 'heavy'
-                  ? `Reducción alta · -${photoReductionSummary.estimatedSavedFormatted}`
-                  : `Reducción media · -${photoReductionSummary.estimatedSavedFormatted}`}
+                {folderPhotos.length > 0
+                  ? photoReductionSummary.level === 'heavy'
+                    ? `Reducción alta · -${photoReductionSummary.estimatedSavedFormatted}`
+                    : photoReductionSummary.level === 'medium'
+                    ? `Reducción media · -${photoReductionSummary.estimatedSavedFormatted}`
+                    : `Optimizar 100% res · -${photoReductionSummary.estimatedSavedFormatted}`
+                  : 'Optimizar carpetas e internas'}
               </Text>
             </TouchableOpacity>
           )}
 
-          {/* Opción 2: Comprimir Videos (SOLO si existen videos que NO estén todos en Verde) */}
-          {folderVideos.length > 0 && videoReductionSummary.canCompress && (
+          {/* Opción 2: Comprimir Videos */}
+          {folderVideos.length > 0 && (
             <TouchableOpacity
               style={[
                 styles.optionSquareCard,
@@ -1261,7 +1392,7 @@ export default function FolderBrowser({
                   ]}
                   numberOfLines={1}
                 >
-                  Comprimir videos ({videoReductionSummary.compressibleCount})
+                  Comprimir videos ({videoReductionSummary.compressibleCount || folderVideos.length})
                 </Text>
               </View>
               <Text
@@ -1270,7 +1401,9 @@ export default function FolderBrowser({
               >
                 {videoReductionSummary.level === 'heavy'
                   ? `Reducción alta · -${videoReductionSummary.estimatedSavedFormatted}`
-                  : `Reducción media · -${videoReductionSummary.estimatedSavedFormatted}`}
+                  : videoReductionSummary.level === 'medium'
+                  ? `Reducción media · -${videoReductionSummary.estimatedSavedFormatted}`
+                  : `Optimizar 100% res · -${videoReductionSummary.estimatedSavedFormatted}`}
               </Text>
             </TouchableOpacity>
           )}

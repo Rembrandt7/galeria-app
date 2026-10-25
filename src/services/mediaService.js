@@ -71,8 +71,56 @@ export const mediaService = {
   },
 
   // Obtener fotos y videos paginados (con respaldo automático desde carpetas del teléfono si MediaStore devuelve vacío)
-  async getAssets({ first = 60, after = null, albumId = null, albumUri = null, mediaTypes = null }) {
+  async getAssets({ first = 60, after = null, albumId = null, albumUri = null, childAlbums = null, mediaTypes = null }) {
     try {
+      // Si es el álbum agrupado "Varios" (contiene múltiples carpetitas de < 5 fotos)
+      if (Array.isArray(childAlbums) && childAlbums.length > 0) {
+        const wantPhoto = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.photo) || mediaTypes.includes('photo');
+        const wantVideo = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.video) || mediaTypes.includes('video');
+        const allItems = [];
+        const seenUris = new Set();
+
+        await Promise.all(
+          childAlbums.map(async (subAlb) => {
+            try {
+              if (subAlb.id && !String(subAlb.id).startsWith('folder_')) {
+                const res = await MediaLibrary.getAssetsAsync({
+                  first: 10,
+                  album: subAlb.id,
+                  sortBy: [MediaLibrary.SortBy.creationTime],
+                  mediaType: mediaTypes || [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+                });
+                for (const a of res.assets || []) {
+                  if (!seenUris.has(a.uri)) {
+                    seenUris.add(a.uri);
+                    allItems.push({ ...a, sourceFolderTitle: subAlb.title });
+                  }
+                }
+              } else if (subAlb.uri) {
+                const folderItems = await folderService.loadFolderAssets(subAlb.uri);
+                for (const a of folderItems || []) {
+                  if (
+                    !seenUris.has(a.uri) &&
+                    ((a.mediaType === 'photo' && wantPhoto) || (a.mediaType === 'video' && wantVideo))
+                  ) {
+                    seenUris.add(a.uri);
+                    allItems.push({ ...a, sourceFolderTitle: subAlb.title });
+                  }
+                }
+              }
+            } catch (_e) {}
+          })
+        );
+
+        allItems.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+        return {
+          assets: allItems,
+          endCursor: null,
+          hasNextPage: false,
+          totalCount: allItems.length,
+        };
+      }
+
       // Si el álbum proviene de una carpeta física o SAF (albumUri)
       if (albumUri) {
         const folderItems = await folderService.loadFolderAssets(albumUri);
@@ -151,7 +199,7 @@ export const mediaService = {
     }
   },
 
-  // Obtener álbumes del teléfono con vista previa (combinando MediaLibrary + Carpetas guardadas y detectadas)
+  // Obtener álbumes del teléfono con vista previa ultra rápida
   async getAlbums() {
     try {
       let mediaAlbums = [];
@@ -159,9 +207,29 @@ export const mediaService = {
         const albums = await MediaLibrary.getAlbumsAsync({
           includeSmartAlbums: true,
         });
-        const activeAlbums = (albums || []).filter((a) => a.assetCount > 0);
+        // Filtrar álbumes vacíos o carpetas basura del sistema (.thumbnails, stickers ocultos, cachés)
+        const activeAlbums = (albums || []).filter((a) => {
+          if (!a || !(a.assetCount > 0)) return false;
+          const t = (a.title || '').trim().toLowerCase();
+          if (t.startsWith('.') || t === 'thumbnails' || t === 'cache' || t === 'temp') return false;
+          return true;
+        });
+
+        // Separar álbumes principales (>= 5 archivos) de los pequeños (< 5 archivos)
+        // Para los pequeños (< 5), solo pedimos portada a los primeros 4 para que el arranque sea instantáneo
+        let smallCoverBudget = 4;
         mediaAlbums = await Promise.all(
           activeAlbums.map(async (album) => {
+            const isSmall = (album.assetCount || 0) < 5;
+            if (isSmall && smallCoverBudget <= 0) {
+              return {
+                ...album,
+                uri: album.uri || null,
+                coverUri: null,
+              };
+            }
+            if (isSmall) smallCoverBudget--;
+
             try {
               const preview = await MediaLibrary.getAssetsAsync({
                 first: 1,
@@ -192,7 +260,7 @@ export const mediaService = {
         );
       } catch (_mErr) {}
 
-      // Combinar siempre con las carpetas guardadas por el usuario y carpetas detectadas en el teléfono
+      // Combinar en paralelo con las carpetas guardadas por el usuario
       const saved = await folderService.getSavedFolders();
       const suggested =
         mediaAlbums.length === 0 ? await folderService.scanSuggestedFolders(saved) : [];
@@ -210,11 +278,16 @@ export const mediaService = {
         }
       };
 
-      const extraAlbums = [];
+      const folderListToInspect = [...(saved || []), ...(suggested || [])].filter((f) => f?.uri);
+      const inspectedFolders = await Promise.all(
+        folderListToInspect.map(async (f) => {
+          const info = await folderService.getFolderCoverAndCount(f.uri, 0);
+          return { f, info };
+        })
+      );
 
-      // Primero procesar las carpetas guardadas por el usuario (tienen prioridad de ruta para navegar subcarpetas)
-      for (const f of [...(saved || []), ...(suggested || [])]) {
-        if (!f?.uri) continue;
+      const extraAlbums = [];
+      for (const { f, info } of inspectedFolders) {
         const title = folderService.formatFolderDisplayName(
           f.name || folderService.folderName(f.uri),
           f.uri
@@ -222,7 +295,6 @@ export const mediaService = {
         const normPath = normalizePathKey(f.uri);
         if (normPath && seenNormPaths.has(normPath)) continue;
 
-        const info = await folderService.getFolderCoverAndCount(f.uri, 0);
         const total = f.totalMedia || info.count || 0;
         const isUserSaved = (saved || []).some((s) => s.uri === f.uri);
 
@@ -256,14 +328,15 @@ export const mediaService = {
 
       const combined = [...extraAlbums, ...dedupedMediaAlbums];
 
-      // Ordenar priorizando álbumes esenciales estilo Samsung Galaxy (Cámara, Capturas, Videos Descargados, Descargas)
+      // Ordenar priorizando álbumes esenciales y luego los que tienen más fotos primero
       const getEssentialPriority = (item) => {
         const t = (item.title || '').toLowerCase();
         if (/^(camera|cámara|camara|dcim)$/i.test(t)) return 1;
-        if (/screenshot|captura/i.test(t)) return 2;
-        if (/videos descargados/i.test(t)) return 3;
-        if (/^(download|descargas|descargar)$/i.test(t)) return 4;
-        if (item.isUserSaved) return 5;
+        if (/videos descargados/i.test(t)) return 2;
+        if (/whatsapp/i.test(t)) return 3;
+        if (/screenshot|captura/i.test(t)) return 4;
+        if (/^(download|descargas|descargar)$/i.test(t)) return 5;
+        if (item.isUserSaved) return 6;
         return 10;
       };
 
@@ -271,6 +344,9 @@ export const mediaService = {
         const pa = getEssentialPriority(a);
         const pb = getEssentialPriority(b);
         if (pa !== pb) return pa - pb;
+        // Dentro de la misma prioridad, mostrar primero las carpetas con más fotos
+        const countDiff = (b.assetCount || 0) - (a.assetCount || 0);
+        if (countDiff !== 0) return countDiff;
         return (a.title || '').localeCompare(b.title || '', 'es', { sensitivity: 'base' });
       });
 

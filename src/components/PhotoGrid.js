@@ -18,6 +18,7 @@ import { theme } from '../constants/theme';
 import { compressionService } from '../services/compressionService';
 import { mediaService } from '../services/mediaService';
 import { folderService } from '../services/folderService';
+import { videoEngineService } from '../services/videoEngineService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const NUM_COLUMNS = 4;
@@ -124,13 +125,18 @@ export default function PhotoGrid({
     [assets]
   );
 
+  const videoAssets = useMemo(
+    () => (assets || []).filter((a) => a && a.mediaType === 'video'),
+    [assets]
+  );
+
   const photoReductionSummary = useMemo(
-    () => compressionService.getBatchReductionSummary(photoAssets, 'photo'),
-    [photoAssets]
+    () => compressionService.getBatchReductionSummary(assets, null),
+    [assets]
   );
 
   const selectedReductionSummary = useMemo(
-    () => compressionService.getBatchReductionSummary(selectedAssets, 'photo'),
+    () => compressionService.getBatchReductionSummary(selectedAssets, null),
     [selectedAssets]
   );
 
@@ -198,13 +204,15 @@ export default function PhotoGrid({
 
   const handleCompressSelected = () => {
     const selectedPhotos = selectedAssets.filter((a) => a.mediaType === 'photo');
-    if (selectedPhotos.length === 0) {
-      Alert.alert('Sin fotos', 'Selecciona al menos una fotografía para comprimir.');
+    const selectedVideos = selectedAssets.filter((a) => a.mediaType === 'video');
+    const totalSel = selectedPhotos.length + selectedVideos.length;
+    if (totalSel === 0) {
+      Alert.alert('Sin archivos', 'Selecciona al menos una fotografía o video para comprimir.');
       return;
     }
     Alert.alert(
-      'Comprimir seleccionadas',
-      `¿Optimizar ${selectedPhotos.length} ${selectedPhotos.length === 1 ? 'foto seleccionada' : 'fotos seleccionadas'} manteniendo el 100% de su resolución original?`,
+      'Comprimir seleccionados (100% Resolución)',
+      `¿Optimizar ${selectedPhotos.length} foto(s) y ${selectedVideos.length} video(s) manteniendo el 100% de su resolución original?`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -213,20 +221,50 @@ export default function PhotoGrid({
             setIsCompressingBatch(true);
             setCompressProgress({
               current: 0,
-              total: selectedPhotos.length,
+              total: totalSel,
               percent: 0,
               savedFormatted: '0 B',
             });
             try {
-              const res = await compressionService.compressFolderPhotos(
-                selectedPhotos,
-                (prog) => setCompressProgress(prog)
-              );
+              let totalSaved = 0;
+              let totalDone = 0;
+              let permReq = false;
+              if (selectedPhotos.length > 0) {
+                const res = await compressionService.compressFolderPhotos(
+                  selectedPhotos,
+                  (prog) => setCompressProgress(prog)
+                );
+                totalSaved += res.totalSavedBytes || 0;
+                totalDone += res.compressedCount || 0;
+                if (res.permissionRequired) permReq = true;
+              }
+              if (selectedVideos.length > 0) {
+                const resVid = await videoEngineService.compressVideosBatch(selectedVideos, {
+                  presetId: 'balanced',
+                  onProgress: (prog) => setCompressProgress(prog),
+                });
+                totalSaved += resVid.totalSavedBytes || 0;
+                totalDone += resVid.compressedCount || 0;
+              }
               clearSelection();
-              Alert.alert(
-                '¡Compresión finalizada!',
-                `Se optimizaron ${res.compressedCount || res.processed} de ${selectedPhotos.length} fotos.\n\nEspacio ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
-              );
+              if (permReq && totalDone === 0) {
+                Alert.alert(
+                  'Permiso requerido para modificar originales',
+                  'Android bloqueó la modificación directa del archivo original. Activa "Acceso a todos los archivos" para comprimir sin crear copias.',
+                  [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                      text: 'Activar permiso en Ajustes',
+                      onPress: () => folderService.openAllFilesAccessSettings(),
+                    },
+                  ]
+                );
+              } else {
+                Alert.alert(
+                  '¡Compresión finalizada!',
+                  `Se optimizaron ${totalDone} de ${totalSel} archivos al 100% de su resolución.\n\nEspacio ahorrado: ${compressionService.formatBytes(totalSaved)}.`
+                );
+              }
               if (onRefresh) onRefresh();
             } catch (e) {
               Alert.alert('Error', e?.message || String(e));
@@ -246,35 +284,66 @@ export default function PhotoGrid({
   };
 
   const handleCompressAll = () => {
-    if (photoAssets.length === 0) {
-      Alert.alert('Sin fotos', 'No hay fotografías en esta vista para comprimir.');
+    const totalCount = photoAssets.length + videoAssets.length;
+    if (totalCount === 0) {
+      Alert.alert('Sin archivos', 'No hay fotografías ni videos en esta vista para comprimir.');
       return;
     }
 
     Alert.alert(
-      'Comprimir fotos sin perder resolución',
-      `¿Deseas optimizar las ${photoAssets.length} fotos visibles manteniendo el 100% de su resolución original (mismo ancho y alto)?`,
+      'Comprimir sin perder resolución (100%)',
+      `¿Deseas optimizar ${photoAssets.length} foto(s) y ${videoAssets.length} video(s) visibles manteniendo el 100% de su resolución original?`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
-          text: 'Comprimir fotos',
+          text: 'Comprimir todo',
           onPress: async () => {
             setIsCompressingBatch(true);
             setCompressProgress({
               current: 0,
-              total: photoAssets.length,
+              total: totalCount,
               percent: 0,
               savedFormatted: '0 B',
             });
             try {
-              const res = await compressionService.compressFolderPhotos(
-                photoAssets,
-                (prog) => setCompressProgress(prog)
-              );
-              Alert.alert(
-                '¡Compresión finalizada!',
-                `Se procesaron ${res.compressedCount || res.processed} de ${photoAssets.length} fotos manteniendo el 100% de su resolución.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
-              );
+              let totalSaved = 0;
+              let totalDone = 0;
+              let permReq = false;
+              if (photoAssets.length > 0) {
+                const res = await compressionService.compressFolderPhotos(
+                  photoAssets,
+                  (prog) => setCompressProgress(prog)
+                );
+                totalSaved += res.totalSavedBytes || 0;
+                totalDone += res.compressedCount || 0;
+                if (res.permissionRequired) permReq = true;
+              }
+              if (videoAssets.length > 0) {
+                const resVid = await videoEngineService.compressVideosBatch(videoAssets, {
+                  presetId: 'balanced',
+                  onProgress: (prog) => setCompressProgress(prog),
+                });
+                totalSaved += resVid.totalSavedBytes || 0;
+                totalDone += resVid.compressedCount || 0;
+              }
+              if (permReq && totalDone === 0) {
+                Alert.alert(
+                  'Permiso requerido para modificar originales',
+                  'Android bloqueó la modificación directa del archivo original. Activa "Acceso a todos los archivos" para comprimir sin crear copias.',
+                  [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                      text: 'Activar permiso en Ajustes',
+                      onPress: () => folderService.openAllFilesAccessSettings(),
+                    },
+                  ]
+                );
+              } else {
+                Alert.alert(
+                  '¡Compresión finalizada!',
+                  `Se optimizaron ${totalDone} de ${totalCount} archivos manteniendo el 100% de su resolución.\n\nEspacio total ahorrado: ${compressionService.formatBytes(totalSaved)}.`
+                );
+              }
               if (onRefresh) onRefresh();
             } catch (e) {
               Alert.alert(
@@ -412,7 +481,7 @@ export default function PhotoGrid({
               {assets.length} archivos · Pellizca con 2 dedos para zoom ({numColumns} col)
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {photoAssets.length > 0 && photoReductionSummary.canCompress && (
+              {(photoAssets.length > 0 || videoAssets.length > 0) && (
                 <TouchableOpacity
                   style={[
                     styles.compressBatchBtn,
@@ -432,7 +501,7 @@ export default function PhotoGrid({
                       { color: photoReductionSummary.textColor || photoReductionSummary.color },
                     ]}
                   >
-                    Comprimir ({photoReductionSummary.compressibleCount})
+                    Comprimir ({photoReductionSummary.compressibleCount || assets.length})
                   </Text>
                 </TouchableOpacity>
               )}

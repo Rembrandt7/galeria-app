@@ -408,17 +408,18 @@ export const compressionService = {
     const yellowThreshold = isVideo ? 25 : 4;
 
     if (mb <= greenThreshold) {
+      const estSaved = Math.round(rawBytes * (isVideo ? 0.28 : 0.32));
       return {
         level: 'light',
         mb: mb.toFixed(2),
-        color: '#10b981', // Verde: muy poco por reducir
+        color: '#10b981', // Verde: peso ligero
         titleColor: '#10b981',
         bannerBg: 'rgba(16, 185, 129, 0.18)',
         borderColor: '#10b981',
-        tagText: 'Óptimo (Verde)',
-        reductionText: 'Ya optimizado',
-        canCompress: false,
-        estimatedSavedBytes: 0,
+        tagText: 'Ligero (Verde)',
+        reductionText: rawBytes > 0 ? `Comprimir (-${compressionService.formatBytes(estSaved)})` : 'Comprimir',
+        canCompress: true,
+        estimatedSavedBytes: estSaved,
         isHeavy: false,
       };
     }
@@ -459,8 +460,7 @@ export const compressionService = {
 
   /**
    * Analiza una lista de fotos o videos y devuelve cuánto se puede reducir en conjunto
-   * y el color correspondiente (Verde = nada/muy poco, Amarillo = más o menos, Rojo = mucho).
-   * Si todas están en Verde (canCompress === false), no se ofrece comprimir.
+   * y el color correspondiente (Verde = ligero, Amarillo = medio, Rojo = mucho).
    */
   getBatchReductionSummary(assets = [], mediaType = 'photo') {
     const filtered = (assets || []).filter((a) => a && (!mediaType || a.mediaType === mediaType));
@@ -469,6 +469,7 @@ export const compressionService = {
     let lightCount = 0;
     let unknownSizeCount = 0;
     let estimatedSavedBytes = 0;
+    let lightEstimatedSavedBytes = 0;
 
     for (const item of filtered) {
       const sz = Number(item.fileSize) || 0;
@@ -485,19 +486,19 @@ export const compressionService = {
         estimatedSavedBytes += info.estimatedSavedBytes;
       } else {
         lightCount++;
+        lightEstimatedSavedBytes += info.estimatedSavedBytes;
       }
     }
 
     const compressibleCount = heavyCount + mediumCount;
-    // Si aún se están leyendo tamaños (unknownSizeCount > 0 y compressibleCount === 0 y lightCount === 0)
-    const sizesLoaded = lightCount > 0 || compressibleCount > 0;
-    const canCompress = sizesLoaded ? compressibleCount > 0 : filtered.length > 0;
+    const canCompress = filtered.length > 0;
 
     if (!canCompress) {
       return {
         canCompress: false,
         level: 'light',
         color: '#10b981',
+        textColor: '#6ee7b7',
         bgColor: 'rgba(16, 185, 129, 0.14)',
         borderColor: 'rgba(16, 185, 129, 0.4)',
         compressibleCount: 0,
@@ -524,25 +525,45 @@ export const compressionService = {
         lightCount,
         estimatedSavedBytes,
         estimatedSavedFormatted:
-          estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '',
+          estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '100% res.',
       };
     }
 
     // Si hay archivos en Amarillo (reducción media) -> AMARILLO
+    if (mediumCount > 0) {
+      return {
+        canCompress: true,
+        level: 'medium',
+        color: '#f59e0b',
+        textColor: '#fde68a',
+        bgColor: 'rgba(245, 158, 11, 0.20)',
+        borderColor: '#f59e0b',
+        compressibleCount: compressibleCount || filtered.length,
+        heavyCount,
+        mediumCount,
+        lightCount,
+        estimatedSavedBytes,
+        estimatedSavedFormatted:
+          estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '100% res.',
+      };
+    }
+
+    // Si todos están en Verde o aún se están leyendo tamaños -> VERDE/ACTIVO (siempre permite comprimir)
+    const totalEst = estimatedSavedBytes + lightEstimatedSavedBytes;
     return {
       canCompress: true,
-      level: 'medium',
-      color: '#f59e0b',
-      textColor: '#fde68a',
-      bgColor: 'rgba(245, 158, 11, 0.20)',
-      borderColor: '#f59e0b',
-      compressibleCount: compressibleCount || filtered.length,
+      level: 'light',
+      color: '#10b981',
+      textColor: '#6ee7b7',
+      bgColor: 'rgba(16, 185, 129, 0.18)',
+      borderColor: '#10b981',
+      compressibleCount: filtered.length,
       heavyCount,
       mediumCount,
       lightCount,
-      estimatedSavedBytes,
+      estimatedSavedBytes: totalEst,
       estimatedSavedFormatted:
-        estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '',
+        totalEst > 0 ? compressionService.formatBytes(totalEst) : '100% res.',
     };
   },
 
@@ -608,12 +629,12 @@ export const compressionService = {
    * Comprime una foto SIN perder resolución (mantiene el ancho y alto al 100%)
    * ajustando de forma inteligente la compresión JPEG para garantizar ahorro real de espacio.
    */
-  async compressPhoto(asset, { quality } = {}) {
+  async compressPhoto(asset, { quality, skipIfGreen = false } = {}) {
     if (!asset?.uri) throw new Error('Archivo no válido');
 
     let uri = asset.uri;
-    // Si es un asset de galería sin acceso directo, obtener su localUri real si está disponible
-    if (asset.id && !asset.fromFolder && !uri.startsWith('file://')) {
+    // Si es un asset de galería, consultar también localUri físico para lectura/escritura directa
+    if (asset.id && !asset.fromFolder) {
       try {
         const info = await MediaLibrary.getAssetInfoAsync(asset.id);
         if (info?.localUri) uri = info.localUri;
@@ -624,8 +645,12 @@ export const compressionService = {
 
     let oldSize = await compressionService.getFileSize(asset, { forceFresh: true });
 
-    // Si la imagen ya está en Verde (<= 2 MB, nivel 'light'), omitir sin comprimir
-    if (oldSize > 0 && compressionService.getSizeLevel(oldSize).level === 'light') {
+    // Solo omitir por estar en Verde si se solicitó explícitamente (lotes mixtos) o si ya pesa menos de 150 KB
+    if (
+      oldSize > 0 &&
+      ((skipIfGreen && compressionService.getSizeLevel(oldSize).level === 'light') ||
+        oldSize <= 150 * 1024)
+    ) {
       asset.fileSize = oldSize;
       return {
         success: true,
@@ -648,7 +673,11 @@ export const compressionService = {
       if (!oldSize || oldSize <= 0) {
         oldSize = await compressionService.getFileSize(workUri, { forceFresh: true });
       }
-      if (oldSize > 0 && compressionService.getSizeLevel(oldSize).level === 'light') {
+      if (
+        oldSize > 0 &&
+        ((skipIfGreen && compressionService.getSizeLevel(oldSize).level === 'light') ||
+          oldSize <= 150 * 1024)
+      ) {
         FileSystem.deleteAsync(tempInputFile.uri, { idempotent: true }).catch(() => {});
         asset.fileSize = oldSize;
         return {
@@ -833,14 +862,22 @@ export const compressionService = {
         skippedGreenCount: 0,
         totalSavedBytes: 0,
         errorsCount: 0,
+        permissionRequired: false,
         cancelled: false,
       };
     }
+
+    // Revisar si en el lote hay fotos pesadas (> 2 MB).
+    // Si TODAS las fotos seleccionadas/de la carpeta pesan <= 2 MB, las comprimimos todas sin saltarlas.
+    const hasHeavyOrMediumInBatch = photoAssets.some(
+      (p) => Number(p?.fileSize || 0) > 2 * 1024 * 1024
+    );
 
     let processed = 0;
     let compressedCount = 0;
     let skippedGreenCount = 0;
     let errorsCount = 0;
+    let permissionRequired = false;
     let totalSavedBytes = 0;
 
     for (const photo of photoAssets) {
@@ -854,17 +891,23 @@ export const compressionService = {
           skippedGreenCount,
           totalSavedBytes,
           errorsCount,
+          permissionRequired,
           cancelled: true,
         };
       }
 
       try {
-        // Revisar peso antes de comprimir: si está en Verde ('light'), omitir
         const currentSize = await compressionService.getFileSize(photo, { forceFresh: true });
-        if (currentSize > 0 && compressionService.getSizeLevel(currentSize).level === 'light') {
+        const isLight =
+          currentSize > 0 && compressionService.getSizeLevel(currentSize).level === 'light';
+
+        // Solo saltar las Verdes si el lote tiene fotos > 2 MB y hay más de 1 foto en el lote
+        if (isLight && hasHeavyOrMediumInBatch && total > 1) {
           skippedGreenCount++;
         } else {
-          const res = await compressionService.compressPhoto(photo);
+          const res = await compressionService.compressPhoto(photo, {
+            skipIfGreen: false,
+          });
           if (res?.skippedGreen) {
             skippedGreenCount++;
           } else if (res && res.success) {
@@ -874,6 +917,9 @@ export const compressionService = {
         }
       } catch (e) {
         errorsCount++;
+        if (e?.code === 'PERMISSION_REQUIRED') {
+          permissionRequired = true;
+        }
         console.warn('Error al comprimir foto:', photo.filename, e);
       }
       processed++;
@@ -897,6 +943,7 @@ export const compressionService = {
       skippedGreenCount,
       totalSavedBytes,
       errorsCount,
+      permissionRequired,
       cancelled: Boolean(control?.isCancelled),
     };
   },

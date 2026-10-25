@@ -326,7 +326,7 @@ export const folderService = {
    * Obtiene rápidamente la primera imagen/video (portada), el conteo de archivos y subcarpetas de una carpeta.
    */
   async getFolderCoverAndCount(uri, depth = 0) {
-    if (!uri || depth > 3) return { coverUri: null, count: 0, subfolderCount: 0 };
+    if (!uri || depth > 1) return { coverUri: null, count: 0, subfolderCount: 0 };
     try {
       const phys = folderService.toPhysicalUri(uri) || uri;
       let entries = [];
@@ -361,11 +361,13 @@ export const folderService = {
       }
 
       // Si la carpeta raíz solo tiene subcarpetas (ej. DCIM -> Camera o carpeta organizada por meses),
-      // buscar portada y sumar conteo en las primeras subcarpetas
+      // buscar portada y sumar conteo en las primeras 4 subcarpetas en paralelo
       let firstCover = null;
       let totalSubCount = 0;
-      for (const sub of subDirs.slice(0, 8)) {
-        const subRes = await folderService.getFolderCoverAndCount(sub.uri, depth + 1);
+      const subResults = await Promise.all(
+        subDirs.slice(0, 4).map((sub) => folderService.getFolderCoverAndCount(sub.uri, depth + 1))
+      );
+      for (const subRes of subResults) {
         if (!firstCover && subRes.coverUri) {
           firstCover = subRes.coverUri;
         }
@@ -577,9 +579,9 @@ export const folderService = {
         onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: true });
       }
       await Promise.all([
-        folderService.enrichAssetsFileSizes(assets),
+        folderService.enrichAssetsFileSizes(assets.slice(0, 120)),
         Promise.all(
-          subfolders.slice(0, 40).map(async (sub) => {
+          subfolders.slice(0, 24).map(async (sub) => {
             if (!sub.coverUri) {
               const info = await folderService.getFolderCoverAndCount(sub.uri, 0);
               sub.coverUri = info.coverUri;

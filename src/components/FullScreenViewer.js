@@ -325,12 +325,12 @@ export default function FullScreenViewer({
     return null;
   }
 
-  // Comprimir foto actual sin perder resolución (solo Naranja o Rojo; omite Verde)
+  // Comprimir foto actual sin perder resolución
   const handleCompressCurrentPhoto = async () => {
-    if (isCompressing || !currentAsset || isGreenSize) return;
+    if (isCompressing || !currentAsset) return;
     setIsCompressing(true);
     try {
-      const res = await compressionService.compressPhoto(currentAsset);
+      const res = await compressionService.compressPhoto(currentAsset, { skipIfGreen: false });
       if (res?.newSize > 0) {
         currentAsset.fileSize = res.newSize;
         setAssetSize(res.newSize);
@@ -747,57 +747,57 @@ export default function FullScreenViewer({
                 ) : null}
               </View>
 
-              {/* Botón Comprimir: SOLO aparece si NO está en Verde; su color es Amarillo (reducción media) o Rojo (mucha reducción) */}
-              {!isGreenSize && (
-                <TouchableOpacity
-                  style={[
-                    styles.compressBtn,
-                    sizeInfo.isHeavy
-                      ? styles.compressBtnHeavy
-                      : {
-                          backgroundColor: 'rgba(245, 158, 11, 0.22)',
-                          borderColor: sizeInfo.color,
-                        },
-                  ]}
-                  onPress={() => {
-                    if (isVideo) {
-                      setOpenedDirectlyAsVideo(false);
-                      setPlayerInitialMode('compress');
-                      setPlayerAsset(currentAsset);
-                    } else {
-                      handleCompressCurrentPhoto();
-                    }
-                  }}
-                  disabled={isCompressing}
-                  activeOpacity={0.75}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                >
-                  {isCompressing ? (
-                    <ActivityIndicator
-                      size="small"
+              {/* Botón Comprimir: siempre visible y activo en su color semáforo */}
+              <TouchableOpacity
+                style={[
+                  styles.compressBtn,
+                  sizeInfo.isHeavy
+                    ? styles.compressBtnHeavy
+                    : {
+                        backgroundColor: isGreenSize
+                          ? 'rgba(16, 185, 129, 0.22)'
+                          : 'rgba(245, 158, 11, 0.22)',
+                        borderColor: sizeInfo.color,
+                      },
+                ]}
+                onPress={() => {
+                  if (isVideo) {
+                    setOpenedDirectlyAsVideo(false);
+                    setPlayerInitialMode('compress');
+                    setPlayerAsset(currentAsset);
+                  } else {
+                    handleCompressCurrentPhoto();
+                  }
+                }}
+                disabled={isCompressing}
+                activeOpacity={0.75}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                {isCompressing ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
+                  />
+                ) : (
+                  <>
+                    <Ionicons
+                      name="sparkles"
+                      size={14}
                       color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
                     />
-                  ) : (
-                    <>
-                      <Ionicons
-                        name="sparkles"
-                        size={14}
-                        color={sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color}
-                      />
-                      <Text
-                        style={[
-                          styles.compressBtnText,
-                          {
-                            color: sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color,
-                          },
-                        ]}
-                      >
-                        {sizeInfo.reductionText || 'Comprimir'}
-                      </Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              )}
+                    <Text
+                      style={[
+                        styles.compressBtnText,
+                        {
+                          color: sizeInfo.isHeavy ? '#ffffff' : sizeInfo.color,
+                        },
+                      ]}
+                    >
+                      {sizeInfo.reductionText || 'Comprimir'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -966,43 +966,41 @@ export default function FullScreenViewer({
               </Text>
             </TouchableOpacity>
 
-            {/* Comprimir foto o video (SOLO si NO está en Verde; pintado en Amarillo o Rojo según reducción) */}
-            {!isGreenSize && (
-              <TouchableOpacity
-                style={styles.actionItem}
-                onPress={() => {
-                  if (isVideo) {
-                    setOpenedDirectlyAsVideo(false);
-                    setPlayerInitialMode('compress');
-                    setPlayerAsset(currentAsset);
-                  } else {
-                    handleCompressCurrentPhoto();
-                  }
-                }}
-                disabled={isCompressing}
-                activeOpacity={0.7}
-              >
-                {isCompressing ? (
-                  <ActivityIndicator size="small" color={sizeInfo.color} />
-                ) : (
-                  <>
-                    <Ionicons
-                      name="sparkles"
-                      size={24}
-                      color={sizeInfo.color}
-                    />
-                    <Text
-                      style={[
-                        styles.actionLabel,
-                        { color: sizeInfo.color, fontWeight: '700' },
-                      ]}
-                    >
-                      Comprimir
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            )}
+            {/* Comprimir foto o video (siempre activo con su indicador de color) */}
+            <TouchableOpacity
+              style={styles.actionItem}
+              onPress={() => {
+                if (isVideo) {
+                  setOpenedDirectlyAsVideo(false);
+                  setPlayerInitialMode('compress');
+                  setPlayerAsset(currentAsset);
+                } else {
+                  handleCompressCurrentPhoto();
+                }
+              }}
+              disabled={isCompressing}
+              activeOpacity={0.7}
+            >
+              {isCompressing ? (
+                <ActivityIndicator size="small" color={sizeInfo.color} />
+              ) : (
+                <>
+                  <Ionicons
+                    name="sparkles"
+                    size={24}
+                    color={sizeInfo.color}
+                  />
+                  <Text
+                    style={[
+                      styles.actionLabel,
+                      { color: sizeInfo.color, fontWeight: '700' },
+                    ]}
+                  >
+                    Comprimir
+                  </Text>
+                </>
+              )}
+            </TouchableOpacity>
 
             {/* Girar 90° rápido (solo fotos) o Recortar (en videos) */}
             {!isVideo ? (

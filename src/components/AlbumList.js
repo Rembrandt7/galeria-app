@@ -73,6 +73,9 @@ export default function AlbumList({
   const [selectedSuggestedUris, setSelectedSuggestedUris] = useState({});
   const [searchQuery, setSearchQuery] = useState('');
   const [quickEditVisibility, setQuickEditVisibility] = useState(false);
+  const [sortBy, setSortBy] = useState('smart'); // 'smart' | 'count' | 'months' | 'az'
+  const [groupSmallInVarios, setGroupSmallInVarios] = useState(true);
+  const [variosModalVisible, setVariosModalVisible] = useState(false);
 
   const favList = useMemo(() => Object.values(favorites || {}), [favorites]);
   const favCount = favList.length;
@@ -85,23 +88,107 @@ export default function AlbumList({
         (item.uri && hiddenFolders[item.uri])
     );
 
-  const visibleAlbums = useMemo(() => {
+  // Detectar si el nombre de la carpeta es un mes (ej. "Octubre 2026", "Enero 2025")
+  const getMonthOrderScore = (title = '') => {
+    const clean = String(title).trim().toLowerCase();
+    const months = {
+      enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6,
+      julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12,
+    };
+    const match = clean.match(/^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+(\d{4})/i);
+    if (!match) return 0;
+    const m = months[match[1].toLowerCase()] || 0;
+    const y = parseInt(match[2], 10) || 0;
+    return y * 100 + m;
+  };
+
+  const isEssentialMainAlbum = (item) => {
+    const t = String(item?.title || '').trim().toLowerCase();
+    return (
+      item?.isDownloadedVideos ||
+      /^(camera|cámara|camara|dcim|videos descargados|favoritos)$/i.test(t)
+    );
+  };
+
+  // Determinar cuáles álbumes tienen menos de 5 elementos (1 a 4 fotos/videos) para agruparlos en "Varios"
+  const isSmallMiscAlbum = (item) => {
+    const count = Number(item?.assetCount || 0);
+    if (count >= 5) return false;
+    if ((item?.subfolderCount || 0) > 0) return false;
+    if (isEssentialMainAlbum(item)) return false;
+    return true;
+  };
+
+  const { mainVisibleAlbums, smallGroupedAlbums } = useMemo(() => {
     const base = showAllFolders || quickEditVisibility
       ? albums
       : albums.filter((item) => !isAlbumHidden(item));
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter((item) => {
-      const displayTitle = folderService.formatFolderDisplayName(item.title, item.uri || '');
-      return displayTitle.toLowerCase().includes(q);
+
+    const filtered = q
+      ? base.filter((item) => {
+          const displayTitle = folderService.formatFolderDisplayName(item.title, item.uri || '');
+          return displayTitle.toLowerCase().includes(q);
+        })
+      : base;
+
+    const mainList = [];
+    const smallList = [];
+
+    for (const item of filtered) {
+      // Si el modo "Varios (<5)" está activo y no estamos buscando ni editando visibilidad individual
+      if (groupSmallInVarios && !q && !quickEditVisibility && isSmallMiscAlbum(item)) {
+        smallList.push(item);
+      } else {
+        mainList.push(item);
+      }
+    }
+
+    const getPriorityRank = (item) => {
+      const t = folderService.formatFolderDisplayName(item.title, item.uri || '').toLowerCase();
+      if (/^(camera|cámara|camara|dcim)$/i.test(t)) return 1;
+      if (item.isDownloadedVideos || /videos descargados/i.test(t)) return 2;
+      if (/whatsapp/i.test(t)) return 3;
+      if (/screenshot|captura/i.test(t)) return 4;
+      if (/download|descarg/i.test(t)) return 5;
+      if (/facebook|instagram|tiktok|telegram/i.test(t)) return 6;
+      return 50;
+    };
+
+    mainList.sort((a, b) => {
+      const nameA = folderService.formatFolderDisplayName(a.title, a.uri || '');
+      const nameB = folderService.formatFolderDisplayName(b.title, b.uri || '');
+
+      if (sortBy === 'az') {
+        return nameA.localeCompare(nameB, 'es');
+      }
+      if (sortBy === 'count') {
+        return (b.assetCount || 0) - (a.assetCount || 0);
+      }
+      if (sortBy === 'months') {
+        const mA = getMonthOrderScore(nameA);
+        const mB = getMonthOrderScore(nameB);
+        if (mA !== mB) return mB - mA;
+        return (b.assetCount || 0) - (a.assetCount || 0);
+      }
+      // Por defecto: 'smart' (Esenciales primero y luego los que tienen más fotos)
+      const rankA = getPriorityRank(a);
+      const rankB = getPriorityRank(b);
+      if (rankA !== rankB) return rankA - rankB;
+      return (b.assetCount || 0) - (a.assetCount || 0);
     });
-  }, [albums, hiddenFolders, showAllFolders, quickEditVisibility, searchQuery]);
+
+    return {
+      mainVisibleAlbums: mainList,
+      smallGroupedAlbums: smallList,
+    };
+  }, [albums, hiddenFolders, showAllFolders, quickEditVisibility, searchQuery, groupSmallInVarios, sortBy]);
 
   const hiddenCount = useMemo(() => {
     return albums.filter((item) => isAlbumHidden(item)).length;
   }, [albums, hiddenFolders]);
 
-  // Construir lista final con la tarjeta "Favoritos" estilo Samsung Galaxy en la primera posición
+  // Construir lista final con "Favoritos" al inicio y "Varios" (carpetas de <5 archivos) agrupadas al final
   const gridData = useMemo(() => {
     const favCard = {
       id: '__galaxy_favorites_card__',
@@ -111,11 +198,33 @@ export default function AlbumList({
       coverUri: favCoverUri,
     };
     const q = searchQuery.trim().toLowerCase();
-    if (q && !'favoritos'.includes(q)) {
-      return visibleAlbums;
+    const list = [];
+
+    if (!q || 'favoritos'.includes(q)) {
+      list.push(favCard);
     }
-    return [favCard, ...visibleAlbums];
-  }, [favCount, favCoverUri, visibleAlbums, searchQuery]);
+
+    list.push(...mainVisibleAlbums);
+
+    if (smallGroupedAlbums.length > 0) {
+      const totalSmallPhotos = smallGroupedAlbums.reduce(
+        (acc, it) => acc + Number(it.assetCount || 0),
+        0
+      );
+      const firstWithCover = smallGroupedAlbums.find((it) => Boolean(it.coverUri));
+      list.push({
+        id: '__galaxy_varios_card__',
+        isVariosCard: true,
+        title: 'Varios',
+        assetCount: totalSmallPhotos,
+        folderCount: smallGroupedAlbums.length,
+        coverUri: firstWithCover?.coverUri || BEAUTIFUL_FALLBACK_COVERS[4],
+        childAlbums: smallGroupedAlbums,
+      });
+    }
+
+    return list;
+  }, [favCount, favCoverUri, mainVisibleAlbums, smallGroupedAlbums, searchQuery]);
 
   const handleOpenFolderScanner = async () => {
     if (onCloseVisibilityModal) onCloseVisibilityModal();
@@ -192,6 +301,54 @@ export default function AlbumList({
               Favoritos
             </Text>
             <Text style={styles.galaxyCardCount}>{item.assetCount}</Text>
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
+    // 1.5. Tarjeta especial "Varios" que agrupa todas las carpetas con menos de 5 archivos (1 a 4 fotos/videos)
+    if (item.isVariosCard) {
+      return (
+        <TouchableOpacity
+          style={[styles.galaxyCard, styles.variosCardBg]}
+          activeOpacity={0.82}
+          onPress={() => {
+            onSelectAlbum(item);
+          }}
+          onLongPress={() => setVariosModalVisible(true)}
+        >
+          <Image
+            source={{ uri: item.coverUri }}
+            style={[styles.coverImage, { opacity: 0.78 }]}
+            contentFit="cover"
+            transition={120}
+            cachePolicy="memory-disk"
+          />
+          <View style={styles.bottomScrim} />
+
+          {/* Botón superior derecho para ver el listado de carpetas individuales dentro de "Varios" */}
+          <TouchableOpacity
+            style={styles.variosFolderCountPill}
+            onPress={(e) => {
+              e.stopPropagation();
+              setVariosModalVisible(true);
+            }}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="albums" size={11} color="#c4b5fd" />
+            <Text style={styles.variosFolderCountText}>{item.folderCount} carpetas</Text>
+          </TouchableOpacity>
+
+          <View style={styles.cardBottomOverlay}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Ionicons name="file-tray-stacked" size={13} color="#a78bfa" />
+              <Text style={styles.galaxyCardTitle} numberOfLines={1}>
+                Varios
+              </Text>
+            </View>
+            <Text style={styles.galaxyCardCount}>
+              {item.assetCount} {item.assetCount === 1 ? 'archivo' : 'archivos'}
+            </Text>
           </View>
         </TouchableOpacity>
       );
@@ -360,6 +517,98 @@ export default function AlbumList({
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* Barra de acomodo inteligente y agrupación "Varios (<5)" */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.sortBarScroll}
+      >
+        <TouchableOpacity
+          style={[styles.sortChip, sortBy === 'smart' && styles.sortChipActive]}
+          onPress={() => setSortBy('smart')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="sparkles"
+            size={13}
+            color={sortBy === 'smart' ? '#ffffff' : '#60a5fa'}
+          />
+          <Text style={[styles.sortChipText, sortBy === 'smart' && styles.sortChipTextActive]}>
+            Inteligente
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.sortChip, sortBy === 'count' && styles.sortChipActive]}
+          onPress={() => setSortBy('count')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="stats-chart"
+            size={13}
+            color={sortBy === 'count' ? '#ffffff' : '#38bdf8'}
+          />
+          <Text style={[styles.sortChipText, sortBy === 'count' && styles.sortChipTextActive]}>
+            Más fotos
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.sortChip, sortBy === 'months' && styles.sortChipActive]}
+          onPress={() => setSortBy('months')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="calendar-outline"
+            size={13}
+            color={sortBy === 'months' ? '#ffffff' : '#f59e0b'}
+          />
+          <Text style={[styles.sortChipText, sortBy === 'months' && styles.sortChipTextActive]}>
+            Por Meses
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.sortChip, sortBy === 'az' && styles.sortChipActive]}
+          onPress={() => setSortBy('az')}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="text"
+            size={13}
+            color={sortBy === 'az' ? '#ffffff' : '#a78bfa'}
+          />
+          <Text style={[styles.sortChipText, sortBy === 'az' && styles.sortChipTextActive]}>
+            A-Z
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.sortChip,
+            groupSmallInVarios ? styles.variosChipActive : styles.sortChip,
+          ]}
+          onPress={() => setGroupSmallInVarios((prev) => !prev)}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="file-tray-stacked"
+            size={13}
+            color={groupSmallInVarios ? '#ffffff' : '#c4b5fd'}
+          />
+          <Text
+            style={[
+              styles.sortChipText,
+              groupSmallInVarios && styles.sortChipTextActive,
+            ]}
+          >
+            {groupSmallInVarios
+              ? `Varios <5 (${smallGroupedAlbums.length})`
+              : 'Agrupar <5 en Varios'}
+          </Text>
+        </TouchableOpacity>
+      </ScrollView>
 
       {quickEditVisibility && (
         <View style={styles.quickEditBanner}>
@@ -637,6 +886,83 @@ export default function AlbumList({
           </View>
         </View>
       </Modal>
+
+      {/* Modal para inspeccionar las carpetas pequeñas (< 5 archivos) agrupadas dentro de "Varios" */}
+      <Modal
+        visible={variosModalVisible}
+        animationType="slide"
+        onRequestClose={() => setVariosModalVisible(false)}
+        transparent={true}
+        statusBarTranslucent
+      >
+        <View style={styles.scannerBackdrop}>
+          <View style={styles.scannerCard}>
+            <View style={styles.scannerHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="file-tray-stacked" size={22} color="#a78bfa" />
+                <Text style={styles.scannerTitle}>
+                  Varios ({smallGroupedAlbums.length} carpetas con &lt; 5 fotos)
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setVariosModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.visibilitySubHint}>
+              Aquí se agrupan todas las carpetas que tienen de 1 a 4 fotos/videos para mantener tu pantalla limpia. Puedes ver todas sus fotos juntas o abrir una carpeta individual.
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.confirmScanBtn, { backgroundColor: '#7c3aed', marginBottom: 4 }]}
+              onPress={() => {
+                setVariosModalVisible(false);
+                const variosCard = gridData.find((it) => it.isVariosCard);
+                if (variosCard) onSelectAlbum(variosCard);
+              }}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="images" size={17} color="#fff" />
+              <Text style={styles.confirmScanBtnText}>
+                Ver todas las fotos de Varios juntas
+              </Text>
+            </TouchableOpacity>
+
+            <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator={false}>
+              {smallGroupedAlbums.map((alb) => {
+                const displayName = folderService.formatFolderDisplayName(alb.title, alb.uri || '');
+                const thumb = alb.coverUri || getFallbackCoverForKey(alb.id || displayName);
+                return (
+                  <TouchableOpacity
+                    key={`varios_sub_${alb.id}`}
+                    style={styles.visibilityRow}
+                    onPress={() => {
+                      setVariosModalVisible(false);
+                      onSelectAlbum({ ...alb, title: displayName });
+                    }}
+                    activeOpacity={0.75}
+                  >
+                    <Image
+                      source={{ uri: thumb }}
+                      style={styles.visibilityThumb}
+                      contentFit="cover"
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.visibilityRowTitle} numberOfLines={1}>
+                        {displayName}
+                      </Text>
+                      <Text style={styles.visibilityRowSub}>
+                        {alb.assetCount || 0} {alb.assetCount === 1 ? 'elemento' : 'elementos'}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#a1a1aa" />
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -655,6 +981,64 @@ const styles = StyleSheet.create({
   headerBlock: {
     marginBottom: 12,
     gap: 10,
+  },
+  sortBarScroll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingVertical: 2,
+  },
+  sortChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#18181b',
+    borderWidth: 1,
+    borderColor: '#27272a',
+  },
+  sortChipActive: {
+    backgroundColor: '#2563eb',
+    borderColor: '#3b82f6',
+  },
+  variosChipActive: {
+    backgroundColor: '#6d28d9',
+    borderColor: '#8b5cf6',
+  },
+  sortChipText: {
+    color: '#d4d4d8',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  sortChipTextActive: {
+    color: '#ffffff',
+  },
+  variosCardBg: {
+    borderWidth: 1.5,
+    borderColor: 'rgba(167, 139, 250, 0.55)',
+    backgroundColor: '#1e1b2e',
+  },
+  variosFolderCountPill: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(15, 12, 28, 0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.5)',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 10,
+    zIndex: 10,
+  },
+  variosFolderCountText: {
+    color: '#ddd6fe',
+    fontSize: 10,
+    fontWeight: '800',
   },
   searchBarBox: {
     flexDirection: 'row',
