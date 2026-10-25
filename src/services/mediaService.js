@@ -199,8 +199,20 @@ export const mediaService = {
     }
   },
 
-  // Obtener álbumes del teléfono con vista previa ultra rápida
-  async getAlbums() {
+  _albumsMemCache: null,
+  _albumsMemTime: 0,
+
+  // Obtener álbumes del teléfono con vista previa ultra rápida y caché en memoria (0 ms al cambiar de pestaña)
+  async getAlbums({ forceRefresh = false } = {}) {
+    if (
+      !forceRefresh &&
+      mediaService._albumsMemCache &&
+      mediaService._albumsMemCache.length > 0 &&
+      Date.now() - mediaService._albumsMemTime < 45000
+    ) {
+      return mediaService._albumsMemCache;
+    }
+
     try {
       let mediaAlbums = [];
       try {
@@ -215,20 +227,26 @@ export const mediaService = {
           return true;
         });
 
-        // Separar álbumes principales (>= 5 archivos) de los pequeños (< 5 archivos)
-        // Para los pequeños (< 5), solo pedimos portada a los primeros 4 para que el arranque sea instantáneo
-        let smallCoverBudget = 4;
+        // Ordenar primero por cantidad de fotos para consultar portada solo a las carpetas principales
+        activeAlbums.sort((a, b) => (b.assetCount || 0) - (a.assetCount || 0));
+
+        // Limitar las consultas nativas de portada a las 16 carpetas principales y 2 pequeñas (< 5)
+        let mainCoverBudget = 16;
+        let smallCoverBudget = 2;
         mediaAlbums = await Promise.all(
           activeAlbums.map(async (album) => {
             const isSmall = (album.assetCount || 0) < 5;
-            if (isSmall && smallCoverBudget <= 0) {
-              return {
-                ...album,
-                uri: album.uri || null,
-                coverUri: null,
-              };
+            if (isSmall) {
+              if (smallCoverBudget <= 0) {
+                return { ...album, uri: album.uri || null, coverUri: null };
+              }
+              smallCoverBudget--;
+            } else {
+              if (mainCoverBudget <= 0) {
+                return { ...album, uri: album.uri || null, coverUri: null };
+              }
+              mainCoverBudget--;
             }
-            if (isSmall) smallCoverBudget--;
 
             try {
               const preview = await MediaLibrary.getAssetsAsync({
@@ -350,10 +368,12 @@ export const mediaService = {
         return (a.title || '').localeCompare(b.title || '', 'es', { sensitivity: 'base' });
       });
 
+      mediaService._albumsMemCache = combined;
+      mediaService._albumsMemTime = Date.now();
       return combined;
     } catch (error) {
       console.error('Error al obtener álbumes:', error);
-      return [];
+      return mediaService._albumsMemCache || [];
     }
   },
 

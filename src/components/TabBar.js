@@ -1,11 +1,14 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, ScrollView, Platform } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function TabBar({
   activeTab,
   onSelectTab,
   favoritesCount = 0,
+  trashCount = 0,
+  onOpenModoGuardar,
   onOpenDownloader,
   onOpenStore,
   onOpenSettings,
@@ -14,6 +17,10 @@ export default function TabBar({
   hasUpdateAvailable = false,
   currentVersionLabel = '',
 }) {
+  const insets = useSafeAreaInsets();
+  // Elevar la barra flotante por encima de los símbolos/botones de navegación de Android
+  const safeBottomOffset = Math.max((insets?.bottom || 0) + 12, Platform.OS === 'android' ? 44 : 24);
+
   const dockItems = [
     {
       key: 'photos',
@@ -28,6 +35,15 @@ export default function TabBar({
       icon: 'book-outline',
       iconActive: 'book',
       isTab: true,
+    },
+    {
+      key: 'modo_guardar',
+      label: trashCount > 0 ? `Modo Guardar (${trashCount})` : 'Modo Guardar',
+      icon: 'swap-vertical-outline',
+      iconActive: 'swap-vertical',
+      onPress: onOpenModoGuardar,
+      accentColor: trashCount > 0 ? '#f43f5e' : '#10b981',
+      hasDot: trashCount > 0,
     },
     {
       key: 'downloader',
@@ -83,7 +99,10 @@ export default function TabBar({
   }
 
   return (
-    <View style={styles.floatingDockWrapper} pointerEvents="box-none">
+    <View
+      style={[styles.floatingDockWrapper, { bottom: safeBottomOffset }]}
+      pointerEvents="box-none"
+    >
       <View style={styles.galaxyCapsule}>
         <ScrollView
           horizontal

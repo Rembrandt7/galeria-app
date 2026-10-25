@@ -41,6 +41,7 @@ import SettingsModal from './src/components/SettingsModal';
 import CameraScreen from './src/components/CameraScreen';
 import VideoDownloaderModal from './src/components/VideoDownloaderModal';
 import TiendaRembModal from './src/components/TiendaRembModal';
+import ModoGuardarModal from './src/components/ModoGuardarModal';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
@@ -80,6 +81,13 @@ export default function App() {
   const [visibilityModalVisible, setVisibilityModalVisible] = useState(false);
   const [hasUpdateAvailable, setHasUpdateAvailable] = useState(false);
 
+  // Modo Guardar y Papelera temporal
+  const [trashBin, setTrashBin] = useState({});
+  const [modoGuardarVisible, setModoGuardarVisible] = useState(false);
+  const [modoGuardarAssets, setModoGuardarAssets] = useState([]);
+  const [modoGuardarInitialIndex, setModoGuardarInitialIndex] = useState(0);
+  const [modoGuardarInitialView, setModoGuardarInitialView] = useState('swipe');
+
   // Carpetas ocultas y modo todo visible
   const [hiddenFolders, setHiddenFolders] = useState({});
   const [showAllFolders, setShowAllFolders] = useState(false);
@@ -102,8 +110,9 @@ export default function App() {
         })
         .catch(() => {});
 
-      // 1. Cargar favoritos en segundo plano
+      // 1. Cargar favoritos y papelera temporal del Modo Guardar en segundo plano
       storageService.getFavorites().then(setFavorites);
+      storageService.getTrashBin().then((tb) => { if (tb) setTrashBin(tb); });
 
       // 1b. Cargar carpetas ocultas y SIEMPRE iniciar con carpetas ocultas bloqueadas (showAllFolders = false)
       storageService.getHiddenFolders().then((hf) => { if (hf) setHiddenFolders(hf); });
@@ -433,21 +442,95 @@ export default function App() {
     }
   };
 
-  // Lista de fotos a mostrar según la pestaña activa
+  // Lista de fotos a mostrar según la pestaña activa (excluyendo las que están en la Papelera temporal)
   const displayedAssets = useMemo(() => {
+    let baseList = assets;
     if (activeTab === 'favorites') {
       const favList = Object.values(favorites);
-      return favList.filter((a) => {
+      baseList = favList.filter((a) => {
         if (filterType === 'photos') return a.mediaType === 'photo';
         if (filterType === 'videos') return a.mediaType === 'video';
         return true;
       });
+    } else if (activeTab === 'folder') {
+      baseList = folderAssets;
     }
-    if (activeTab === 'folder') {
-      return folderAssets;
+    return (baseList || []).filter((a) => a && !trashBin[a.id]);
+  }, [activeTab, favorites, assets, folderAssets, filterType, trashBin]);
+
+  // Abrir Modo Guardar (organizador por deslizamiento + papelera con restauración en 1 clic)
+  const handleOpenModoGuardar = useCallback(
+    (customList, startIndex = 0, startView = 'swipe') => {
+      const list = Array.isArray(customList) && customList.length > 0 ? customList : displayedAssets;
+      setModoGuardarAssets(list);
+      setModoGuardarInitialIndex(Math.max(0, startIndex));
+      setModoGuardarInitialView(startView || 'swipe');
+      setModoGuardarVisible(true);
+    },
+    [displayedAssets]
+  );
+
+  // Enviar foto a la Papelera temporal del Modo Guardar (sin borrarla aún del dispositivo)
+  const handleAddToTrash = useCallback(async (asset) => {
+    try {
+      const updated = await storageService.addToTrashBin(asset);
+      setTrashBin(updated);
+    } catch (e) {
+      console.error('Error al enviar a papelera:', e);
     }
-    return assets;
-  }, [activeTab, favorites, assets, folderAssets, filterType]);
+  }, []);
+
+  // Restaurar foto de la Papelera con 1 clic
+  const handleRestoreFromTrash = useCallback(async (assetId) => {
+    try {
+      const updated = await storageService.restoreFromTrashBin(assetId);
+      setTrashBin(updated);
+    } catch (e) {
+      console.error('Error al restaurar de papelera:', e);
+    }
+  }, []);
+
+  // Vaciar Papelera definitivamente (elimina los archivos del teléfono y libera el espacio real)
+  const handleEmptyTrash = useCallback(async (itemsToDelete = []) => {
+    const list =
+      Array.isArray(itemsToDelete) && itemsToDelete.length > 0
+        ? itemsToDelete
+        : Object.values(trashBin);
+    if (list.length === 0) return { deletedCount: 0 };
+
+    const folderItems = list.filter((it) => it.fromFolder && it.uri);
+    const mediaItems = list.filter((it) => !it.fromFolder && it.id);
+    const deletedIds = new Set();
+
+    for (const item of folderItems) {
+      const ok = await folderService.deleteFile(item.uri);
+      if (ok) deletedIds.add(item.id);
+    }
+
+    if (mediaItems.length > 0) {
+      const ids = mediaItems.map((it) => it.id);
+      const ok = await mediaService.deleteAssets(ids);
+      if (ok) {
+        ids.forEach((id) => deletedIds.add(id));
+      }
+    }
+
+    if (deletedIds.size > 0) {
+      setAssets((prev) => prev.filter((a) => !deletedIds.has(a.id)));
+      setFolderAssets((prev) => prev.filter((a) => !deletedIds.has(a.id)));
+      for (const id of deletedIds) {
+        if (favorites[id]) {
+          await storageService.removeFavorite(id);
+        }
+      }
+      const updatedFavs = await storageService.getFavorites();
+      setFavorites(updatedFavs);
+      const updatedTrash = await storageService.clearTrashBin(Array.from(deletedIds));
+      setTrashBin(updatedTrash);
+    }
+
+    return { deletedCount: deletedIds.size };
+  }, [trashBin, favorites]);
 
   // Ocultar o prender cualquier carpeta
   const handleToggleHideFolder = async (folderKey, folderName) => {
@@ -530,6 +613,10 @@ export default function App() {
         setDownloaderVisible(false);
         return true;
       }
+      if (modoGuardarVisible) {
+        setModoGuardarVisible(false);
+        return true;
+      }
       if (selectedAlbum) {
         handleBackFromAlbum();
         return true;
@@ -555,6 +642,7 @@ export default function App() {
     dupVisible,
     cameraVisible,
     downloaderVisible,
+    modoGuardarVisible,
     selectedAlbum,
     filterType,
     activeTab,
@@ -694,6 +782,8 @@ export default function App() {
               showAllFolders={showAllFolders}
               onToggleShowAllFolders={handleToggleShowAllFolders}
               onExitFolder={handleBackFromAlbum}
+              onOpenModoGuardar={handleOpenModoGuardar}
+              trashCount={Object.keys(trashBin).length}
             />
           ) : activeTab === 'albums' && !selectedAlbum ? (
             <AlbumList
@@ -725,6 +815,8 @@ export default function App() {
               onLoadMore={handleLoadMore}
               hasMore={activeTab !== 'favorites' && hasNextPage}
               isLoadingMore={isLoadingMore}
+              onOpenModoGuardar={handleOpenModoGuardar}
+              trashCount={Object.keys(trashBin).length}
               emptyMessage={
                 activeTab === 'favorites'
                   ? 'Aún no has agregado fotos a favoritos.\nToca el corazón en cualquier foto para guardarla aquí.'
@@ -745,6 +837,8 @@ export default function App() {
             onOpenSettings={() => setSettingsVisible(true)}
             onOpenCamera={() => setCameraVisible(true)}
             onFindDuplicates={() => setDupVisible(true)}
+            onOpenModoGuardar={() => handleOpenModoGuardar(displayedAssets, 0, 'swipe')}
+            trashCount={Object.keys(trashBin).length}
             hasUpdateAvailable={hasUpdateAvailable}
             currentVersionLabel={CURRENT_VERSION}
           />
@@ -767,9 +861,29 @@ export default function App() {
               onShare={handleShare}
               onDelete={handleDelete}
               onMediaSaved={() => handleRefresh()}
+              onOpenModoGuardar={(list, idx) => {
+                setViewerVisible(false);
+                handleOpenModoGuardar(list, idx, 'swipe');
+              }}
             />
           </ErrorBoundary>
         )}
+
+        {/* Modo Guardar: Organizador Rápido por Deslizamiento (⬆️ Favorito, ⬇️ Papelera) + Papelera con Restauración en 1 Clic */}
+        <ModoGuardarModal
+          visible={modoGuardarVisible}
+          assets={modoGuardarAssets.length > 0 ? modoGuardarAssets : displayedAssets}
+          initialIndex={modoGuardarInitialIndex}
+          initialView={modoGuardarInitialView}
+          favorites={favorites}
+          trashBin={trashBin}
+          onClose={() => setModoGuardarVisible(false)}
+          onToggleFavorite={handleToggleFavorite}
+          onAddToTrash={handleAddToTrash}
+          onRestoreFromTrash={handleRestoreFromTrash}
+          onEmptyTrash={handleEmptyTrash}
+          onChanged={() => handleRefresh()}
+        />
 
         {/* Buscador de fotos duplicadas */}
         <DuplicatesScreen

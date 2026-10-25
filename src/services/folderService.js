@@ -535,12 +535,24 @@ export const folderService = {
     return assets;
   },
 
+  _dirMemCache: new Map(),
+
   /**
    * Lee la carpeta actual (rápido, ordenada de la más reciente a la más antigua) y enriquece tamaños y portadas de subcarpetas.
    * Si la carpeta actual es una carpeta de mes que tenía subcarpetas "Fotos" y "Videos", aplana sus archivos automáticamente.
    */
-  async readDirectory(uri, onBatch) {
+  async readDirectory(uri, onBatch, { forceRefresh = false } = {}) {
     try {
+      // Si ya tenemos esta carpeta en caché en memoria, entregarla al instante (0 ms) antes de refrescar
+      const cached = folderService._dirMemCache.get(uri);
+      if (!forceRefresh && cached && onBatch) {
+        onBatch({
+          subfolders: [...cached.subfolders],
+          assets: [...cached.assets],
+          isPartial: true,
+        });
+      }
+
       let { subfolders, assets } = await folderService._listLevel(uri);
 
       // Si existen subcarpetas "Fotos" o "Videos" (creadas por versiones previas del organizador por meses),
@@ -575,13 +587,15 @@ export const folderService = {
         return byNameAsc(a, b);
       });
       assets.sort(byFilenameDesc);
+      folderService._dirMemCache.set(uri, { subfolders, assets, time: Date.now() });
       if (onBatch) {
         onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: true });
       }
+      // Enriquecer únicamente el primer lote visible en segundo plano sin bloquear el dibujado de miniaturas
       await Promise.all([
-        folderService.enrichAssetsFileSizes(assets.slice(0, 120)),
+        folderService.enrichAssetsFileSizes(assets.slice(0, 60)),
         Promise.all(
-          subfolders.slice(0, 24).map(async (sub) => {
+          subfolders.slice(0, 15).map(async (sub) => {
             if (!sub.coverUri) {
               const info = await folderService.getFolderCoverAndCount(sub.uri, 0);
               sub.coverUri = info.coverUri;
@@ -590,6 +604,7 @@ export const folderService = {
           })
         ),
       ]);
+      folderService._dirMemCache.set(uri, { subfolders, assets, time: Date.now() });
       if (onBatch) {
         onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: false });
       }

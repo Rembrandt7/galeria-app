@@ -56,6 +56,19 @@ function getFriendlyAppMeta(repoName, assetName, releaseName, repoDescription) {
   const lowerRepo = (repoName || '').toLowerCase();
   const lowerAsset = (assetName || '').toLowerCase();
 
+  if (lowerAsset.includes('antigravity') || lowerRepo === 'antigravity-pc-control') {
+    return {
+      title: 'Antigravity PC Control',
+      subtitle: 'Chat Remoto Antigravity + Google Desktop para tu PC',
+      description:
+        'Escribe o dicta por micrófono directo al Antigravity de tu PC, lee respuestas resumidas, controla el escritorio remoto y compila APKs.',
+      icon: 'desktop-outline',
+      accentColor: '#8b5cf6',
+      badge: 'APP PC CONTROL',
+      isCurrentApp: false,
+    };
+  }
+
   if (lowerAsset.includes('dolphin-control-celular')) {
     return {
       title: 'Dolphin Control Celular',

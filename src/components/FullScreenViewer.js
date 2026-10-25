@@ -50,6 +50,7 @@ export default function FullScreenViewer({
   onShare,
   onDelete,
   onMediaSaved,
+  onOpenModoGuardar,
 }) {
   const { width: screenWidth } = useWindowDimensions();
   const [internalIndex, setInternalIndex] = useState(initialIndex);
@@ -658,6 +659,31 @@ export default function FullScreenViewer({
             </Text>
 
             <View style={styles.topRightActions}>
+              {onOpenModoGuardar && (
+                <TouchableOpacity
+                  style={styles.iconButton}
+                  onPress={() => {
+                    onClose && onClose();
+                    onOpenModoGuardar(assets, validIndex);
+                  }}
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                >
+                  <View
+                    style={[
+                      styles.zoomPill,
+                      {
+                        backgroundColor: 'rgba(16, 185, 129, 0.25)',
+                        borderWidth: 1,
+                        borderColor: '#10b981',
+                      },
+                    ]}
+                  >
+                    <Ionicons name="swap-vertical" size={14} color="#34d399" />
+                    <Text style={[styles.zoomText, { color: '#6ee7b7' }]}>Modo Guardar</Text>
+                  </View>
+                </TouchableOpacity>
+              )}
+
               <TouchableOpacity
                 style={styles.iconButton}
                 onPress={handleToggleZoom}

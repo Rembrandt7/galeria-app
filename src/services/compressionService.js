@@ -896,6 +896,20 @@ export const compressionService = {
         };
       }
 
+      if (onProgress) {
+        onProgress({
+          current: processed + 1,
+          total,
+          currentFile: photo.filename || 'Fotografía',
+          compressedCount,
+          skippedGreenCount,
+          errorsCount,
+          percent: Math.max(0.02, processed / total),
+          savedBytes: totalSavedBytes,
+          savedFormatted: compressionService.formatBytes(totalSavedBytes),
+        });
+      }
+
       try {
         const currentSize = await compressionService.getFileSize(photo, { forceFresh: true });
         const isLight =
@@ -927,6 +941,7 @@ export const compressionService = {
         onProgress({
           current: processed,
           total,
+          currentFile: photo.filename || 'Fotografía',
           compressedCount,
           skippedGreenCount,
           errorsCount,

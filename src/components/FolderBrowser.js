@@ -78,6 +78,8 @@ export default function FolderBrowser({
   showAllFolders = false,
   onToggleShowAllFolders,
   onExitFolder,
+  onOpenModoGuardar,
+  trashCount = 0,
 }) {
   // Historial de navegación dentro de la carpeta activa: [{ uri, name }]
   const [history, setHistory] = useState(() => {
@@ -1059,32 +1061,6 @@ export default function FolderBrowser({
     return subfolders.filter((item) => Boolean(hiddenFolders[item.uri] || hiddenFolders[item.name])).length;
   }, [subfolders, hiddenFolders]);
 
-  // Portadas en miniatura para las carpetas raíz guardadas
-  const [savedFolderCovers, setSavedFolderCovers] = useState({});
-
-  useEffect(() => {
-    let active = true;
-    const loadCovers = async () => {
-      const updates = {};
-      await Promise.all(
-        (savedFolders || []).slice(0, 30).map(async (f) => {
-          if (!f?.uri) return;
-          const info = await folderService.getFolderCoverAndCount(f.uri, 0);
-          if (info?.coverUri) {
-            updates[f.uri] = info.coverUri;
-          }
-        })
-      );
-      if (active && Object.keys(updates).length > 0) {
-        setSavedFolderCovers((prev) => ({ ...prev, ...updates }));
-      }
-    };
-    loadCovers();
-    return () => {
-      active = false;
-    };
-  }, [savedFolders]);
-
   // 1. SECCIÓN DE SUBCARPETAS ESTILO SAMSUNG GALAXY (3 columnas dentro de la carpeta actual)
   const renderSubfoldersGridHeader = () => {
     if (viewMode !== 'folders' || visibleSubfolders.length === 0) return null;
@@ -1308,20 +1284,64 @@ export default function FolderBrowser({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.optionsBoxesScroll}
         >
+          {/* Opción 0: Modo Guardar (Deslizar Arriba = Favorito, Abajo = Papelera) */}
+          {onOpenModoGuardar && (totalFilteredAssets.length > 0 || trashCount > 0) && (
+            <TouchableOpacity
+              style={[
+                styles.optionSquareCard,
+                {
+                  backgroundColor:
+                    trashCount > 0 ? 'rgba(244, 63, 94, 0.18)' : 'rgba(16, 185, 129, 0.16)',
+                  borderColor: trashCount > 0 ? '#f43f5e' : '#10b981',
+                },
+              ]}
+              onPress={() => onOpenModoGuardar(totalFilteredAssets, 0)}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionToolHeader}>
+                <Ionicons
+                  name="swap-vertical"
+                  size={15}
+                  color={trashCount > 0 ? '#f43f5e' : '#10b981'}
+                />
+                <Text
+                  style={[
+                    styles.actionToolTitle,
+                    { color: trashCount > 0 ? '#fda4af' : '#a7f3d0' },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {trashCount > 0 ? `Modo Guardar (${trashCount} en papelera)` : 'Modo Guardar'}
+                </Text>
+              </View>
+              <Text
+                style={[
+                  styles.actionToolSub,
+                  { color: trashCount > 0 ? '#f43f5e' : '#10b981' },
+                ]}
+                numberOfLines={1}
+              >
+                ↑ Favorito · ↓ Papelera · 1 clic restaurar
+              </Text>
+            </TouchableOpacity>
+          )}
+
           {/* Opción 1: Comprimir Fotos (disponible si hay fotos en este nivel o dentro de subcarpetas) */}
           {(folderPhotos.length > 0 || subfolders.length > 0) && (
             <TouchableOpacity
               style={[
                 styles.optionSquareCard,
                 {
-                  backgroundColor:
-                    folderPhotos.length > 0
-                      ? photoReductionSummary.bgColor
-                      : 'rgba(56, 189, 248, 0.16)',
-                  borderColor:
-                    folderPhotos.length > 0
-                      ? photoReductionSummary.borderColor
-                      : '#38bdf8',
+                  backgroundColor: isCompressingFolder
+                    ? 'rgba(37, 99, 235, 0.28)'
+                    : folderPhotos.length > 0
+                    ? photoReductionSummary.bgColor
+                    : 'rgba(56, 189, 248, 0.16)',
+                  borderColor: isCompressingFolder
+                    ? '#38bdf8'
+                    : folderPhotos.length > 0
+                    ? photoReductionSummary.borderColor
+                    : '#38bdf8',
                 },
               ]}
               onPress={handleCompressFolder}
@@ -1329,24 +1349,31 @@ export default function FolderBrowser({
               activeOpacity={0.8}
             >
               <View style={styles.actionToolHeader}>
-                <Ionicons
-                  name="sparkles"
-                  size={15}
-                  color={folderPhotos.length > 0 ? photoReductionSummary.color : '#38bdf8'}
-                />
+                {isCompressingFolder ? (
+                  <ActivityIndicator size="small" color="#38bdf8" />
+                ) : (
+                  <Ionicons
+                    name="sparkles"
+                    size={15}
+                    color={folderPhotos.length > 0 ? photoReductionSummary.color : '#38bdf8'}
+                  />
+                )}
                 <Text
                   style={[
                     styles.actionToolTitle,
                     {
-                      color:
-                        folderPhotos.length > 0
-                          ? photoReductionSummary.textColor || photoReductionSummary.color
-                          : '#bae6fd',
+                      color: isCompressingFolder
+                        ? '#ffffff'
+                        : folderPhotos.length > 0
+                        ? photoReductionSummary.textColor || photoReductionSummary.color
+                        : '#bae6fd',
                     },
                   ]}
                   numberOfLines={1}
                 >
-                  {folderPhotos.length > 0
+                  {isCompressingFolder
+                    ? `Comprimiendo ${compressProgress?.current || 0}/${compressProgress?.total || 0} (${Math.round((compressProgress?.percent || 0) * 100)}%)`
+                    : folderPhotos.length > 0
                     ? `Comprimir fotos (${photoReductionSummary.compressibleCount || folderPhotos.length})`
                     : 'Comprimir fotos'}
                 </Text>
@@ -1354,11 +1381,19 @@ export default function FolderBrowser({
               <Text
                 style={[
                   styles.actionToolSub,
-                  { color: folderPhotos.length > 0 ? photoReductionSummary.color : '#38bdf8' },
+                  {
+                    color: isCompressingFolder
+                      ? '#38bdf8'
+                      : folderPhotos.length > 0
+                      ? photoReductionSummary.color
+                      : '#38bdf8',
+                  },
                 ]}
                 numberOfLines={1}
               >
-                {folderPhotos.length > 0
+                {isCompressingFolder
+                  ? `Ahorrado: ${compressProgress?.savedFormatted || '0 B'}`
+                  : folderPhotos.length > 0
                   ? photoReductionSummary.level === 'heavy'
                     ? `Reducción alta · -${photoReductionSummary.estimatedSavedFormatted}`
                     : photoReductionSummary.level === 'medium'
@@ -1484,6 +1519,122 @@ export default function FolderBrowser({
           </TouchableOpacity>
         </ScrollView>
       </View>
+
+      {/* PANEL DE PROGRESO EN VIVO AL COMPRIMIR (Siempre visible para ver cómo avanza foto por foto) */}
+      {isCompressingFolder && (
+        <View
+          style={{
+            marginHorizontal: 12,
+            marginBottom: 8,
+            padding: 12,
+            borderRadius: 16,
+            backgroundColor: '#0f172a',
+            borderWidth: 1.5,
+            borderColor: '#38bdf8',
+            gap: 8,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+              {isProcessPaused ? (
+                <Ionicons name="pause-circle" size={22} color="#fbbf24" />
+              ) : (
+                <ActivityIndicator size="small" color="#38bdf8" />
+              )}
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: '#ffffff', fontSize: 13.5, fontWeight: '800' }} numberOfLines={1}>
+                  {isProcessPaused
+                    ? 'Compresión en pausa'
+                    : `Comprimiendo archivo ${compressProgress?.current || 1} de ${compressProgress?.total || 1} (${Math.round((compressProgress?.percent || 0) * 100)}%)`}
+                </Text>
+                <Text style={{ color: '#38bdf8', fontSize: 11.5, fontWeight: '600' }} numberOfLines={1}>
+                  {compressProgress?.currentFile
+                    ? `Procesando: ${compressProgress.currentFile}`
+                    : 'Optimizando al 100% de resolución...'}
+                </Text>
+              </View>
+            </View>
+
+            <View
+              style={{
+                backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                borderWidth: 1,
+                borderColor: '#10b981',
+                paddingHorizontal: 9,
+                paddingVertical: 4,
+                borderRadius: 10,
+              }}
+            >
+              <Text style={{ color: '#34d399', fontSize: 11.5, fontWeight: '800' }}>
+                -{compressProgress?.savedFormatted || '0 B'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.progressBarBg}>
+            <View
+              style={[
+                styles.progressBarFill,
+                {
+                  width: `${Math.max(4, Math.round((compressProgress?.percent || 0) * 100))}%`,
+                  backgroundColor: '#38bdf8',
+                },
+              ]}
+            />
+          </View>
+
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '600' }}>
+              Optimizadas: {compressProgress?.compressedCount || 0}
+              {compressProgress?.skippedGreenCount
+                ? ` · Ligeras: ${compressProgress.skippedGreenCount}`
+                : ''}
+            </Text>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TouchableOpacity
+                onPress={() => {
+                  if (!processControlRef.current) return;
+                  if (isProcessPaused) processControlRef.current.resume();
+                  else processControlRef.current.pause();
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  backgroundColor: 'rgba(251, 191, 36, 0.16)',
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  borderRadius: 10,
+                }}
+              >
+                <Ionicons name={isProcessPaused ? 'play' : 'pause'} size={13} color="#fbbf24" />
+                <Text style={{ color: '#fbbf24', fontSize: 11, fontWeight: '800' }}>
+                  {isProcessPaused ? 'Reanudar' : 'Pausar'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  if (processControlRef.current) processControlRef.current.cancel();
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  backgroundColor: 'rgba(239, 68, 68, 0.16)',
+                  paddingHorizontal: 10,
+                  paddingVertical: 4,
+                  borderRadius: 10,
+                }}
+              >
+                <Ionicons name="close-circle" size={13} color="#f87171" />
+                <Text style={{ color: '#f87171', fontSize: 11, fontWeight: '800' }}>Detener</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      )}
 
       {/* 3. RENGLÓN ÚNICO EN CARRUSEL: Carpeta Seleccionada + Buscador + Filtros Condicionales */}
       <View style={styles.stickyHeaderBox}>

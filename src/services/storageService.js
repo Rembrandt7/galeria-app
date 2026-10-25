@@ -4,6 +4,7 @@ const FAVORITES_STORAGE_KEY = '@galeria_favoritos_v1';
 const HIDDEN_FOLDERS_STORAGE_KEY = '@galeria_carpetas_ocultas_v1';
 const SHOW_ALL_FOLDERS_STORAGE_KEY = '@galeria_modo_todo_visible_v1';
 const HIDDEN_PIN_STORAGE_KEY = '@galeria_pin_ocultas_v1';
+const TRASH_BIN_STORAGE_KEY = '@galeria_papelera_modo_guardar_v1';
 
 export const storageService = {
   async getFavorites() {
@@ -132,6 +133,74 @@ export const storageService = {
     } catch (e) {
       console.error('Error al guardar PIN:', e);
       return null;
+    }
+  },
+
+  // ===== PAPELERA TEMPORAL DEL "MODO GUARDAR" (CON RESTAURACIÓN EN 1 CLIC) =====
+
+  async getTrashBin() {
+    try {
+      const json = await AsyncStorage.getItem(TRASH_BIN_STORAGE_KEY);
+      if (!json) return {};
+      return JSON.parse(json);
+    } catch (e) {
+      return {};
+    }
+  },
+
+  async addToTrashBin(asset) {
+    if (!asset?.id) return {};
+    try {
+      const current = await this.getTrashBin();
+      const updated = {
+        ...current,
+        [asset.id]: {
+          id: asset.id,
+          uri: asset.uri,
+          filename: asset.filename || 'Archivo',
+          mediaType: asset.mediaType || 'photo',
+          fileSize: asset.fileSize || 0,
+          creationTime: asset.creationTime || 0,
+          width: asset.width || 0,
+          height: asset.height || 0,
+          fromFolder: Boolean(asset.fromFolder),
+          trashedAt: Date.now(),
+        },
+      };
+      await AsyncStorage.setItem(TRASH_BIN_STORAGE_KEY, JSON.stringify(updated));
+      return updated;
+    } catch (e) {
+      return {};
+    }
+  },
+
+  async restoreFromTrashBin(assetId) {
+    try {
+      const current = await this.getTrashBin();
+      const updated = { ...current };
+      delete updated[assetId];
+      await AsyncStorage.setItem(TRASH_BIN_STORAGE_KEY, JSON.stringify(updated));
+      return updated;
+    } catch (e) {
+      return {};
+    }
+  },
+
+  async clearTrashBin(idsToRemove = null) {
+    try {
+      if (!idsToRemove) {
+        await AsyncStorage.removeItem(TRASH_BIN_STORAGE_KEY);
+        return {};
+      }
+      const current = await this.getTrashBin();
+      const updated = { ...current };
+      for (const id of idsToRemove) {
+        delete updated[id];
+      }
+      await AsyncStorage.setItem(TRASH_BIN_STORAGE_KEY, JSON.stringify(updated));
+      return updated;
+    } catch (e) {
+      return {};
     }
   },
 };

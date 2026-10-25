@@ -975,7 +975,7 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: SIDE_PADDING,
     paddingTop: 4,
-    paddingBottom: 110, // Espacio libre para la cápsula flotante inferior estilo Galaxy
+    paddingBottom: 145, // Espacio libre para la cápsula flotante inferior elevada sobre los botones del celular
     flexGrow: 1,
   },
   headerBlock: {

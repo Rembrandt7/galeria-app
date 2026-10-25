@@ -30,6 +30,8 @@ export default function PhotoGrid({
   assets = [],
   favorites = {},
   onSelectPhoto,
+  onOpenModoGuardar,
+  trashCount = 0,
   onRefresh,
   isRefreshing,
   onLoadMore,
@@ -477,37 +479,132 @@ export default function PhotoGrid({
       ) : (
         assets.length > 0 && (
           <View style={styles.toolsBar}>
-            <Text style={styles.toolsInfoText} numberOfLines={1}>
-              {assets.length} archivos · Pellizca con 2 dedos para zoom ({numColumns} col)
+            <Text style={[styles.toolsInfoText, { flex: 1 }]} numberOfLines={1}>
+              {assets.length} archivos · Zoom ({numColumns} col)
             </Text>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {onOpenModoGuardar && (
+                <TouchableOpacity
+                  style={[
+                    styles.compressBatchBtn,
+                    {
+                      backgroundColor:
+                        trashCount > 0 ? 'rgba(244, 63, 94, 0.18)' : 'rgba(16, 185, 129, 0.16)',
+                      borderColor: trashCount > 0 ? '#f43f5e' : '#10b981',
+                    },
+                  ]}
+                  onPress={() => onOpenModoGuardar(assets, 0)}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name="swap-vertical"
+                    size={14}
+                    color={trashCount > 0 ? '#f43f5e' : '#10b981'}
+                  />
+                  <Text
+                    style={[
+                      styles.compressBatchBtnText,
+                      { color: trashCount > 0 ? '#fda4af' : '#6ee7b7' },
+                    ]}
+                  >
+                    {trashCount > 0 ? `Modo Guardar (${trashCount})` : 'Modo Guardar'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+
               {(photoAssets.length > 0 || videoAssets.length > 0) && (
                 <TouchableOpacity
                   style={[
                     styles.compressBatchBtn,
                     {
-                      backgroundColor: photoReductionSummary.bgColor,
-                      borderColor: photoReductionSummary.borderColor,
+                      backgroundColor: isCompressingBatch
+                        ? 'rgba(37, 99, 235, 0.25)'
+                        : photoReductionSummary.bgColor,
+                      borderColor: isCompressingBatch
+                        ? '#38bdf8'
+                        : photoReductionSummary.borderColor,
                     },
                   ]}
                   onPress={handleCompressAll}
                   disabled={isCompressingBatch}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="sparkles" size={14} color={photoReductionSummary.color} />
+                  {isCompressingBatch ? (
+                    <ActivityIndicator size="small" color="#38bdf8" />
+                  ) : (
+                    <Ionicons name="sparkles" size={14} color={photoReductionSummary.color} />
+                  )}
                   <Text
                     style={[
                       styles.compressBatchBtnText,
-                      { color: photoReductionSummary.textColor || photoReductionSummary.color },
+                      {
+                        color: isCompressingBatch
+                          ? '#ffffff'
+                          : photoReductionSummary.textColor || photoReductionSummary.color,
+                      },
                     ]}
                   >
-                    Comprimir ({photoReductionSummary.compressibleCount || assets.length})
+                    {isCompressingBatch
+                      ? `${compressProgress?.current || 1}/${compressProgress?.total || 1} (${Math.round((compressProgress?.percent || 0) * 100)}%)`
+                      : `Comprimir (${photoReductionSummary.compressibleCount || assets.length})`}
                   </Text>
                 </TouchableOpacity>
               )}
             </View>
           </View>
         )
+      )}
+
+      {/* Barra superior de progreso en vivo cuando se está comprimiendo */}
+      {isCompressingBatch && (
+        <View
+          style={{
+            marginHorizontal: 10,
+            marginVertical: 6,
+            padding: 11,
+            borderRadius: 14,
+            backgroundColor: '#0f172a',
+            borderWidth: 1.5,
+            borderColor: '#38bdf8',
+            gap: 6,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <ActivityIndicator size="small" color="#38bdf8" />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }} numberOfLines={1}>
+                Comprimiendo archivo {compressProgress?.current || 1} de {compressProgress?.total || 1} ({Math.round((compressProgress?.percent || 0) * 100)}%)
+              </Text>
+              <Text style={{ color: '#38bdf8', fontSize: 11.5, fontWeight: '600' }} numberOfLines={1}>
+                {compressProgress?.currentFile
+                  ? `Procesando: ${compressProgress.currentFile}`
+                  : 'Optimizando al 100% de resolución...'}
+              </Text>
+            </View>
+            <View
+              style={{
+                backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                borderWidth: 1,
+                borderColor: '#10b981',
+                paddingHorizontal: 8,
+                paddingVertical: 3,
+                borderRadius: 8,
+              }}
+            >
+              <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800' }}>
+                -{compressProgress?.savedFormatted || '0 B'}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.progressBarBg}>
+            <View
+              style={[
+                styles.progressBarFill,
+                { width: `${Math.max(4, Math.round((compressProgress?.percent || 0) * 100))}%` },
+              ]}
+            />
+          </View>
+        </View>
       )}
       <View
         style={{ flex: 1 }}
@@ -735,7 +832,7 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: ITEM_MARGIN,
     paddingTop: ITEM_MARGIN,
-    paddingBottom: 110,
+    paddingBottom: 145,
     flexGrow: 1,
   },
   footerLoader: {
@@ -744,7 +841,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   footerSpacing: {
-    height: 80,
+    height: 95,
   },
   emptyContainer: {
     flex: 1,
@@ -763,7 +860,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 12,
     right: 12,
-    bottom: 92,
+    bottom: 124,
     backgroundColor: 'rgba(15, 23, 42, 0.96)',
     borderWidth: 1,
     borderColor: '#38bdf8',
