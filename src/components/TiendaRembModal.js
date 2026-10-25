@@ -23,6 +23,7 @@ import { CURRENT_VERSION, CURRENT_BUILD_NUMBER } from '../services/updateService
 
 const DEFAULT_GITHUB_USER = 'Rembrandt7';
 const STORE_CACHE_KEY = '@tienda_remb_downloaded_apks_v1';
+const CATALOG_CACHE_KEY = '@tienda_remb_catalog_cache_v2';
 const STORE_APK_DIR = `${FileSystem.documentDirectory}tienda_remb_apks/`;
 
 async function ensureStoreDir() {
@@ -55,6 +56,19 @@ function formatDateShort(iso) {
 function getFriendlyAppMeta(repoName, assetName, releaseName, repoDescription) {
   const lowerRepo = (repoName || '').toLowerCase();
   const lowerAsset = (assetName || '').toLowerCase();
+
+  if (lowerAsset.includes('nfc') || lowerRepo === 'nfc-smart-hub') {
+    return {
+      title: 'NFC Smart Control',
+      subtitle: 'Automatización y Acciones Rápidas con Tags NFC',
+      description:
+        'Configura y ejecuta perfiles inteligentes, rutinas del carro, Wi-Fi, Bluetooth y acciones rápidas al acercar tu celular a un tag NFC.',
+      icon: 'radio-outline',
+      accentColor: '#10b981',
+      badge: 'APP NFC HUB',
+      isCurrentApp: false,
+    };
+  }
 
   if (lowerAsset.includes('antigravity') || lowerRepo === 'antigravity-pc-control') {
     return {
@@ -124,15 +138,120 @@ function getFriendlyAppMeta(repoName, assetName, releaseName, repoDescription) {
   };
 }
 
+function buildDefaultRembCatalog() {
+  const rawApps = [
+    {
+      repoName: 'youtube-dolphin-app',
+      assetName: 'Dolphin-Control-Celular.apk',
+      versionLabel: 'Última versión (latest)',
+      downloadUrl:
+        'https://github.com/Rembrandt7/youtube-dolphin-app/releases/download/latest/Dolphin-Control-Celular.apk',
+      sizeBytes: 19654151,
+      updatedAt: '2026-10-25T05:32:50Z',
+    },
+    {
+      repoName: 'youtube-dolphin-app',
+      assetName: 'YouTube-Dolphin-Mini.apk',
+      versionLabel: 'Última versión (latest)',
+      downloadUrl:
+        'https://github.com/Rembrandt7/youtube-dolphin-app/releases/download/latest/YouTube-Dolphin-Mini.apk',
+      sizeBytes: 19667675,
+      updatedAt: '2026-10-25T05:32:50Z',
+    },
+    {
+      repoName: 'antigravity-pc-control',
+      assetName: 'Antigravity-PC-Control.apk',
+      versionLabel: 'Última versión (latest)',
+      downloadUrl:
+        'https://github.com/Rembrandt7/antigravity-pc-control/releases/download/latest/Antigravity-PC-Control.apk',
+      sizeBytes: 19246942,
+      updatedAt: '2026-10-25T02:36:28Z',
+    },
+    {
+      repoName: 'nfc-smart-hub',
+      assetName: 'NFC-Smart-Control.apk',
+      versionLabel: 'Última versión (latest)',
+      downloadUrl:
+        'https://github.com/Rembrandt7/nfc-smart-hub/releases/download/latest/NFC-Smart-Control.apk',
+      sizeBytes: 19195609,
+      updatedAt: '2026-10-25T02:09:32Z',
+    },
+    {
+      repoName: 'galeria-app',
+      assetName: 'app-release.apk',
+      versionLabel: `${CURRENT_VERSION} (#${CURRENT_BUILD_NUMBER})`,
+      downloadUrl:
+        'https://github.com/Rembrandt7/galeria-app/releases/download/latest/app-release.apk',
+      sizeBytes: 79769971,
+      updatedAt: '2026-10-25T03:34:32Z',
+    },
+  ];
+
+  const apks = rawApps.map((item) => {
+    const meta = getFriendlyAppMeta(item.repoName, item.assetName, item.versionLabel, '');
+    return {
+      id: `${item.repoName}::${item.assetName}`,
+      repoName: item.repoName,
+      repoUrl: `https://github.com/Rembrandt7/${item.repoName}`,
+      assetName: item.assetName,
+      versionLabel: item.versionLabel,
+      tagName: 'latest',
+      downloadUrl: item.downloadUrl,
+      sizeBytes: item.sizeBytes,
+      updatedAt: item.updatedAt,
+      notes: '',
+      ...meta,
+    };
+  });
+
+  const repos = [
+    {
+      id: 'repo_youtube_dolphin',
+      name: 'youtube-dolphin-app',
+      html_url: 'https://github.com/Rembrandt7/youtube-dolphin-app',
+      description: 'YouTube Dolphin Mini (Carro) + Dolphin Control Celular',
+      language: 'TypeScript',
+      updated_at: '2026-10-25T05:32:50Z',
+    },
+    {
+      id: 'repo_galeria_app',
+      name: 'galeria-app',
+      html_url: 'https://github.com/Rembrandt7/galeria-app',
+      description: 'Mi Galería Pro con Modo Guardar, compresión 100% y Tienda Remb',
+      language: 'JavaScript',
+      updated_at: '2026-10-25T03:34:32Z',
+    },
+    {
+      id: 'repo_antigravity_pc',
+      name: 'antigravity-pc-control',
+      html_url: 'https://github.com/Rembrandt7/antigravity-pc-control',
+      description: 'Control Remoto Antigravity PC + Escritorio Remoto desde tu celular',
+      language: 'TypeScript',
+      updated_at: '2026-10-25T02:36:28Z',
+    },
+    {
+      id: 'repo_nfc_smart_hub',
+      name: 'nfc-smart-hub',
+      html_url: 'https://github.com/Rembrandt7/nfc-smart-hub',
+      description: 'NFC Smart Control para automatización con etiquetas NFC',
+      language: 'TypeScript',
+      updated_at: '2026-10-25T02:09:32Z',
+    },
+  ];
+
+  return { apks, repos };
+}
+
 export default function TiendaRembModal({ visible, onClose }) {
+  const defaultCatalog = useMemo(() => buildDefaultRembCatalog(), []);
   const [githubUser, setGithubUser] = useState(DEFAULT_GITHUB_USER);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState('apps'); // 'apps' | 'repos'
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
 
-  const [apkItems, setApkItems] = useState([]);
-  const [repoItems, setRepoItems] = useState([]);
+  const [apkItems, setApkItems] = useState(defaultCatalog.apks);
+  const [repoItems, setRepoItems] = useState(defaultCatalog.repos);
   const [downloadedMap, setDownloadedMap] = useState({});
   const [downloadingId, setDownloadingId] = useState(null);
   const [downloadProgress, setDownloadProgress] = useState(0);
@@ -156,19 +275,66 @@ export default function TiendaRembModal({ visible, onClose }) {
     } catch (_e) {}
   }, []);
 
+  const sortApks = (list = []) => {
+    const copy = [...list];
+    copy.sort((a, b) => {
+      const score = (item) => {
+        const lowerA = (item.assetName || '').toLowerCase();
+        const lowerR = (item.repoName || '').toLowerCase();
+        if (lowerA.includes('dolphin-control')) return 40;
+        if (lowerA.includes('youtube-dolphin')) return 35;
+        if (lowerA.includes('antigravity') || lowerR.includes('antigravity')) return 30;
+        if (lowerA.includes('nfc') || lowerR.includes('nfc')) return 25;
+        if (lowerR === 'galeria-app') return 20;
+        return 10;
+      };
+      const diff = score(b) - score(a);
+      if (diff !== 0) return diff;
+      return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
+    });
+    return copy;
+  };
+
   const fetchGithubStore = useCallback(
     async (targetUser = githubUser) => {
       const cleanUser = (targetUser || DEFAULT_GITHUB_USER).trim();
       if (!cleanUser) return;
 
-      setLoading(true);
       setErrorMsg(null);
+      await loadDownloadedMap();
+
+      // 1. Hidratar catálogo inmediato (respaldo integrado + caché local) para que SIEMPRE aparezcan tus apps al instante
+      const isDefaultUser = cleanUser.toLowerCase() === DEFAULT_GITHUB_USER.toLowerCase();
+      let baseApks = isDefaultUser ? [...defaultCatalog.apks] : [];
+      let baseRepos = isDefaultUser ? [...defaultCatalog.repos] : [];
 
       try {
-        await loadDownloadedMap();
+        const cachedRaw = await AsyncStorage.getItem(CATALOG_CACHE_KEY);
+        if (cachedRaw && isDefaultUser) {
+          const cached = JSON.parse(cachedRaw);
+          if (Array.isArray(cached?.apks) && cached.apks.length > 0) {
+            const mergedMap = new Map();
+            baseApks.forEach((a) => mergedMap.set(a.id, a));
+            cached.apks.forEach((a) => mergedMap.set(a.id, { ...mergedMap.get(a.id), ...a }));
+            baseApks = sortApks(Array.from(mergedMap.values()));
+          }
+          if (Array.isArray(cached?.repos) && cached.repos.length > 0) {
+            baseRepos = cached.repos;
+          }
+        }
+      } catch (_eCache) {}
 
+      if (baseApks.length > 0) {
+        setApkItems(baseApks);
+        setRepoItems(baseRepos);
+      } else {
+        setLoading(true);
+      }
+
+      // 2. Actualizar en segundo plano desde GitHub (fusionando con el catálogo base para que si GitHub limita llamadas 403 nunca desaparezcan tus apps)
+      try {
         const reposRes = await fetch(
-          `https://api.github.com/users/${encodeURIComponent(cleanUser)}/repos?per_page=100&sort=updated`,
+          `https://api.github.com/users/${encodeURIComponent(cleanUser)}/repos?per_page=30&sort=updated`,
           {
             headers: {
               Accept: 'application/vnd.github.v3+json',
@@ -177,94 +343,95 @@ export default function TiendaRembModal({ visible, onClose }) {
           }
         );
 
-        if (!reposRes.ok) {
-          throw new Error(`No se pudo consultar el usuario "${cleanUser}" en GitHub (código ${reposRes.status}).`);
-        }
+        if (reposRes.ok) {
+          const repos = await reposRes.json();
+          if (Array.isArray(repos) && repos.length > 0) {
+            setRepoItems(repos);
+            baseRepos = repos;
 
-        const repos = await reposRes.json();
-        if (!Array.isArray(repos)) {
-          throw new Error('Respuesta inválida de GitHub.');
-        }
+            // Consultar releases de los primeros 8 repositorios más recientes para no agotar el límite de GitHub API
+            const topRepos = repos.slice(0, 8);
+            const discoveredApks = [];
 
-        setRepoItems(repos);
-
-        // Consultar releases de todos los repositorios en paralelo para descubrir APKs instalables
-        const discoveredApks = [];
-
-        await Promise.all(
-          repos.map(async (repo) => {
-            try {
-              const relRes = await fetch(
-                `https://api.github.com/repos/${encodeURIComponent(cleanUser)}/${encodeURIComponent(repo.name)}/releases?per_page=5`,
-                {
-                  headers: {
-                    Accept: 'application/vnd.github.v3+json',
-                    'User-Agent': 'TiendaRemb-Android',
-                  },
-                }
-              );
-
-              if (!relRes.ok) return;
-              const releases = await relRes.json();
-              if (!Array.isArray(releases)) return;
-
-              const seenAssetNamesInRepo = new Set();
-
-              for (const rel of releases) {
-                const assets = Array.isArray(rel.assets) ? rel.assets : [];
-                for (const asset of assets) {
-                  if (!asset?.name || !asset.name.toLowerCase().endsWith('.apk')) continue;
-                  const normalizedAssetKey = asset.name.toLowerCase();
-                  if (seenAssetNamesInRepo.has(normalizedAssetKey)) continue;
-                  seenAssetNamesInRepo.add(normalizedAssetKey);
-
-                  const meta = getFriendlyAppMeta(
-                    repo.name,
-                    asset.name,
-                    rel.name || rel.tag_name,
-                    repo.description
+            await Promise.all(
+              topRepos.map(async (repo) => {
+                try {
+                  const relRes = await fetch(
+                    `https://api.github.com/repos/${encodeURIComponent(cleanUser)}/${encodeURIComponent(repo.name)}/releases?per_page=3`,
+                    {
+                      headers: {
+                        Accept: 'application/vnd.github.v3+json',
+                        'User-Agent': 'TiendaRemb-Android',
+                      },
+                    }
                   );
 
-                  discoveredApks.push({
-                    id: `${repo.name}::${asset.name}`,
-                    repoName: repo.name,
-                    repoUrl: repo.html_url,
-                    assetName: asset.name,
-                    versionLabel: rel.name || rel.tag_name || 'Última versión',
-                    tagName: rel.tag_name || 'latest',
-                    downloadUrl: asset.browser_download_url,
-                    sizeBytes: asset.size || 0,
-                    updatedAt: asset.updated_at || rel.published_at || repo.updated_at,
-                    notes: rel.body || '',
-                    ...meta,
-                  });
-                }
-              }
-            } catch (_errRepo) {}
-          })
-        );
+                  if (!relRes.ok) return;
+                  const releases = await relRes.json();
+                  if (!Array.isArray(releases)) return;
 
-        // Ordenar: primero las apps principales (Dolphin Control, YouTube Dolphin, Mi Galería) y luego por fecha
-        discoveredApks.sort((a, b) => {
-          const score = (item) => {
-            if (item.assetName.toLowerCase().includes('dolphin-control')) return 30;
-            if (item.assetName.toLowerCase().includes('youtube-dolphin')) return 25;
-            if (item.repoName.toLowerCase() === 'galeria-app') return 20;
-            return 10;
-          };
-          const diff = score(b) - score(a);
-          if (diff !== 0) return diff;
-          return new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime();
-        });
+                  const seenAssetNamesInRepo = new Set();
 
-        setApkItems(discoveredApks);
+                  for (const rel of releases) {
+                    const assets = Array.isArray(rel.assets) ? rel.assets : [];
+                    for (const asset of assets) {
+                      if (!asset?.name || !asset.name.toLowerCase().endsWith('.apk')) continue;
+                      const normalizedAssetKey = asset.name.toLowerCase();
+                      if (seenAssetNamesInRepo.has(normalizedAssetKey)) continue;
+                      seenAssetNamesInRepo.add(normalizedAssetKey);
+
+                      const meta = getFriendlyAppMeta(
+                        repo.name,
+                        asset.name,
+                        rel.name || rel.tag_name,
+                        repo.description
+                      );
+
+                      discoveredApks.push({
+                        id: `${repo.name}::${asset.name}`,
+                        repoName: repo.name,
+                        repoUrl: repo.html_url,
+                        assetName: asset.name,
+                        versionLabel: rel.name || rel.tag_name || 'Última versión',
+                        tagName: rel.tag_name || 'latest',
+                        downloadUrl: asset.browser_download_url,
+                        sizeBytes: asset.size || 0,
+                        updatedAt: asset.updated_at || rel.published_at || repo.updated_at,
+                        notes: rel.body || '',
+                        ...meta,
+                      });
+                    }
+                  }
+                } catch (_errRepo) {}
+              })
+            );
+
+            // Fusionar lo descubierto en vivo con el catálogo conocido para nunca perder ninguna app
+            const finalMap = new Map();
+            baseApks.forEach((a) => finalMap.set(a.id, a));
+            discoveredApks.forEach((a) => finalMap.set(a.id, a));
+            const mergedList = sortApks(Array.from(finalMap.values()));
+
+            setApkItems(mergedList);
+            if (isDefaultUser) {
+              AsyncStorage.setItem(
+                CATALOG_CACHE_KEY,
+                JSON.stringify({ apks: mergedList, repos: baseRepos, savedAt: Date.now() })
+              ).catch(() => {});
+            }
+          }
+        } else if (!isDefaultUser && baseApks.length === 0) {
+          setErrorMsg(`No se pudo consultar el usuario "${cleanUser}" en GitHub (código ${reposRes.status}).`);
+        }
       } catch (err) {
-        setErrorMsg(err?.message || 'Error al conectar con GitHub.');
+        if (baseApks.length === 0) {
+          setErrorMsg(err?.message || 'Error al conectar con GitHub.');
+        }
       } finally {
         setLoading(false);
       }
     },
-    [githubUser, loadDownloadedMap]
+    [githubUser, loadDownloadedMap, defaultCatalog]
   );
 
   useEffect(() => {

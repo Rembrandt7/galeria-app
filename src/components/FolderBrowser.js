@@ -83,6 +83,7 @@ export default function FolderBrowser({
   onExitFolder,
   onOpenModoGuardar,
   trashCount = 0,
+  trashBin = {},
 }) {
   // Historial de navegación dentro de la carpeta activa: [{ uri, name }]
   const [history, setHistory] = useState(() => {
@@ -264,19 +265,23 @@ export default function FolderBrowser({
   const currentFolder = history[history.length - 1] || null;
 
   // Cargar nivel actual con emisión parcial temprana
-  const loadCurrentLevel = useCallback(async (uri) => {
+  const loadCurrentLevel = useCallback(async (uri, forceRefresh = false) => {
     if (!uri) return;
     setLoading(true);
     setIsStreaming(true);
     setVisibleLimit(BATCH_SIZE);
     try {
-      await folderService.readDirectory(uri, ({ subfolders: subs, assets: arts, isPartial }) => {
-        setSubfolders(subs);
-        setCurrentFolderAssets(arts);
-        if (isPartial) {
-          setLoading(false);
-        }
-      });
+      await folderService.readDirectory(
+        uri,
+        ({ subfolders: subs, assets: arts, isPartial }) => {
+          setSubfolders(subs);
+          setCurrentFolderAssets(arts);
+          if (isPartial) {
+            setLoading(false);
+          }
+        },
+        { forceRefresh }
+      );
     } catch (e) {
       setSubfolders([]);
       setCurrentFolderAssets([]);
@@ -342,20 +347,25 @@ export default function FolderBrowser({
     }
   };
 
-  // Refrescar contenido
+  // Refrescar contenido (limpiando caché de memoria para reflejar cambios al instante)
   const handleRefresh = async () => {
     if (!currentFolder?.uri) return;
     setRefreshing(true);
+    folderService.invalidateCache(currentFolder.uri);
     if (viewMode === 'folders') {
-      await loadCurrentLevel(currentFolder.uri);
+      await loadCurrentLevel(currentFolder.uri, true);
     } else {
       await loadAllRecursive(currentFolder.uri);
     }
     setRefreshing(false);
   };
 
-  // División entre Fotos y Videos
-  const rawFolderList = viewMode === 'folders' ? currentFolderAssets : allAssets;
+  // División entre Fotos y Videos (excluyendo los archivos enviados a la Papelera temporal del Modo Guardar)
+  const rawFolderList = useMemo(() => {
+    const base = viewMode === 'folders' ? currentFolderAssets : allAssets;
+    if (!trashBin || Object.keys(trashBin).length === 0) return base;
+    return (base || []).filter((a) => a && !trashBin[a.id]);
+  }, [viewMode, currentFolderAssets, allAssets, trashBin]);
   const folderPhotos = useMemo(
     () => rawFolderList.filter((a) => a.mediaType === 'photo'),
     [rawFolderList]
@@ -1035,7 +1045,13 @@ export default function FolderBrowser({
       const isManualOn = Boolean(
         manuallyEnabledSystemFolders[sub.uri] || manuallyEnabledSystemFolders[sub.name]
       );
-      if (sysInfo.isSystemSuggested && autoHideSystemFolders && !isManualOn) {
+      // En subcarpetas dentro de una carpeta, solo auto-ocultar si el nombre es de sistema/caché ('system_name')
+      if (
+        sysInfo.isSystemSuggested &&
+        sysInfo.category === 'system_name' &&
+        autoHideSystemFolders &&
+        !isManualOn
+      ) {
         return true;
       }
       return false;

@@ -219,11 +219,10 @@ export const mediaService = {
         const albums = await MediaLibrary.getAlbumsAsync({
           includeSmartAlbums: true,
         });
-        // Filtrar álbumes vacíos o carpetas basura del sistema (.thumbnails, stickers ocultos, cachés)
+        // Conservar todos los álbumes con al menos 1 archivo para que el detector de carpetas de sistema
+        // pueda sugerirlos, desactivarlos automáticamente y permitir activarlos manualmente en "Sistema (N)"
         const activeAlbums = (albums || []).filter((a) => {
           if (!a || !(a.assetCount > 0)) return false;
-          const t = (a.title || '').trim().toLowerCase();
-          if (t.startsWith('.') || t === 'thumbnails' || t === 'cache' || t === 'temp') return false;
           return true;
         });
 

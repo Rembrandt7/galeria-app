@@ -992,9 +992,18 @@ export const folderService = {
     return { moved, total: assets.length };
   },
 
+  invalidateCache(uri = null) {
+    if (!uri) {
+      folderService._dirMemCache.clear();
+      return;
+    }
+    folderService._dirMemCache.delete(uri);
+  },
+
   async deleteFile(uri) {
     try {
       new File(uri).delete();
+      folderService._dirMemCache.clear();
       return true;
     } catch (e) {
       console.error('Error al eliminar archivo de carpeta:', e);
@@ -1004,7 +1013,7 @@ export const folderService = {
 
   /**
    * Clasifica inteligentemente si un álbum o carpeta parece ser de sistema, caché,
-   * recursos internos de una app o carpeta residual (ej. de 1 o 2 archivos sueltos),
+   * recursos internos de una app o carpeta residual del sistema,
    * para sugerirla como "Carpeta de Sistema" y desactivarla automáticamente (permitiendo activarla manualmente).
    */
   classifySystemFolder(item) {
@@ -1024,7 +1033,7 @@ export const folderService = {
       item.isDownloadedVideos ||
       item.isFavoritesCard ||
       item.isVariosCard ||
-      /^(camera|cámara|camara|dcim|videos descargados|favoritos|screenshots|capturas|whatsapp images|whatsapp video|download|descargas|pictures|imágenes|imagenes|movies|películas|peliculas|familia|viajes|trabajo)$/i.test(
+      /^(camera|cámara|camara|dcim|videos descargados|favoritos|screenshots|capturas|whatsapp images|whatsapp video|whatsapp|download|descargas|pictures|imágenes|imagenes|movies|películas|peliculas|familia|viajes|trabajo|instagram|facebook|tiktok|telegram|telegram images|telegram video|restored|recuerdos)$/i.test(
         lowerName
       ) ||
       /^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+20\d{2}/i.test(
@@ -1043,9 +1052,9 @@ export const folderService = {
       };
     }
 
-    // 3. Miniaturas, caché, temporales o papeleras internas de Android
+    // 3. Miniaturas, caché, temporales, sistema Android o papeleras internas
     if (
-      /(thumbnail|thumb|albumthumbs|avatarcache|cache|temp|tmp|trash|trashed|rubbish|recycle|backup|logs|crash|debug|preload)/i.test(
+      /(thumbnail|thumb|albumthumbs|avatarcache|cache|temp|tmp|trash|trashed|rubbish|recycle|backup|logs|crash|debug|preload|^android$|^data$|^obb$|^media$|^system$)/i.test(
         lowerName
       ) ||
       /(thumbnail|cache|temp|trash|\.statuses|\.thumbnails)/i.test(lowerRaw)
@@ -1057,9 +1066,9 @@ export const folderService = {
       };
     }
 
-    // 4. Stickers, estados temporales, notas de voz, GIFs o recursos secundarios de mensajería
+    // 4. Stickers, estados temporales, notas de voz, GIFs, tonos o recursos internos de apps
     if (
-      /(sticker|animated gif|voice note|statuses|status|profile photo|wallpapers|ringtones|notifications|alarms|emoji|emoticon|icono|icons|assets|drawable|splash|ads|sdk|obb)/i.test(
+      /(sticker|animated gif|voice note|statuses|status|profile photo|wallpapers|ringtones|notifications|alarms|emoji|emoticon|icono|icons|assets|drawable|splash|ads|sdk|obb|^sent$|^private$|whatsapp audio|whatsapp documents|telegram audio|telegram documents)/i.test(
         lowerName
       ) ||
       /(\/android\/data\/|\/android\/obb\/|whatsapp stickers|whatsapp animated gifs|whatsapp voice notes|\.statuses)/i.test(
@@ -1073,21 +1082,15 @@ export const folderService = {
       };
     }
 
-    // 5. Carpetas residuales con 1 solo archivo (casi siempre íconos, portadas de música o archivos de sistema)
-    if (count === 1 && subCount === 0) {
+    // 5. Carpetas con nombres técnicos (IDs numéricos largos, paquetes com.*, caché de apps) o con 1 solo archivo suelto
+    if (
+      /^(com\.|org\.|net\.|[0-9a-f]{8,}|\d{5,})/i.test(lowerRaw) ||
+      (count === 1 && subCount === 0)
+    ) {
       return {
         isSystemSuggested: true,
-        reason: 'Carpeta residual (solo 1 archivo)',
-        category: 'single_file',
-      };
-    }
-
-    // 6. Carpetas muy pequeñas (2 a 3 archivos) que no son álbumes principales
-    if (count > 1 && count <= 3 && subCount === 0) {
-      return {
-        isSystemSuggested: true,
-        reason: `Carpeta secundaria (${count} archivos)`,
-        category: 'few_files',
+        reason: count === 1 ? 'Carpeta de 1 solo archivo (Sistema / App)' : 'Carpeta técnica de aplicación',
+        category: count === 1 ? 'single_file' : 'system_name',
       };
     }
 

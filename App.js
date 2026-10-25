@@ -209,7 +209,7 @@ export default function App() {
       if (res && res.uri) {
         const updated = await folderService.getSavedFolders();
         setSavedFolders(updated);
-        await loadAlbums();
+        await loadAlbums(true);
         setFolderUri(res.uri);
         setActiveTab('folder');
         setSelectedAlbum(null);
@@ -224,7 +224,7 @@ export default function App() {
     try {
       const updated = await folderService.addMultipleSavedFolders(chosenFolders);
       setSavedFolders(updated);
-      await loadAlbums();
+      await loadAlbums(true);
       if (chosenFolders[0]?.uri) {
         setFolderUri(chosenFolders[0].uri);
       } else if (!folderUri && updated.length > 0) {
@@ -330,9 +330,9 @@ export default function App() {
   };
 
   // Cargar lista de álbumes bajo demanda y guardar en caché rápida
-  const loadAlbums = async () => {
+  const loadAlbums = async (forceRefresh = false) => {
     try {
-      const albumList = await mediaService.getAlbums();
+      const albumList = await mediaService.getAlbums({ forceRefresh });
       setAlbums(albumList);
       if (Array.isArray(albumList) && albumList.length > 0) {
         AsyncStorage.setItem(ALBUMS_FAST_CACHE_KEY, JSON.stringify(albumList)).catch(() => {});
@@ -347,17 +347,18 @@ export default function App() {
     setSelectedAlbum(null);
     setActiveTab(tab);
     if (tab === 'albums') {
-      loadAlbums();
+      loadAlbums(false);
     } else if (tab === 'photos' && assets.length === 0) {
       loadAssets({ reset: true, album: null, filter: filterType });
     }
   };
 
-  // Refrescar contenido actual
+  // Refrescar contenido actual (limpiando cachés en RAM para reflejar cambios reales)
   const handleRefresh = async () => {
     setIsRefreshing(true);
+    folderService.invalidateCache();
     if (activeTab === 'albums' && !selectedAlbum) {
-      await loadAlbums();
+      await loadAlbums(true);
     } else if (activeTab !== 'folder') {
       await loadAssets({ reset: true, album: selectedAlbum, filter: filterType });
     }
@@ -468,14 +469,34 @@ export default function App() {
 
   // Abrir Modo Guardar (organizador por deslizamiento + papelera con restauración en 1 clic)
   const handleOpenModoGuardar = useCallback(
-    (customList, startIndex = 0, startView = 'swipe') => {
-      const list = Array.isArray(customList) && customList.length > 0 ? customList : displayedAssets;
-      setModoGuardarAssets(list);
+    async (customList, startIndex = 0, startView = 'swipe') => {
+      let list =
+        Array.isArray(customList) && customList.length > 0
+          ? customList
+          : displayedAssets && displayedAssets.length > 0
+          ? displayedAssets
+          : folderAssets && folderAssets.length > 0
+          ? folderAssets
+          : assets;
+
+      // Si el usuario pulsa "Modo Guardar" desde la pantalla de Álbumes antes de que la lista general esté cargada,
+      // cargamos de inmediato el lote principal de fotos para que nunca abra vacío
+      if (!list || list.length === 0) {
+        try {
+          const res = await mediaService.getAssets({ first: 120 });
+          if (res?.assets && res.assets.length > 0) {
+            setAssets(res.assets);
+            list = res.assets.filter((a) => a && !trashBin[a.id]);
+          }
+        } catch (_e) {}
+      }
+
+      setModoGuardarAssets(list || []);
       setModoGuardarInitialIndex(Math.max(0, startIndex));
       setModoGuardarInitialView(startView || 'swipe');
       setModoGuardarVisible(true);
     },
-    [displayedAssets]
+    [displayedAssets, folderAssets, assets, trashBin]
   );
 
   // Enviar foto a la Papelera temporal del Modo Guardar (sin borrarla aún del dispositivo)
@@ -857,6 +878,7 @@ export default function App() {
               onExitFolder={handleBackFromAlbum}
               onOpenModoGuardar={handleOpenModoGuardar}
               trashCount={Object.keys(trashBin).length}
+              trashBin={trashBin}
             />
           ) : activeTab === 'albums' && !selectedAlbum ? (
             <AlbumList
