@@ -88,8 +88,10 @@ export default function App() {
   const [modoGuardarInitialIndex, setModoGuardarInitialIndex] = useState(0);
   const [modoGuardarInitialView, setModoGuardarInitialView] = useState('swipe');
 
-  // Carpetas ocultas y modo todo visible
+  // Carpetas ocultas, carpetas de sistema sugeridas y modo todo visible
   const [hiddenFolders, setHiddenFolders] = useState({});
+  const [manuallyEnabledSystemFolders, setManuallyEnabledSystemFolders] = useState({});
+  const [autoHideSystemFolders, setAutoHideSystemFolders] = useState(true);
   const [showAllFolders, setShowAllFolders] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [pinAttempt, setPinAttempt] = useState('');
@@ -114,8 +116,14 @@ export default function App() {
       storageService.getFavorites().then(setFavorites);
       storageService.getTrashBin().then((tb) => { if (tb) setTrashBin(tb); });
 
-      // 1b. Cargar carpetas ocultas y SIEMPRE iniciar con carpetas ocultas bloqueadas (showAllFolders = false)
+      // 1b. Cargar carpetas ocultas, carpetas de sistema activadas manualmente y SIEMPRE iniciar con privadas bloqueadas
       storageService.getHiddenFolders().then((hf) => { if (hf) setHiddenFolders(hf); });
+      storageService.getManuallyEnabledSystemFolders().then((ms) => {
+        if (ms) setManuallyEnabledSystemFolders(ms);
+      });
+      storageService.getAutoHideSystemFolders().then((ah) => {
+        setAutoHideSystemFolders(Boolean(ah));
+      });
       setShowAllFolders(false);
       storageService.setShowAllFolders(false);
 
@@ -532,22 +540,69 @@ export default function App() {
     return { deletedCount: deletedIds.size };
   }, [trashBin, favorites]);
 
-  // Ocultar o prender cualquier carpeta
-  const handleToggleHideFolder = async (folderKey, folderName) => {
+  // Ocultar o prender cualquier carpeta normal
+  const handleToggleHideFolder = async (folderKey, folderName, silent = false) => {
     try {
       const updated = await storageService.toggleHideFolder(folderKey, folderName);
       setHiddenFolders(updated);
-      const isNowHidden = Boolean(updated[folderKey]);
-      Alert.alert(
-        isNowHidden ? 'Carpeta oculta' : 'Carpeta visible',
-        isNowHidden
-          ? `La carpeta "${folderName || folderKey}" ahora está oculta. Puedes verla activando "Todo visible".`
-          : `La carpeta "${folderName || folderKey}" vuelve a estar visible normalmente.`
-      );
+      if (!silent) {
+        const isNowHidden = Boolean(updated[folderKey]);
+        Alert.alert(
+          isNowHidden ? 'Carpeta oculta' : 'Carpeta visible',
+          isNowHidden
+            ? `La carpeta "${folderName || folderKey}" ahora está oculta. Puedes activarla en "Administrar carpetas".`
+            : `La carpeta "${folderName || folderKey}" vuelve a estar visible normalmente.`
+        );
+      }
     } catch (e) {
       console.error('Error al ocultar carpeta:', e);
     }
   };
+
+  // Activar o desactivar manualmente una carpeta sugerida como de sistema
+  const handleToggleSystemFolderManual = useCallback(
+    async (folderKey, enableNow, _folderName, itemObj) => {
+      try {
+        const updated = await storageService.setManuallyEnabledSystemFolder(folderKey, enableNow);
+        if (itemObj) {
+          if (itemObj.id) await storageService.setManuallyEnabledSystemFolder(itemObj.id, enableNow);
+          if (itemObj.title) await storageService.setManuallyEnabledSystemFolder(itemObj.title, enableNow);
+          if (itemObj.uri) await storageService.setManuallyEnabledSystemFolder(itemObj.uri, enableNow);
+        }
+        const finalMap = await storageService.getManuallyEnabledSystemFolders();
+        setManuallyEnabledSystemFolders(finalMap || updated);
+        // Si el usuario la activa manualmente y estaba en hiddenFolders, quitarla de hiddenFolders
+        if (enableNow && hiddenFolders[folderKey]) {
+          const nextHidden = await storageService.toggleHideFolder(folderKey);
+          setHiddenFolders(nextHidden);
+        }
+      } catch (e) {
+        console.error('Error al alternar carpeta de sistema:', e);
+      }
+    },
+    [hiddenFolders]
+  );
+
+  // Activar o desactivar en bloque todas las carpetas sugeridas de sistema
+  const handleSetAllSystemFoldersManual = useCallback(async (enableAll, systemList = []) => {
+    try {
+      if (!enableAll) {
+        const cleared = await storageService.setAllManuallyEnabledSystemFolders({});
+        setManuallyEnabledSystemFolders(cleared);
+        return;
+      }
+      const nextMap = {};
+      for (const item of systemList) {
+        if (item?.uri) nextMap[item.uri] = true;
+        if (item?.id) nextMap[item.id] = true;
+        if (item?.title) nextMap[item.title] = true;
+      }
+      const saved = await storageService.setAllManuallyEnabledSystemFolders(nextMap);
+      setManuallyEnabledSystemFolders(saved);
+    } catch (e) {
+      console.error('Error al cambiar todas las carpetas de sistema:', e);
+    }
+  }, []);
 
   // Alternar modo todo visible (muestra u oculta las carpetas privadas, con PIN opcional)
   const handleToggleShowAllFolders = async () => {
@@ -669,9 +724,24 @@ export default function App() {
     }
 
     if (activeTab === 'albums') {
+      const activeAlbumsCount = albums.filter((item) => {
+        if (hiddenFolders[item.title] || hiddenFolders[item.id] || (item.uri && hiddenFolders[item.uri])) {
+          return false;
+        }
+        const sysInfo = folderService.classifySystemFolder(item);
+        const manualOn = Boolean(
+          manuallyEnabledSystemFolders[item.uri] ||
+            manuallyEnabledSystemFolders[item.id] ||
+            manuallyEnabledSystemFolders[item.title]
+        );
+        if (sysInfo.isSystemSuggested && autoHideSystemFolders && !manualOn) {
+          return false;
+        }
+        return true;
+      }).length;
       return {
         title: 'Álbumes esenciales',
-        subtitle: `${albums.length} carpetas`,
+        subtitle: `${activeAlbumsCount} activas de ${albums.length} carpetas`,
         showBack: false,
       };
     }
@@ -779,6 +849,9 @@ export default function App() {
               onAssetsChange={(items) => setFolderAssets(items)}
               hiddenFolders={hiddenFolders}
               onToggleHideFolder={handleToggleHideFolder}
+              manuallyEnabledSystemFolders={manuallyEnabledSystemFolders}
+              autoHideSystemFolders={autoHideSystemFolders}
+              onToggleSystemFolderManual={handleToggleSystemFolderManual}
               showAllFolders={showAllFolders}
               onToggleShowAllFolders={handleToggleShowAllFolders}
               onExitFolder={handleBackFromAlbum}
@@ -795,6 +868,10 @@ export default function App() {
               isRefreshing={isRefreshing}
               hiddenFolders={hiddenFolders}
               onToggleHideFolder={handleToggleHideFolder}
+              manuallyEnabledSystemFolders={manuallyEnabledSystemFolders}
+              autoHideSystemFolders={autoHideSystemFolders}
+              onToggleSystemFolderManual={handleToggleSystemFolderManual}
+              onSetAllSystemFoldersManual={handleSetAllSystemFoldersManual}
               showAllFolders={showAllFolders}
               onToggleShowAllFolders={handleToggleShowAllFolders}
               onPickNewFolder={handlePickFolder}

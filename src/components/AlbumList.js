@@ -56,6 +56,11 @@ export default function AlbumList({
   isRefreshing,
   hiddenFolders = {},
   onToggleHideFolder,
+  manuallyEnabledSystemFolders = {},
+  autoHideSystemFolders = true,
+  onToggleSystemFolderManual,
+  onToggleAutoHideSystem,
+  onSetAllSystemFoldersManual,
   showAllFolders = false,
   onToggleShowAllFolders,
   onPickNewFolder,
@@ -76,17 +81,43 @@ export default function AlbumList({
   const [sortBy, setSortBy] = useState('smart'); // 'smart' | 'count' | 'months' | 'az'
   const [groupSmallInVarios, setGroupSmallInVarios] = useState(true);
   const [variosModalVisible, setVariosModalVisible] = useState(false);
+  const [showFoldersInScreen, setShowFoldersInScreen] = useState(true);
+  const [managerTab, setManagerTab] = useState('system'); // 'system' | 'main' | 'all'
+  const [managerSearch, setManagerSearch] = useState('');
 
   const favList = useMemo(() => Object.values(favorites || {}), [favorites]);
   const favCount = favList.length;
   const favCoverUri = favList[0]?.uri || BEAUTIFUL_FALLBACK_COVERS[2];
 
-  const isAlbumHidden = (item) =>
+  const getItemKey = (item) => item?.uri || item?.id || item?.title || '';
+
+  const isManuallyEnabledSystem = (item) => {
+    if (!item) return false;
+    return Boolean(
+      manuallyEnabledSystemFolders[item.uri] ||
+        manuallyEnabledSystemFolders[item.id] ||
+        manuallyEnabledSystemFolders[item.title]
+    );
+  };
+
+  const isExplicitlyHidden = (item) =>
     Boolean(
       hiddenFolders[item.title] ||
         hiddenFolders[item.id] ||
         (item.uri && hiddenFolders[item.uri])
     );
+
+  // Una carpeta está desactivada/oculta si:
+  // 1) El usuario la ocultó manualmente, o
+  // 2) Es una carpeta sugerida de sistema y el modo auto-desactivar sistema está activo (salvo que el usuario la haya activado manualmente)
+  const isAlbumHidden = (item) => {
+    if (isExplicitlyHidden(item)) return true;
+    const sysInfo = folderService.classifySystemFolder(item);
+    if (sysInfo.isSystemSuggested && autoHideSystemFolders && !isManuallyEnabledSystem(item)) {
+      return true;
+    }
+    return false;
+  };
 
   // Detectar si el nombre de la carpeta es un mes (ej. "Octubre 2026", "Enero 2025")
   const getMonthOrderScore = (title = '') => {
@@ -182,14 +213,89 @@ export default function AlbumList({
       mainVisibleAlbums: mainList,
       smallGroupedAlbums: smallList,
     };
-  }, [albums, hiddenFolders, showAllFolders, quickEditVisibility, searchQuery, groupSmallInVarios, sortBy]);
+  }, [
+    albums,
+    hiddenFolders,
+    manuallyEnabledSystemFolders,
+    autoHideSystemFolders,
+    showAllFolders,
+    quickEditVisibility,
+    searchQuery,
+    groupSmallInVarios,
+    sortBy,
+  ]);
 
-  const hiddenCount = useMemo(() => {
-    return albums.filter((item) => isAlbumHidden(item)).length;
-  }, [albums, hiddenFolders]);
+  // Clasificación de carpetas para mostrar conteos exactos y sugerencias de sistema
+  const {
+    systemSuggestedAlbums,
+    normalUserAlbums,
+    activeSystemCount,
+    deactivatedSystemCount,
+    hiddenCount,
+    visibleCount,
+  } = useMemo(() => {
+    const sysList = [];
+    const normList = [];
+    let activeSys = 0;
+    let deactSys = 0;
+    let totalHidden = 0;
+
+    for (const item of albums) {
+      const sysInfo = folderService.classifySystemFolder(item);
+      const hidden = isAlbumHidden(item);
+      if (hidden) totalHidden++;
+
+      if (sysInfo.isSystemSuggested) {
+        sysList.push({ ...item, systemReason: sysInfo.reason, systemCategory: sysInfo.category });
+        if (hidden) deactSys++;
+        else activeSys++;
+      } else {
+        normList.push(item);
+      }
+    }
+
+    return {
+      systemSuggestedAlbums: sysList,
+      normalUserAlbums: normList,
+      activeSystemCount: activeSys,
+      deactivatedSystemCount: deactSys,
+      hiddenCount: totalHidden,
+      visibleCount: Math.max(0, albums.length - totalHidden),
+    };
+  }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders]);
+
+  const handleToggleAlbumOrSystem = (item) => {
+    if (!item) return;
+    const key = getItemKey(item);
+    const displayName = folderService.formatFolderDisplayName(item.title, item.uri || '');
+    const sysInfo = folderService.classifySystemFolder(item);
+
+    if (sysInfo.isSystemSuggested && onToggleSystemFolderManual) {
+      const currentlyHidden = isAlbumHidden(item);
+      // Si estaba oculta/desactivada, la activamos manualmente; si estaba activa, la desactivamos
+      onToggleSystemFolderManual(key, currentlyHidden, displayName, item);
+      return;
+    }
+
+    if (onToggleHideFolder) {
+      onToggleHideFolder(key, displayName, true);
+    }
+  };
 
   // Construir lista final con "Favoritos" al inicio y "Varios" (carpetas de <5 archivos) agrupadas al final
   const gridData = useMemo(() => {
+    if (!showFoldersInScreen) {
+      return [
+        {
+          id: '__galaxy_favorites_card__',
+          isFavoritesCard: true,
+          title: 'Favoritos',
+          assetCount: favCount,
+          coverUri: favCoverUri,
+        },
+      ];
+    }
+
     const favCard = {
       id: '__galaxy_favorites_card__',
       isFavoritesCard: true,
@@ -224,7 +330,14 @@ export default function AlbumList({
     }
 
     return list;
-  }, [favCount, favCoverUri, mainVisibleAlbums, smallGroupedAlbums, searchQuery]);
+  }, [
+    showFoldersInScreen,
+    favCount,
+    favCoverUri,
+    mainVisibleAlbums,
+    smallGroupedAlbums,
+    searchQuery,
+  ]);
 
   const handleOpenFolderScanner = async () => {
     if (onCloseVisibilityModal) onCloseVisibilityModal();
@@ -370,16 +483,14 @@ export default function AlbumList({
         ]}
         activeOpacity={0.82}
         onPress={() => {
-          if (quickEditVisibility && onToggleHideFolder) {
-            onToggleHideFolder(item.uri || item.id || item.title, displayTitle);
+          if (quickEditVisibility) {
+            handleToggleAlbumOrSystem(item);
             return;
           }
           onSelectAlbum({ ...item, title: displayTitle });
         }}
         onLongPress={() => {
-          if (onToggleHideFolder) {
-            onToggleHideFolder(item.uri || item.id || item.title, displayTitle);
-          }
+          handleToggleAlbumOrSystem(item);
         }}
       >
         <Image
@@ -394,12 +505,12 @@ export default function AlbumList({
         <View style={styles.bottomScrim} />
 
         {/* Icono superior derecho (Cámara, Descargas, Subcarpetas o botón de Ocultar/Mostrar) */}
-        {(quickEditVisibility || showAllFolders) && onToggleHideFolder ? (
+        {quickEditVisibility || showAllFolders ? (
           <TouchableOpacity
             style={[styles.topRightCornerBadge, isHidden && styles.topRightCornerBadgeHidden]}
             onPress={(e) => {
               e.stopPropagation();
-              onToggleHideFolder(item.uri || item.id || item.title, displayTitle);
+              handleToggleAlbumOrSystem(item);
             }}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
@@ -473,49 +584,128 @@ export default function AlbumList({
         </View>
       )}
 
-      {/* Encabezado idéntico a Samsung Galaxy: "Álbumes esenciales" a la izquierda y "Ver todo / Elegir visibles" a la derecha */}
+      {/* Encabezado idéntico a Samsung Galaxy: "Álbumes esenciales" + Número de carpetas a la izquierda y acciones a la derecha */}
       <View style={styles.galaxySectionHeaderRow}>
-        <Text style={styles.galaxySectionTitle}>Álbumes esenciales</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 }}>
+          <Text style={styles.galaxySectionTitle}>Carpetas</Text>
+          <View
+            style={{
+              backgroundColor: 'rgba(96, 165, 250, 0.16)',
+              borderWidth: 1,
+              borderColor: 'rgba(96, 165, 250, 0.4)',
+              paddingHorizontal: 9,
+              paddingVertical: 3,
+              borderRadius: 12,
+            }}
+          >
+            <Text style={{ color: '#93c5fd', fontSize: 12, fontWeight: '800' }}>
+              {visibleCount} de {albums.length}
+            </Text>
+          </View>
+        </View>
 
         <View style={styles.galaxyHeaderRightActions}>
+          {/* Opción directa para Mostrar o No mostrar carpetas en pantalla */}
           <TouchableOpacity
-            onPress={() => setQuickEditVisibility((prev) => !prev)}
+            onPress={() => setShowFoldersInScreen((prev) => !prev)}
             style={[
               styles.quickEyePill,
-              quickEditVisibility && styles.quickEyePillActive,
+              !showFoldersInScreen && {
+                backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                borderColor: '#f59e0b',
+              },
             ]}
             activeOpacity={0.8}
           >
             <Ionicons
-              name={quickEditVisibility ? 'checkmark-circle' : 'eye-outline'}
+              name={showFoldersInScreen ? 'folder-open' : 'folder-outline'}
               size={14}
-              color={quickEditVisibility ? '#ffffff' : '#60a5fa'}
+              color={showFoldersInScreen ? '#60a5fa' : '#fbbf24'}
             />
             <Text
               style={[
                 styles.quickEyePillText,
-                quickEditVisibility && { color: '#ffffff' },
+                !showFoldersInScreen && { color: '#fbbf24' },
               ]}
             >
-              {quickEditVisibility ? 'Listo' : 'Elegir visibles'}
+              {showFoldersInScreen ? 'Ocultar carpetas' : `Mostrar carpetas (${visibleCount})`}
             </Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={() => {
+              setManagerTab('system');
               if (onOpenVisibilityModal) {
                 onOpenVisibilityModal();
-              } else if (onToggleShowAllFolders) {
-                onToggleShowAllFolders();
               }
             }}
-            activeOpacity={0.75}
+            style={[
+              styles.quickEyePill,
+              {
+                backgroundColor: 'rgba(16, 185, 129, 0.15)',
+                borderColor: 'rgba(16, 185, 129, 0.45)',
+              },
+            ]}
+            activeOpacity={0.8}
           >
-            <Text style={styles.verTodoBlueLink}>
-              {showAllFolders ? 'Ocultar privadas' : 'Ver todo'}
+            <Ionicons name="options-outline" size={14} color="#34d399" />
+            <Text style={[styles.quickEyePillText, { color: '#6ee7b7' }]}>
+              Administrar ({albums.length})
             </Text>
           </TouchableOpacity>
         </View>
+      </View>
+
+      {/* Tarjeta resumen de Número de Carpetas y Carpetas de Sistema Sugeridas (Desactivadas automáticamente) */}
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          backgroundColor: '#12151f',
+          borderWidth: 1,
+          borderColor: 'rgba(56, 189, 248, 0.28)',
+          borderRadius: 14,
+          paddingHorizontal: 12,
+          paddingVertical: 9,
+          gap: 10,
+        }}
+      >
+        <View style={{ flex: 1, gap: 2 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <Ionicons name="shield-checkmark" size={15} color="#38bdf8" />
+            <Text style={{ color: '#ffffff', fontSize: 12.5, fontWeight: '800' }}>
+              {visibleCount} carpetas activas · {deactivatedSystemCount} de sistema desactivadas
+            </Text>
+          </View>
+          <Text style={{ color: '#94a3b8', fontSize: 11 }} numberOfLines={2}>
+            {systemSuggestedAlbums.length > 0
+              ? `Se detectaron ${systemSuggestedAlbums.length} carpetas de sistema/residuales (de ${albums.length} totales) y se ocultaron para no saturar. Puedes activarlas manualmente.`
+              : `Total de carpetas detectadas en el teléfono: ${albums.length}.`}
+          </Text>
+        </View>
+
+        <TouchableOpacity
+          onPress={() => {
+            setManagerTab('system');
+            if (onOpenVisibilityModal) onOpenVisibilityModal();
+          }}
+          style={{
+            backgroundColor: '#2563eb',
+            paddingHorizontal: 11,
+            paddingVertical: 7,
+            borderRadius: 11,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 5,
+          }}
+          activeOpacity={0.85}
+        >
+          <Ionicons name="construct-outline" size={13} color="#ffffff" />
+          <Text style={{ color: '#ffffff', fontSize: 11.5, fontWeight: '800' }}>
+            Sistema ({systemSuggestedAlbums.length})
+          </Text>
+        </TouchableOpacity>
       </View>
 
       {/* Barra de acomodo inteligente y agrupación "Varios (<5)" */}
@@ -608,7 +798,64 @@ export default function AlbumList({
               : 'Agrupar <5 en Varios'}
           </Text>
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[
+            styles.sortChip,
+            quickEditVisibility && styles.sortChipActive,
+          ]}
+          onPress={() => setQuickEditVisibility((prev) => !prev)}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name={quickEditVisibility ? 'checkmark-circle' : 'eye-outline'}
+            size={13}
+            color={quickEditVisibility ? '#ffffff' : '#60a5fa'}
+          />
+          <Text
+            style={[
+              styles.sortChipText,
+              quickEditVisibility && styles.sortChipTextActive,
+            ]}
+          >
+            {quickEditVisibility ? 'Listo' : 'Toque rápido ocultar'}
+          </Text>
+        </TouchableOpacity>
       </ScrollView>
+
+      {!showFoldersInScreen && (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            backgroundColor: 'rgba(245, 158, 11, 0.14)',
+            borderWidth: 1,
+            borderColor: 'rgba(245, 158, 11, 0.4)',
+            borderRadius: 12,
+            paddingHorizontal: 12,
+            paddingVertical: 10,
+          }}
+        >
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+            <Ionicons name="eye-off-outline" size={18} color="#fbbf24" />
+            <Text style={{ color: '#fde68a', fontSize: 12, fontWeight: '700', flex: 1 }}>
+              Las {visibleCount} carpetas están ocultas temporalmente de esta vista.
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => setShowFoldersInScreen(true)}
+            style={{
+              backgroundColor: '#f59e0b',
+              paddingHorizontal: 10,
+              paddingVertical: 5,
+              borderRadius: 9,
+            }}
+          >
+            <Text style={{ color: '#000', fontSize: 11.5, fontWeight: '800' }}>Mostrar</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {quickEditVisibility && (
         <View style={styles.quickEditBanner}>
@@ -658,7 +905,7 @@ export default function AlbumList({
         }
       />
 
-      {/* Modal Estilo Samsung: Elegir qué carpetas se ven y cuáles están ocultas + Agregar/Escanear */}
+      {/* Modal Gestor de Carpetas y Sugerencias de Sistema (Auto-desactivadas con activación manual) */}
       <Modal
         visible={Boolean(visibilityModalVisible)}
         animationType="slide"
@@ -667,20 +914,196 @@ export default function AlbumList({
         statusBarTranslucent
       >
         <View style={styles.scannerBackdrop}>
-          <View style={styles.scannerCard}>
+          <View style={[styles.scannerCard, { maxHeight: '88%' }]}>
             <View style={styles.scannerHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Ionicons name="eye-outline" size={22} color="#60a5fa" />
-                <Text style={styles.scannerTitle}>Mostrar u ocultar carpetas</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                <Ionicons name="folder-open" size={22} color="#38bdf8" />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.scannerTitle}>
+                    Carpetas ({visibleCount} activas de {albums.length})
+                  </Text>
+                  <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                    {systemSuggestedAlbums.length} sugeridas de sistema · {normalUserAlbums.length} principales
+                  </Text>
+                </View>
               </View>
               <TouchableOpacity onPress={onCloseVisibilityModal}>
                 <Ionicons name="close" size={24} color="#fff" />
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.visibilitySubHint}>
-              Elige qué carpetas quieres ver en tu pantalla principal para no cargarla tanto de imágenes ({albums.length - hiddenCount} visibles · {hiddenCount} ocultas).
-            </Text>
+            {/* Pestañas del Gestor: 1) Sugeridas de Sistema, 2) Principales, 3) Todas */}
+            <View
+              style={{
+                flexDirection: 'row',
+                backgroundColor: '#1c1c22',
+                borderRadius: 12,
+                padding: 3,
+                gap: 4,
+              }}
+            >
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 8,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  backgroundColor: managerTab === 'system' ? '#2563eb' : 'transparent',
+                }}
+                onPress={() => setManagerTab('system')}
+              >
+                <Text
+                  style={{
+                    color: managerTab === 'system' ? '#ffffff' : '#a1a1aa',
+                    fontSize: 11.5,
+                    fontWeight: '800',
+                  }}
+                >
+                  🤖 Sistema ({systemSuggestedAlbums.length})
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 8,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  backgroundColor: managerTab === 'main' ? '#2563eb' : 'transparent',
+                }}
+                onPress={() => setManagerTab('main')}
+              >
+                <Text
+                  style={{
+                    color: managerTab === 'main' ? '#ffffff' : '#a1a1aa',
+                    fontSize: 11.5,
+                    fontWeight: '800',
+                  }}
+                >
+                  📂 Principales ({normalUserAlbums.length})
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={{
+                  flex: 1,
+                  paddingVertical: 8,
+                  borderRadius: 10,
+                  alignItems: 'center',
+                  backgroundColor: managerTab === 'all' ? '#2563eb' : 'transparent',
+                }}
+                onPress={() => setManagerTab('all')}
+              >
+                <Text
+                  style={{
+                    color: managerTab === 'all' ? '#ffffff' : '#a1a1aa',
+                    fontSize: 11.5,
+                    fontWeight: '800',
+                  }}
+                >
+                  📋 Todas ({albums.length})
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Buscador rápido dentro del modal */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: '#1f1f26',
+                borderRadius: 11,
+                paddingHorizontal: 10,
+                paddingVertical: 6,
+                gap: 6,
+                borderWidth: 1,
+                borderColor: '#2e2e38',
+              }}
+            >
+              <Ionicons name="search" size={15} color="#94a3b8" />
+              <TextInput
+                style={{ flex: 1, color: '#fff', fontSize: 13, paddingVertical: 2 }}
+                value={managerSearch}
+                onChangeText={setManagerSearch}
+                placeholder="Buscar carpeta por nombre..."
+                placeholderTextColor="#64748b"
+              />
+              {managerSearch.length > 0 && (
+                <TouchableOpacity onPress={() => setManagerSearch('')}>
+                  <Ionicons name="close-circle" size={16} color="#94a3b8" />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Explicación y controles masivos cuando estamos en "Sugeridas de Sistema" */}
+            {managerTab === 'system' && (
+              <View
+                style={{
+                  backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                  borderWidth: 1,
+                  borderColor: 'rgba(56, 189, 248, 0.35)',
+                  borderRadius: 12,
+                  padding: 10,
+                  gap: 8,
+                }}
+              >
+                <Text style={{ color: '#bae6fd', fontSize: 11.5, lineHeight: 16 }}>
+                  💡 Estas <Text style={{ fontWeight: '800', color: '#fff' }}>{systemSuggestedAlbums.length} carpetas</Text> se detectaron como de sistema, caché o con 1-3 archivos sueltos y están <Text style={{ fontWeight: '800', color: '#fbbf24' }}>desactivadas automáticamente</Text>. Toca cualquiera abajo para <Text style={{ fontWeight: '800', color: '#34d399' }}>activarla manualmente</Text>.
+                </Text>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                      borderWidth: 1,
+                      borderColor: '#f59e0b',
+                      paddingVertical: 7,
+                      borderRadius: 9,
+                      alignItems: 'center',
+                      flexDirection: 'row',
+                      justifyContent: 'center',
+                      gap: 5,
+                    }}
+                    onPress={() => {
+                      if (onSetAllSystemFoldersManual) {
+                        onSetAllSystemFoldersManual(false, systemSuggestedAlbums);
+                      }
+                    }}
+                  >
+                    <Ionicons name="eye-off" size={13} color="#fbbf24" />
+                    <Text style={{ color: '#fde68a', fontSize: 11, fontWeight: '800' }}>
+                      Desactivar todas ({systemSuggestedAlbums.length})
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={{
+                      flex: 1,
+                      backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                      borderWidth: 1,
+                      borderColor: '#10b981',
+                      paddingVertical: 7,
+                      borderRadius: 9,
+                      alignItems: 'center',
+                      flexDirection: 'row',
+                      justifyContent: 'center',
+                      gap: 5,
+                    }}
+                    onPress={() => {
+                      if (onSetAllSystemFoldersManual) {
+                        onSetAllSystemFoldersManual(true, systemSuggestedAlbums);
+                      }
+                    }}
+                  >
+                    <Ionicons name="eye" size={13} color="#34d399" />
+                    <Text style={{ color: '#a7f3d0', fontSize: 11, fontWeight: '800' }}>
+                      Activar todas manual
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
 
             {/* Acciones rápidas dentro del gestor de carpetas */}
             <ScrollView
@@ -719,7 +1142,7 @@ export default function AlbumList({
                   color="#fff"
                 />
                 <Text style={styles.showAllToggleTextActive}>
-                  {showAllFolders ? 'Ocultar privadas' : 'Ver ocultas (PIN)'}
+                  {showAllFolders ? 'Ocultar privadas' : 'Mostrar todas temporal'}
                 </Text>
               </TouchableOpacity>
 
@@ -732,59 +1155,106 @@ export default function AlbumList({
               </TouchableOpacity>
             </ScrollView>
 
-            <ScrollView style={{ maxHeight: 370 }} showsVerticalScrollIndicator={false}>
-              {albums.map((alb) => {
-                const hidden = isAlbumHidden(alb);
-                const visible = !hidden;
-                const displayName = folderService.formatFolderDisplayName(alb.title, alb.uri || '');
-                const thumb = alb.coverUri || getFallbackCoverForKey(alb.id || displayName);
+            <ScrollView style={{ maxHeight: 330 }} showsVerticalScrollIndicator={false}>
+              {(() => {
+                const sourceList =
+                  managerTab === 'system'
+                    ? systemSuggestedAlbums
+                    : managerTab === 'main'
+                    ? normalUserAlbums
+                    : albums;
+                const mq = managerSearch.trim().toLowerCase();
+                const filteredList = mq
+                  ? sourceList.filter((alb) =>
+                      folderService
+                        .formatFolderDisplayName(alb.title, alb.uri || '')
+                        .toLowerCase()
+                        .includes(mq)
+                    )
+                  : sourceList;
 
-                return (
-                  <TouchableOpacity
-                    key={`vis_${alb.id}`}
-                    style={[
-                      styles.visibilityRow,
-                      !visible && styles.visibilityRowHidden,
-                    ]}
-                    onPress={() => {
-                      if (onToggleHideFolder) {
-                        onToggleHideFolder(alb.uri || alb.id || alb.title, displayName);
-                      }
-                    }}
-                    activeOpacity={0.75}
-                  >
-                    <Image
-                      source={{ uri: thumb }}
-                      style={styles.visibilityThumb}
-                      contentFit="cover"
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.visibilityRowTitle} numberOfLines={1}>
-                        {displayName}
-                      </Text>
-                      <Text style={styles.visibilityRowSub}>
-                        {alb.assetCount || 0} elementos
-                        {alb.subfolderCount > 0 ? ` · ${alb.subfolderCount} subcarpetas` : ''}
+                if (filteredList.length === 0) {
+                  return (
+                    <View style={{ paddingVertical: 28, alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="folder-open-outline" size={34} color="#71717a" />
+                      <Text style={{ color: '#a1a1aa', fontSize: 12.5, textAlign: 'center' }}>
+                        No hay carpetas en esta sección.
                       </Text>
                     </View>
-                    <View
+                  );
+                }
+
+                return filteredList.map((alb) => {
+                  const hidden = isAlbumHidden(alb);
+                  const visible = !hidden;
+                  const sysInfo = folderService.classifySystemFolder(alb);
+                  const displayName = folderService.formatFolderDisplayName(alb.title, alb.uri || '');
+                  const thumb = alb.coverUri || getFallbackCoverForKey(alb.id || displayName);
+
+                  return (
+                    <TouchableOpacity
+                      key={`vis_${alb.id}`}
                       style={[
-                        styles.visibilityToggleBadge,
-                        visible ? styles.visibilityBadgeOn : styles.visibilityBadgeOff,
+                        styles.visibilityRow,
+                        !visible && styles.visibilityRowHidden,
                       ]}
+                      onPress={() => handleToggleAlbumOrSystem(alb)}
+                      activeOpacity={0.75}
                     >
-                      <Ionicons
-                        name={visible ? 'eye' : 'eye-off'}
-                        size={14}
-                        color="#ffffff"
+                      <Image
+                        source={{ uri: thumb }}
+                        style={styles.visibilityThumb}
+                        contentFit="cover"
                       />
-                      <Text style={styles.visibilityToggleText}>
-                        {visible ? 'Visible' : 'Oculta'}
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.visibilityRowTitle} numberOfLines={1}>
+                          {displayName}
+                        </Text>
+                        <Text style={styles.visibilityRowSub}>
+                          {alb.assetCount || 0} {alb.assetCount === 1 ? 'archivo' : 'archivos'}
+                          {alb.subfolderCount > 0 ? ` · ${alb.subfolderCount} subcarpetas` : ''}
+                        </Text>
+                        {sysInfo.isSystemSuggested && (
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 4,
+                              marginTop: 3,
+                            }}
+                          >
+                            <Ionicons name="hardware-chip-outline" size={11} color="#fbbf24" />
+                            <Text style={{ color: '#fbbf24', fontSize: 10.5, fontWeight: '700' }}>
+                              Sugerida de sistema: {sysInfo.reason}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                      <View
+                        style={[
+                          styles.visibilityToggleBadge,
+                          visible ? styles.visibilityBadgeOn : styles.visibilityBadgeOff,
+                        ]}
+                      >
+                        <Ionicons
+                          name={visible ? 'checkmark-circle' : 'close-circle-outline'}
+                          size={14}
+                          color="#ffffff"
+                        />
+                        <Text style={styles.visibilityToggleText}>
+                          {visible
+                            ? sysInfo.isSystemSuggested
+                              ? 'Activada'
+                              : 'Visible'
+                            : sysInfo.isSystemSuggested
+                            ? 'Desactivada'
+                            : 'Oculta'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                });
+              })()}
             </ScrollView>
 
             <TouchableOpacity
@@ -792,7 +1262,7 @@ export default function AlbumList({
               onPress={onCloseVisibilityModal}
               activeOpacity={0.85}
             >
-              <Text style={styles.confirmScanBtnText}>Guardar y cerrar</Text>
+              <Text style={styles.confirmScanBtnText}>Listo y guardar</Text>
             </TouchableOpacity>
           </View>
         </View>

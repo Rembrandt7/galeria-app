@@ -1001,4 +1001,96 @@ export const folderService = {
       return false;
     }
   },
+
+  /**
+   * Clasifica inteligentemente si un álbum o carpeta parece ser de sistema, caché,
+   * recursos internos de una app o carpeta residual (ej. de 1 o 2 archivos sueltos),
+   * para sugerirla como "Carpeta de Sistema" y desactivarla automáticamente (permitiendo activarla manualmente).
+   */
+  classifySystemFolder(item) {
+    if (!item) return { isSystemSuggested: false, reason: '', category: 'normal' };
+
+    const rawTitle = String(item.title || item.name || '').trim();
+    const uri = String(item.uri || '').trim();
+    const displayName = folderService.formatFolderDisplayName(rawTitle, uri);
+    const lowerName = displayName.toLowerCase();
+    const lowerRaw = rawTitle.toLowerCase();
+    const lowerUri = uri.toLowerCase();
+    const count = Number(item.assetCount ?? item.count ?? 0);
+    const subCount = Number(item.subfolderCount || 0);
+
+    // 1. Nunca marcar como sistema las carpetas esenciales del usuario ni las organizadas por Mes y Año
+    if (
+      item.isDownloadedVideos ||
+      item.isFavoritesCard ||
+      item.isVariosCard ||
+      /^(camera|cámara|camara|dcim|videos descargados|favoritos|screenshots|capturas|whatsapp images|whatsapp video|download|descargas|pictures|imágenes|imagenes|movies|películas|peliculas|familia|viajes|trabajo)$/i.test(
+        lowerName
+      ) ||
+      /^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+20\d{2}/i.test(
+        lowerName
+      )
+    ) {
+      return { isSystemSuggested: false, reason: '', category: 'normal' };
+    }
+
+    // 2. Carpetas ocultas por punto (ej. .thumbnails, .Statuses, .trashed, .cache)
+    if (rawTitle.startsWith('.') || displayName.startsWith('.')) {
+      return {
+        isSystemSuggested: true,
+        reason: 'Carpeta oculta del sistema (.)',
+        category: 'system_name',
+      };
+    }
+
+    // 3. Miniaturas, caché, temporales o papeleras internas de Android
+    if (
+      /(thumbnail|thumb|albumthumbs|avatarcache|cache|temp|tmp|trash|trashed|rubbish|recycle|backup|logs|crash|debug|preload)/i.test(
+        lowerName
+      ) ||
+      /(thumbnail|cache|temp|trash|\.statuses|\.thumbnails)/i.test(lowerRaw)
+    ) {
+      return {
+        isSystemSuggested: true,
+        reason: 'Caché / Miniaturas del sistema',
+        category: 'system_name',
+      };
+    }
+
+    // 4. Stickers, estados temporales, notas de voz, GIFs o recursos secundarios de mensajería
+    if (
+      /(sticker|animated gif|voice note|statuses|status|profile photo|wallpapers|ringtones|notifications|alarms|emoji|emoticon|icono|icons|assets|drawable|splash|ads|sdk|obb)/i.test(
+        lowerName
+      ) ||
+      /(\/android\/data\/|\/android\/obb\/|whatsapp stickers|whatsapp animated gifs|whatsapp voice notes|\.statuses)/i.test(
+        lowerUri
+      )
+    ) {
+      return {
+        isSystemSuggested: true,
+        reason: 'Stickers / Recursos internos de app',
+        category: 'system_name',
+      };
+    }
+
+    // 5. Carpetas residuales con 1 solo archivo (casi siempre íconos, portadas de música o archivos de sistema)
+    if (count === 1 && subCount === 0) {
+      return {
+        isSystemSuggested: true,
+        reason: 'Carpeta residual (solo 1 archivo)',
+        category: 'single_file',
+      };
+    }
+
+    // 6. Carpetas muy pequeñas (2 a 3 archivos) que no son álbumes principales
+    if (count > 1 && count <= 3 && subCount === 0) {
+      return {
+        isSystemSuggested: true,
+        reason: `Carpeta secundaria (${count} archivos)`,
+        category: 'few_files',
+      };
+    }
+
+    return { isSystemSuggested: false, reason: '', category: 'normal' };
+  },
 };

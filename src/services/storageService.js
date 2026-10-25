@@ -5,6 +5,8 @@ const HIDDEN_FOLDERS_STORAGE_KEY = '@galeria_carpetas_ocultas_v1';
 const SHOW_ALL_FOLDERS_STORAGE_KEY = '@galeria_modo_todo_visible_v1';
 const HIDDEN_PIN_STORAGE_KEY = '@galeria_pin_ocultas_v1';
 const TRASH_BIN_STORAGE_KEY = '@galeria_papelera_modo_guardar_v1';
+const MANUALLY_ENABLED_SYSTEM_KEY = '@galeria_sistema_activadas_manual_v1';
+const AUTO_HIDE_SYSTEM_KEY = '@galeria_auto_desactivar_sistema_v1';
 
 export const storageService = {
   async getFavorites() {
@@ -91,6 +93,61 @@ export const storageService = {
     } catch (e) {
       console.error('Error al alternar carpeta oculta:', e);
       throw e;
+    }
+  },
+
+  async getManuallyEnabledSystemFolders() {
+    try {
+      const json = await AsyncStorage.getItem(MANUALLY_ENABLED_SYSTEM_KEY);
+      if (!json) return {};
+      return JSON.parse(json);
+    } catch (e) {
+      return {};
+    }
+  },
+
+  async setManuallyEnabledSystemFolder(folderKey, enabled) {
+    try {
+      const current = await this.getManuallyEnabledSystemFolders();
+      const updated = { ...current };
+      if (enabled) {
+        updated[folderKey] = true;
+      } else {
+        delete updated[folderKey];
+      }
+      await AsyncStorage.setItem(MANUALLY_ENABLED_SYSTEM_KEY, JSON.stringify(updated));
+      return updated;
+    } catch (e) {
+      return {};
+    }
+  },
+
+  async setAllManuallyEnabledSystemFolders(mapObj = {}) {
+    try {
+      await AsyncStorage.setItem(MANUALLY_ENABLED_SYSTEM_KEY, JSON.stringify(mapObj || {}));
+      return mapObj || {};
+    } catch (e) {
+      return {};
+    }
+  },
+
+  async getAutoHideSystemFolders() {
+    try {
+      const val = await AsyncStorage.getItem(AUTO_HIDE_SYSTEM_KEY);
+      // Por defecto activado (true): desactiva automáticamente las carpetas sugeridas de sistema
+      if (val === null || val === undefined) return true;
+      return val === 'true';
+    } catch (e) {
+      return true;
+    }
+  },
+
+  async setAutoHideSystemFolders(enabled) {
+    try {
+      await AsyncStorage.setItem(AUTO_HIDE_SYSTEM_KEY, enabled ? 'true' : 'false');
+      return Boolean(enabled);
+    } catch (e) {
+      return Boolean(enabled);
     }
   },
 

@@ -75,6 +75,9 @@ export default function FolderBrowser({
   onAssetsChange,
   hiddenFolders = {},
   onToggleHideFolder,
+  manuallyEnabledSystemFolders = {},
+  autoHideSystemFolders = true,
+  onToggleSystemFolderManual,
   showAllFolders = false,
   onToggleShowAllFolders,
   onExitFolder,
@@ -1021,19 +1024,62 @@ export default function FolderBrowser({
   ]);
 
   const [expandSmallSubfolders, setExpandSmallSubfolders] = useState(false);
+  const [showSubfoldersSection, setShowSubfoldersSection] = useState(true);
+  const [showSubfolderSystemModal, setShowSubfolderSystemModal] = useState(false);
 
-  // Subcarpetas visibles filtradas por el modo oculto y buscador, ordenadas de mayor a menor cantidad
+  const isSubfolderHidden = useCallback(
+    (sub) => {
+      if (!sub) return false;
+      if (hiddenFolders[sub.uri] || hiddenFolders[sub.name]) return true;
+      const sysInfo = folderService.classifySystemFolder(sub);
+      const isManualOn = Boolean(
+        manuallyEnabledSystemFolders[sub.uri] || manuallyEnabledSystemFolders[sub.name]
+      );
+      if (sysInfo.isSystemSuggested && autoHideSystemFolders && !isManualOn) {
+        return true;
+      }
+      return false;
+    },
+    [hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders]
+  );
+
+  const handleToggleSubfolderVisibility = useCallback(
+    (sub) => {
+      if (!sub) return;
+      const sysInfo = folderService.classifySystemFolder(sub);
+      if (sysInfo.isSystemSuggested && onToggleSystemFolderManual) {
+        const currentlyHidden = isSubfolderHidden(sub);
+        onToggleSystemFolderManual(sub.uri || sub.name, currentlyHidden, sub.name, sub);
+        return;
+      }
+      if (onToggleHideFolder) {
+        onToggleHideFolder(sub.uri, sub.name, true);
+      }
+    },
+    [isSubfolderHidden, onToggleSystemFolderManual, onToggleHideFolder]
+  );
+
+  // Subcarpetas visibles filtradas por el modo oculto, sugerencias de sistema y buscador
   const visibleSubfolders = useMemo(() => {
     const base = showAllFolders
       ? subfolders
-      : subfolders.filter((item) => !(hiddenFolders[item.uri] || hiddenFolders[item.name]));
+      : subfolders.filter((item) => !isSubfolderHidden(item));
     const q = searchQuery.trim().toLowerCase();
     const list = q
       ? base.filter((item) => (item.name || '').toLowerCase().includes(q))
       : [...base];
-    list.sort((a, b) => (Number(b.count || 0) - Number(a.count || 0)));
+    list.sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
     return list;
-  }, [subfolders, hiddenFolders, showAllFolders, searchQuery]);
+  }, [subfolders, isSubfolderHidden, showAllFolders, searchQuery]);
+
+  const systemSubfoldersList = useMemo(() => {
+    return subfolders
+      .map((sub) => {
+        const sysInfo = folderService.classifySystemFolder(sub);
+        return { ...sub, sysInfo };
+      })
+      .filter((s) => s.sysInfo.isSystemSuggested);
+  }, [subfolders]);
 
   const { mainSubfolders, smallSubfolders } = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1058,73 +1104,129 @@ export default function FolderBrowser({
   }, [visibleSubfolders, searchQuery, expandSmallSubfolders]);
 
   const hiddenSubfolderCount = useMemo(() => {
-    return subfolders.filter((item) => Boolean(hiddenFolders[item.uri] || hiddenFolders[item.name])).length;
-  }, [subfolders, hiddenFolders]);
+    return subfolders.filter((item) => isSubfolderHidden(item)).length;
+  }, [subfolders, isSubfolderHidden]);
 
   // 1. SECCIÓN DE SUBCARPETAS ESTILO SAMSUNG GALAXY (3 columnas dentro de la carpeta actual)
   const renderSubfoldersGridHeader = () => {
-    if (viewMode !== 'folders' || visibleSubfolders.length === 0) return null;
+    if (viewMode !== 'folders' || subfolders.length === 0) return null;
 
     return (
       <View style={styles.subfoldersGalaxySection}>
         <View style={styles.subfoldersGalaxyHeaderRow}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
             <Ionicons name="folder-open" size={16} color="#60a5fa" />
             <Text style={styles.subfoldersGalaxyTitle}>
-              Subcarpetas ({visibleSubfolders.length})
+              Carpetas ({visibleSubfolders.length} de {subfolders.length})
             </Text>
           </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            {expandSmallSubfolders && (
-              <TouchableOpacity onPress={() => setExpandSmallSubfolders(false)}>
-                <Text style={{ color: '#a78bfa', fontSize: 12, fontWeight: '700' }}>
-                  Agrupar &lt;5 en Varios
-                </Text>
-              </TouchableOpacity>
-            )}
-            {hiddenSubfolderCount > 0 && (
-              <TouchableOpacity onPress={onToggleShowAllFolders}>
-                <Text style={{ color: '#60a5fa', fontSize: 12, fontWeight: '700' }}>
-                  {showAllFolders ? 'Ocultar privadas' : `Ver ocultas (${hiddenSubfolderCount})`}
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <TouchableOpacity
+              onPress={() => setShowSubfoldersSection((prev) => !prev)}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                backgroundColor: showSubfoldersSection
+                  ? 'rgba(96, 165, 250, 0.14)'
+                  : 'rgba(245, 158, 11, 0.2)',
+                borderWidth: 1,
+                borderColor: showSubfoldersSection ? 'rgba(96, 165, 250, 0.35)' : '#f59e0b',
+                paddingHorizontal: 9,
+                paddingVertical: 4,
+                borderRadius: 12,
+              }}
+            >
+              <Ionicons
+                name={showSubfoldersSection ? 'eye-off-outline' : 'eye-outline'}
+                size={12}
+                color={showSubfoldersSection ? '#93c5fd' : '#fbbf24'}
+              />
+              <Text
+                style={{
+                  color: showSubfoldersSection ? '#93c5fd' : '#fbbf24',
+                  fontSize: 11,
+                  fontWeight: '800',
+                }}
+              >
+                {showSubfoldersSection ? 'Ocultar carpetas' : 'Mostrar carpetas'}
+              </Text>
+            </TouchableOpacity>
+
+            {systemSubfoldersList.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setShowSubfolderSystemModal(true)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  backgroundColor: 'rgba(37, 99, 235, 0.22)',
+                  borderWidth: 1,
+                  borderColor: '#3b82f6',
+                  paddingHorizontal: 9,
+                  paddingVertical: 4,
+                  borderRadius: 12,
+                }}
+              >
+                <Ionicons name="hardware-chip-outline" size={12} color="#60a5fa" />
+                <Text style={{ color: '#bfdbfe', fontSize: 11, fontWeight: '800' }}>
+                  Sistema ({systemSubfoldersList.length})
                 </Text>
               </TouchableOpacity>
             )}
           </View>
         </View>
 
-        <View style={styles.subfoldersGalaxyGrid}>
-          {mainSubfolders.map((sub) => {
-            const isHidden = Boolean(hiddenFolders[sub.uri] || hiddenFolders[sub.name]);
-            const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
-            const coverToUse = sub.coverUri || getSubfolderFallbackCover(displayLabel);
+        {!showSubfoldersSection ? (
+          <TouchableOpacity
+            onPress={() => setShowSubfoldersSection(true)}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              backgroundColor: '#141722',
+              borderWidth: 1,
+              borderColor: '#27272a',
+              borderRadius: 12,
+              paddingHorizontal: 12,
+              paddingVertical: 8,
+              marginBottom: 6,
+            }}
+          >
+            <Text style={{ color: '#a1a1aa', fontSize: 12, fontWeight: '600' }}>
+              Subcarpetas ocultas de la vista ({visibleSubfolders.length} activas · {hiddenSubfolderCount} desactivadas)
+            </Text>
+            <Text style={{ color: '#60a5fa', fontSize: 12, fontWeight: '800' }}>Mostrar</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.subfoldersGalaxyGrid}>
+            {mainSubfolders.map((sub) => {
+              const isHidden = isSubfolderHidden(sub);
+              const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
+              const coverToUse = sub.coverUri || getSubfolderFallbackCover(displayLabel);
 
-            return (
-              <TouchableOpacity
-                key={`sub_galaxy_${sub.uri}`}
-                style={[
-                  styles.subfolderGalaxyCard,
-                  isHidden && { borderColor: '#f59e0b', borderWidth: 1.5, borderStyle: 'dashed' },
-                ]}
-                onPress={() => handleOpenSubfolder({ ...sub, name: displayLabel })}
-                onLongPress={() => {
-                  if (onToggleHideFolder) {
-                    onToggleHideFolder(sub.uri, sub.name);
-                  }
-                }}
-                activeOpacity={0.82}
-              >
-                <Image
-                  source={{ uri: coverToUse }}
-                  style={[styles.subfolderGalaxyImg, isHidden && { opacity: 0.45 }]}
-                  resizeMode="cover"
-                />
-                <View style={styles.subfolderGalaxyScrim} />
+              return (
+                <TouchableOpacity
+                  key={`sub_galaxy_${sub.uri}`}
+                  style={[
+                    styles.subfolderGalaxyCard,
+                    isHidden && { borderColor: '#f59e0b', borderWidth: 1.5, borderStyle: 'dashed' },
+                  ]}
+                  onPress={() => handleOpenSubfolder({ ...sub, name: displayLabel })}
+                  onLongPress={() => handleToggleSubfolderVisibility(sub)}
+                  activeOpacity={0.82}
+                >
+                  <Image
+                    source={{ uri: coverToUse }}
+                    style={[styles.subfolderGalaxyImg, isHidden && { opacity: 0.45 }]}
+                    resizeMode="cover"
+                  />
+                  <View style={styles.subfolderGalaxyScrim} />
 
-                <View style={styles.subfolderGalaxyTopBadge}>
-                  <Ionicons name="folder" size={12} color="#ffffff" />
-                </View>
+                  <View style={styles.subfolderGalaxyTopBadge}>
+                    <Ionicons name="folder" size={12} color="#ffffff" />
+                  </View>
 
-                {onToggleHideFolder && (
                   <TouchableOpacity
                     style={[
                       styles.subfolderGalaxyEyeBtn,
@@ -1132,7 +1234,7 @@ export default function FolderBrowser({
                     ]}
                     onPress={(e) => {
                       e.stopPropagation();
-                      onToggleHideFolder(sub.uri, sub.name);
+                      handleToggleSubfolderVisibility(sub);
                     }}
                     hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
                   >
@@ -1142,67 +1244,181 @@ export default function FolderBrowser({
                       color="#ffffff"
                     />
                   </TouchableOpacity>
-                )}
+
+                  <View style={styles.subfolderGalaxyBottomInfo}>
+                    <Text
+                      style={[
+                        styles.subfolderGalaxyCardTitle,
+                        isHidden && { color: '#fcd34d' },
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {displayLabel}
+                    </Text>
+                    <Text style={styles.subfolderGalaxyCardSub}>
+                      {sub.count ? `${sub.count}` : 'Subcarpeta'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+
+            {smallSubfolders.length > 0 && (
+              <TouchableOpacity
+                key="sub_galaxy_varios_grouped"
+                style={[
+                  styles.subfolderGalaxyCard,
+                  { borderColor: 'rgba(167, 139, 250, 0.6)', borderWidth: 1.5 },
+                ]}
+                onPress={() => setExpandSmallSubfolders(true)}
+                activeOpacity={0.82}
+              >
+                <Image
+                  source={{
+                    uri:
+                      smallSubfolders.find((s) => s.coverUri)?.coverUri ||
+                      getSubfolderFallbackCover('Varios'),
+                  }}
+                  style={[styles.subfolderGalaxyImg, { opacity: 0.72 }]}
+                  resizeMode="cover"
+                />
+                <View style={styles.subfolderGalaxyScrim} />
+
+                <View
+                  style={[
+                    styles.subfolderGalaxyTopBadge,
+                    { backgroundColor: 'rgba(109, 40, 217, 0.85)' },
+                  ]}
+                >
+                  <Ionicons name="file-tray-stacked" size={12} color="#ffffff" />
+                </View>
 
                 <View style={styles.subfolderGalaxyBottomInfo}>
-                  <Text
-                    style={[
-                      styles.subfolderGalaxyCardTitle,
-                      isHidden && { color: '#fcd34d' },
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {displayLabel}
+                  <Text style={styles.subfolderGalaxyCardTitle} numberOfLines={1}>
+                    Varios
                   </Text>
-                  <Text style={styles.subfolderGalaxyCardSub}>
-                    {sub.count ? `${sub.count}` : 'Subcarpeta'}
+                  <Text style={[styles.subfolderGalaxyCardSub, { color: '#ddd6fe' }]}>
+                    {smallSubfolders.length} carpetas (&lt;5)
                   </Text>
                 </View>
               </TouchableOpacity>
-            );
-          })}
+            )}
+          </View>
+        )}
 
-          {smallSubfolders.length > 0 && (
-            <TouchableOpacity
-              key="sub_galaxy_varios_grouped"
-              style={[
-                styles.subfolderGalaxyCard,
-                { borderColor: 'rgba(167, 139, 250, 0.6)', borderWidth: 1.5 },
-              ]}
-              onPress={() => setExpandSmallSubfolders(true)}
-              activeOpacity={0.82}
+        {/* Modal rápido para activar/desactivar subcarpetas sugeridas de sistema dentro de esta carpeta */}
+        <Modal
+          visible={showSubfolderSystemModal}
+          transparent={true}
+          animationType="slide"
+          onRequestClose={() => setShowSubfolderSystemModal(false)}
+          statusBarTranslucent
+        >
+          <View
+            style={{
+              flex: 1,
+              backgroundColor: 'rgba(0,0,0,0.82)',
+              justifyContent: 'flex-end',
+            }}
+          >
+            <View
+              style={{
+                backgroundColor: '#141418',
+                borderTopLeftRadius: 24,
+                borderTopRightRadius: 24,
+                padding: 18,
+                gap: 12,
+                maxHeight: '80%',
+                borderTopWidth: 1,
+                borderColor: '#2e2e36',
+              }}
             >
-              <Image
-                source={{
-                  uri:
-                    smallSubfolders.find((s) => s.coverUri)?.coverUri ||
-                    getSubfolderFallbackCover('Varios'),
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                  <Ionicons name="hardware-chip-outline" size={22} color="#38bdf8" />
+                  <Text style={{ color: '#fff', fontSize: 15.5, fontWeight: '800', flex: 1 }}>
+                    Subcarpetas de sistema ({systemSubfoldersList.length})
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setShowSubfolderSystemModal(false)}>
+                  <Ionicons name="close" size={24} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              <Text style={{ color: '#a1a1aa', fontSize: 12, lineHeight: 17 }}>
+                Estas subcarpetas fueron detectadas como de sistema o con 1-3 archivos y se desactivaron automáticamente. Toca cualquiera para activarla manualmente.
+              </Text>
+
+              <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
+                {subfolders.map((sub) => {
+                  const hidden = isSubfolderHidden(sub);
+                  const sysInfo = folderService.classifySystemFolder(sub);
+                  const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
+                  return (
+                    <TouchableOpacity
+                      key={`sys_sub_row_${sub.uri}`}
+                      onPress={() => handleToggleSubfolderVisibility(sub)}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        backgroundColor: '#1f1f25',
+                        borderRadius: 12,
+                        padding: 10,
+                        marginBottom: 7,
+                        borderWidth: 1,
+                        borderColor: hidden ? 'rgba(245, 158, 11, 0.4)' : '#2e2e36',
+                        opacity: hidden ? 0.75 : 1,
+                      }}
+                    >
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: '700' }} numberOfLines={1}>
+                          {displayLabel}
+                        </Text>
+                        <Text style={{ color: '#94a3b8', fontSize: 11.5 }}>
+                          {sub.count || 0} archivos
+                          {sysInfo.isSystemSuggested ? ` · 🤖 ${sysInfo.reason}` : ''}
+                        </Text>
+                      </View>
+                      <View
+                        style={{
+                          backgroundColor: hidden ? '#52525b' : '#2563eb',
+                          paddingHorizontal: 10,
+                          paddingVertical: 6,
+                          borderRadius: 12,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                      >
+                        <Ionicons
+                          name={hidden ? 'close-circle-outline' : 'checkmark-circle'}
+                          size={14}
+                          color="#fff"
+                        />
+                        <Text style={{ color: '#fff', fontSize: 11.5, fontWeight: '800' }}>
+                          {hidden ? 'Desactivada' : 'Activada'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <TouchableOpacity
+                onPress={() => setShowSubfolderSystemModal(false)}
+                style={{
+                  backgroundColor: '#2563eb',
+                  paddingVertical: 12,
+                  borderRadius: 14,
+                  alignItems: 'center',
                 }}
-                style={[styles.subfolderGalaxyImg, { opacity: 0.72 }]}
-                resizeMode="cover"
-              />
-              <View style={styles.subfolderGalaxyScrim} />
-
-              <View
-                style={[
-                  styles.subfolderGalaxyTopBadge,
-                  { backgroundColor: 'rgba(109, 40, 217, 0.85)' },
-                ]}
               >
-                <Ionicons name="file-tray-stacked" size={12} color="#ffffff" />
-              </View>
-
-              <View style={styles.subfolderGalaxyBottomInfo}>
-                <Text style={styles.subfolderGalaxyCardTitle} numberOfLines={1}>
-                  Varios
-                </Text>
-                <Text style={[styles.subfolderGalaxyCardSub, { color: '#ddd6fe' }]}>
-                  {smallSubfolders.length} carpetas (&lt;5)
-                </Text>
-              </View>
-            </TouchableOpacity>
-          )}
-        </View>
+                <Text style={{ color: '#fff', fontSize: 14, fontWeight: '800' }}>Listo</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
 
         {paginatedAssets.length > 0 && (
           <View style={styles.filesDividerRow}>
