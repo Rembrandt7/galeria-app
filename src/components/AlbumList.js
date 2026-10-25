@@ -29,26 +29,6 @@ const CARD_WIDTH = Math.floor(
 );
 const CARD_HEIGHT = Math.round(CARD_WIDTH * 1.24);
 
-// Imágenes curadas de alta estética (paisajes nocturnos, montañas, nebulosa y naturaleza estilo Samsung Galaxy)
-// para portadas cuando una carpeta aún no tiene miniatura directa
-const BEAUTIFUL_FALLBACK_COVERS = [
-  'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=600&q=80',
-  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=600&q=80',
-  'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=600&q=80',
-  'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&w=600&q=80',
-  'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=600&q=80',
-  'https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&w=600&q=80',
-];
-
-function getFallbackCoverForKey(key = '') {
-  let hash = 0;
-  const str = String(key);
-  for (let i = 0; i < str.length; i++) {
-    hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
-  }
-  return BEAUTIFUL_FALLBACK_COVERS[hash % BEAUTIFUL_FALLBACK_COVERS.length];
-}
-
 export default function AlbumList({
   albums = [],
   favorites = {},
@@ -119,9 +99,15 @@ export default function AlbumList({
   const groupSmallInVarios = gridConfig?.groupSmallInVarios !== false;
   const showFoldersInScreen = gridConfig?.showFoldersInScreen !== false;
 
+  // Filtrar estrictamente cualquier carpeta que no tenga al menos 1 imagen o video
+  const nonEmptyAlbums = useMemo(
+    () => (albums || []).filter((item) => item && Number(item.assetCount) > 0),
+    [albums]
+  );
+
   const favList = useMemo(() => Object.values(favorites || {}), [favorites]);
   const favCount = favList.length;
-  const favCoverUri = favList[0]?.uri || BEAUTIFUL_FALLBACK_COVERS[2];
+  const favCoverUri = favList[0]?.uri || null;
 
   const getItemKey = (item) => item?.uri || item?.id || item?.title || '';
 
@@ -186,8 +172,8 @@ export default function AlbumList({
 
   const { mainVisibleAlbums, smallGroupedAlbums } = useMemo(() => {
     const base = showAllFolders || quickEditVisibility
-      ? albums
-      : albums.filter((item) => !isAlbumHidden(item));
+      ? nonEmptyAlbums
+      : nonEmptyAlbums.filter((item) => !isAlbumHidden(item));
     const q = searchQuery.trim().toLowerCase();
 
     const filtered = q
@@ -248,7 +234,7 @@ export default function AlbumList({
       smallGroupedAlbums: smallList,
     };
   }, [
-    albums,
+    nonEmptyAlbums,
     hiddenFolders,
     manuallyEnabledSystemFolders,
     autoHideSystemFolders,
@@ -274,7 +260,7 @@ export default function AlbumList({
     let deactSys = 0;
     let totalHidden = 0;
 
-    for (const item of albums) {
+    for (const item of nonEmptyAlbums) {
       const sysInfo = folderService.classifySystemFolder(item);
       const hidden = isAlbumHidden(item);
       if (hidden) totalHidden++;
@@ -294,9 +280,9 @@ export default function AlbumList({
       activeSystemCount: activeSys,
       deactivatedSystemCount: deactSys,
       hiddenCount: totalHidden,
-      visibleCount: Math.max(0, albums.length - totalHidden),
+      visibleCount: Math.max(0, nonEmptyAlbums.length - totalHidden),
     };
-  }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders]);
+  }, [nonEmptyAlbums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders]);
 
   const handleToggleAlbumOrSystem = (item) => {
     if (!item) return;
@@ -358,7 +344,7 @@ export default function AlbumList({
         title: 'Varios',
         assetCount: totalSmallPhotos,
         folderCount: smallGroupedAlbums.length,
-        coverUri: firstWithCover?.coverUri || BEAUTIFUL_FALLBACK_COVERS[4],
+        coverUri: firstWithCover?.coverUri || null,
         childAlbums: smallGroupedAlbums,
       });
     }
@@ -439,14 +425,28 @@ export default function AlbumList({
           >
             <View style={styles.favStackBack2} />
             <View style={styles.favStackBack1} />
-            <View style={styles.favStackFront}>
-              <Image
-                source={{ uri: item.coverUri }}
-                style={styles.favStackImg}
-                contentFit="cover"
-                transition={0}
-                cachePolicy="memory-disk"
-              />
+            <View
+              style={[
+                styles.favStackFront,
+                !item.coverUri && {
+                  backgroundColor: '#1f1f26',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                },
+              ]}
+            >
+              {item.coverUri ? (
+                <Image
+                  source={{ uri: item.coverUri }}
+                  style={styles.favStackImg}
+                  contentFit="cover"
+                  allowDownscaling={true}
+                  transition={0}
+                  cachePolicy="memory-disk"
+                />
+              ) : (
+                <Ionicons name="heart" size={28} color="#f43f5e" />
+              )}
             </View>
           </View>
 
@@ -471,13 +471,29 @@ export default function AlbumList({
           }}
           onLongPress={() => setVariosModalVisible(true)}
         >
-          <Image
-            source={{ uri: item.coverUri }}
-            style={[styles.coverImage, { opacity: 0.78 }]}
-            contentFit="cover"
-            transition={0}
-            cachePolicy="memory-disk"
-          />
+          {item.coverUri ? (
+            <Image
+              source={{ uri: item.coverUri }}
+              style={[styles.coverImage, { opacity: 0.78 }]}
+              contentFit="cover"
+              allowDownscaling={true}
+              transition={0}
+              cachePolicy="memory-disk"
+            />
+          ) : (
+            <View
+              style={[
+                styles.coverImage,
+                {
+                  backgroundColor: '#1e1b2e',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                },
+              ]}
+            >
+              <Ionicons name="file-tray-stacked" size={34} color="#a78bfa" />
+            </View>
+          )}
           <View style={styles.bottomScrim} />
 
           {/* Botón superior derecho para ver el listado de carpetas individuales dentro de "Varios" */}
@@ -515,8 +531,7 @@ export default function AlbumList({
     const isCameraAlbum = /^(camera|cámara|camara|dcim)$/i.test(lowerTitle);
     const isDownloadsAlbum = /descarg|download/i.test(lowerTitle);
     const customCover = storageService.resolveCustomCover(customCovers, item);
-    const coverToUse =
-      customCover || item.coverUri || getFallbackCoverForKey(item.id || displayTitle);
+    const coverToUse = customCover || item.coverUri || null;
 
     return (
       <TouchableOpacity
@@ -537,13 +552,31 @@ export default function AlbumList({
           handleToggleAlbumOrSystem(item);
         }}
       >
-        <Image
-          source={{ uri: coverToUse }}
-          style={[styles.coverImage, isHidden && { opacity: 0.42 }]}
-          contentFit="cover"
-          transition={0}
-          cachePolicy="memory-disk"
-        />
+        {coverToUse ? (
+          <Image
+            source={{ uri: coverToUse }}
+            style={[styles.coverImage, isHidden && { opacity: 0.42 }]}
+            contentFit="cover"
+            allowDownscaling={true}
+            transition={0}
+            cachePolicy="memory-disk"
+          />
+        ) : (
+          <View
+            style={[
+              styles.coverImage,
+              {
+                backgroundColor: '#18181f',
+                alignItems: 'center',
+                justifyContent: 'center',
+                paddingBottom: 24,
+              },
+              isHidden && { opacity: 0.45 },
+            ]}
+          >
+            <Ionicons name="images-outline" size={32} color="#60a5fa" />
+          </View>
+        )}
 
         {/* Oscurecedor gradual inferior para que el nombre y conteo luzcan nítidos como en Galaxy */}
         <View style={styles.bottomScrim} />
@@ -822,7 +855,7 @@ export default function AlbumList({
                 <Ionicons name="folder-open" size={22} color="#38bdf8" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.scannerTitle}>
-                    Carpetas ({visibleCount} activas de {albums.length})
+                    Carpetas ({visibleCount} activas de {nonEmptyAlbums.length})
                   </Text>
                   <Text style={{ color: '#94a3b8', fontSize: 11 }}>
                     {systemSuggestedAlbums.length} sugeridas de sistema · {normalUserAlbums.length} principales
@@ -903,7 +936,7 @@ export default function AlbumList({
                     fontWeight: '800',
                   }}
                 >
-                  📋 Todas ({albums.length})
+                  📋 Todas ({nonEmptyAlbums.length})
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1064,7 +1097,7 @@ export default function AlbumList({
                     ? systemSuggestedAlbums
                     : managerTab === 'main'
                     ? normalUserAlbums
-                    : albums;
+                    : nonEmptyAlbums;
                 const mq = managerSearch.trim().toLowerCase();
                 const filteredList = mq
                   ? sourceList.filter((alb) =>
@@ -1091,7 +1124,7 @@ export default function AlbumList({
                   const visible = !hidden;
                   const sysInfo = folderService.classifySystemFolder(alb);
                   const displayName = folderService.formatFolderDisplayName(alb.title, alb.uri || '');
-                  const thumb = alb.coverUri || getFallbackCoverForKey(alb.id || displayName);
+                  const thumb = alb.coverUri || null;
 
                   return (
                     <TouchableOpacity
@@ -1103,11 +1136,27 @@ export default function AlbumList({
                       onPress={() => handleToggleAlbumOrSystem(alb)}
                       activeOpacity={0.75}
                     >
-                      <Image
-                        source={{ uri: thumb }}
-                        style={styles.visibilityThumb}
-                        contentFit="cover"
-                      />
+                      {thumb ? (
+                        <Image
+                          source={{ uri: thumb }}
+                          style={styles.visibilityThumb}
+                          contentFit="cover"
+                          allowDownscaling={true}
+                        />
+                      ) : (
+                        <View
+                          style={[
+                            styles.visibilityThumb,
+                            {
+                              backgroundColor: '#272730',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            },
+                          ]}
+                        >
+                          <Ionicons name="folder-open" size={18} color="#60a5fa" />
+                        </View>
+                      )}
                       <View style={{ flex: 1 }}>
                         <Text style={styles.visibilityRowTitle} numberOfLines={1}>
                           {displayName}
@@ -1303,7 +1352,7 @@ export default function AlbumList({
             <ScrollView style={{ maxHeight: 340 }} showsVerticalScrollIndicator={false}>
               {smallGroupedAlbums.map((alb) => {
                 const displayName = folderService.formatFolderDisplayName(alb.title, alb.uri || '');
-                const thumb = alb.coverUri || getFallbackCoverForKey(alb.id || displayName);
+                const thumb = alb.coverUri || null;
                 return (
                   <TouchableOpacity
                     key={`varios_sub_${alb.id}`}
@@ -1314,11 +1363,27 @@ export default function AlbumList({
                     }}
                     activeOpacity={0.75}
                   >
-                    <Image
-                      source={{ uri: thumb }}
-                      style={styles.visibilityThumb}
-                      contentFit="cover"
-                    />
+                    {thumb ? (
+                      <Image
+                        source={{ uri: thumb }}
+                        style={styles.visibilityThumb}
+                        contentFit="cover"
+                        allowDownscaling={true}
+                      />
+                    ) : (
+                      <View
+                        style={[
+                          styles.visibilityThumb,
+                          {
+                            backgroundColor: '#272730',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          },
+                        ]}
+                      >
+                        <Ionicons name="images-outline" size={18} color="#a78bfa" />
+                      </View>
+                    )}
                     <View style={{ flex: 1 }}>
                       <Text style={styles.visibilityRowTitle} numberOfLines={1}>
                         {displayName}

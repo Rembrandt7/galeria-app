@@ -39,6 +39,7 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
         source={{ uri: asset.uri }}
         style={[styles.image, isSelected && styles.imageSelected]}
         contentFit="cover"
+        allowDownscaling={true}
         recyclingKey={asset.id}
         priority="normal"
         transition={0}

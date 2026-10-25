@@ -657,10 +657,10 @@ export default function PhotoGrid({
           numColumns={numColumns}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          initialNumToRender={24}
-          maxToRenderPerBatch={24}
-          updateCellsBatchingPeriod={30}
-          windowSize={7}
+          initialNumToRender={16}
+          maxToRenderPerBatch={16}
+          updateCellsBatchingPeriod={25}
+          windowSize={5}
           removeClippedSubviews={true}
           getItemLayout={getItemLayout}
           onEndReached={() => {

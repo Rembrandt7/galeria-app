@@ -66,6 +66,10 @@ export const COMMON_SYSTEM_FOLDERS = [
 const IMAGE_EXT = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'heif', 'avif'];
 const VIDEO_EXT = ['mp4', 'mkv', 'mov', 'webm', 'avi', '3gp', 'm4v'];
 
+// Carpetas del sistema Android que nunca contienen fotos/videos del usuario o no deben escanearse como álbumes vacíos
+const NON_MEDIA_DIR_REGEX =
+  /^(\.|android|data|obb|alarms|ringtones|notifications|podcasts|music|audiobooks|documents|cache|code_cache|temp|tmp|thumbnails|trash|backup|backups|crash|logs)$/i;
+
 const getMediaType = (file) => {
   const mime = (file.type || '').toLowerCase();
   if (mime.startsWith('image/')) return 'photo';
@@ -360,7 +364,7 @@ export const folderService = {
             bestCoverName = e.name;
             bestCoverUri = e.uri;
           }
-        } else if (!hasExtension(e.name)) {
+        } else if (!hasExtension(e.name) && !NON_MEDIA_DIR_REGEX.test(e.name.trim())) {
           subDirs.push(e);
         }
       }
@@ -378,22 +382,26 @@ export const folderService = {
       }
 
       // Si la carpeta raíz solo tiene subcarpetas (ej. DCIM -> Camera o carpeta organizada por meses),
-      // buscar portada y sumar conteo en las primeras 3 subcarpetas en paralelo
+      // buscar portada y sumar conteo en las primeras 5 subcarpetas en paralelo
       let firstCover = null;
       let totalSubCount = 0;
+      let nonEmptySubDirs = 0;
       const subResults = await Promise.all(
-        subDirs.slice(0, 3).map((sub) => folderService.getFolderCoverAndCount(sub.uri, depth + 1))
+        subDirs.slice(0, 5).map((sub) => folderService.getFolderCoverAndCount(sub.uri, depth + 1))
       );
       for (const subRes of subResults) {
-        if (!firstCover && subRes.coverUri) {
-          firstCover = subRes.coverUri;
+        if ((subRes.count || 0) > 0) {
+          nonEmptySubDirs++;
+          totalSubCount += subRes.count || 0;
+          if (!firstCover && subRes.coverUri) {
+            firstCover = subRes.coverUri;
+          }
         }
-        totalSubCount += subRes.count || 0;
       }
       const finalRes = {
         coverUri: firstCover,
         count: totalSubCount,
-        subfolderCount: subDirs.length,
+        subfolderCount: nonEmptySubDirs,
       };
       if (depth === 0) {
         folderService._coverMemCache.set(uri, { data: finalRes, time: Date.now() });
@@ -436,16 +444,16 @@ export const folderService = {
           height: null,
           fromFolder: true,
         });
-      } else if (!hasExtension(e.name)) {
+      } else if (!hasExtension(e.name) && !NON_MEDIA_DIR_REGEX.test(e.name.trim())) {
         candidates.push(e);
       }
     }
 
     let dirEntries = candidates;
     if (uri.startsWith('file://') && candidates.length > 0) {
-      // Confirmar cuáles candidatos son realmente carpetas (lote rápido de máximo 45)
+      // Confirmar cuáles candidatos son realmente carpetas (lote rápido de máximo 30)
       dirEntries = [];
-      const limited = candidates.slice(0, 45);
+      const limited = candidates.slice(0, 30);
       const infos = await Promise.all(
         limited.map((c) => LegacyFS.getInfoAsync(c.uri).catch(() => null))
       );
@@ -603,37 +611,49 @@ export const folderService = {
         }
       }
 
-      subfolders.sort((a, b) => {
+      assets.sort(byFilenameDesc);
+
+      // Si ya hay fotos/videos directos en esta carpeta, entregarlos de inmediato sin mostrar subcarpetas vacías aún
+      if (onBatch && assets.length > 0) {
+        onBatch({ subfolders: [], assets: [...assets], isPartial: true });
+      }
+
+      // Inspeccionar subcarpetas y conservar ÚNICAMENTE las que contengan al menos 1 imagen o video
+      const inspectedSubs = await Promise.all(
+        subfolders.slice(0, 24).map(async (sub) => {
+          const info = await folderService.getFolderCoverAndCount(sub.uri, 0);
+          if (!info || !(info.count > 0)) return null;
+          return {
+            ...sub,
+            coverUri: info.coverUri || null,
+            count: info.count,
+          };
+        })
+      );
+
+      const validSubfolders = inspectedSubs.filter(Boolean);
+      validSubfolders.sort((a, b) => {
         const ra = a.rawName || a.name || '';
         const rb = b.rawName || b.name || '';
         const isMonthA = /^20\d{2}[-_](0[1-9]|1[0-2])/.test(ra);
         const isMonthB = /^20\d{2}[-_](0[1-9]|1[0-2])/.test(rb);
         if (isMonthA && isMonthB) return rb.localeCompare(ra); // Meses más recientes primero
-        return byNameAsc(a, b);
+        return (b.count || 0) - (a.count || 0);
       });
-      assets.sort(byFilenameDesc);
-      folderService._dirMemCache.set(uri, { subfolders, assets, time: Date.now() });
+
+      folderService._dirMemCache.set(uri, {
+        subfolders: validSubfolders,
+        assets,
+        time: Date.now(),
+      });
       if (onBatch) {
-        onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: true });
+        onBatch({
+          subfolders: [...validSubfolders],
+          assets: [...assets],
+          isPartial: false,
+        });
       }
-      // Enriquecer únicamente el primer lote visible en segundo plano de forma ultra ligera
-      await Promise.all([
-        folderService.enrichAssetsFileSizes(assets.slice(0, 24)),
-        Promise.all(
-          subfolders.slice(0, 8).map(async (sub) => {
-            if (!sub.coverUri) {
-              const info = await folderService.getFolderCoverAndCount(sub.uri, 0);
-              sub.coverUri = info.coverUri;
-              sub.count = info.count;
-            }
-          })
-        ),
-      ]);
-      folderService._dirMemCache.set(uri, { subfolders, assets, time: Date.now() });
-      if (onBatch) {
-        onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: false });
-      }
-      return { subfolders, assets };
+      return { subfolders: validSubfolders, assets };
     } catch (e) {
       console.warn('Error al leer carpeta:', e);
       return { subfolders: [], assets: [] };
@@ -653,7 +673,6 @@ export const folderService = {
         return;
       }
       if (level.assets.length > 0) {
-        await folderService.enrichAssetsFileSizes(level.assets);
         for (const a of level.assets) out.push(a);
         if (onBatch) onBatch(level.assets);
       }

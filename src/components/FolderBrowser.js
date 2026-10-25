@@ -48,21 +48,7 @@ const SUBFOLDER_CARD_WIDTH = Math.floor(
 );
 const SUBFOLDER_CARD_HEIGHT = Math.round(SUBFOLDER_CARD_WIDTH * 1.22);
 
-const SUBFOLDER_FALLBACK_COVERS = [
-  'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=500&q=80',
-  'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=500&q=80',
-  'https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=500&q=80',
-  'https://images.unsplash.com/photo-1470071459604-3b5ec3a7fe05?auto=format&fit=crop&w=500&q=80',
-];
-
-function getSubfolderFallbackCover(name = '') {
-  let h = 0;
-  const s = String(name);
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return SUBFOLDER_FALLBACK_COVERS[h % SUBFOLDER_FALLBACK_COVERS.length];
-}
-
-const BATCH_SIZE = 90; // Tamaño de carga parcial progresiva
+const BATCH_SIZE = 48; // Tamaño de carga parcial progresiva optimizado para apertura inmediata
 
 export default function FolderBrowser({
   rootUri,
@@ -1150,27 +1136,33 @@ export default function FolderBrowser({
     [isSubfolderHidden, onToggleSystemFolderManual, onToggleHideFolder]
   );
 
+  // Filtrar estrictamente subcarpetas que sí tengan al menos 1 imagen o video
+  const nonEmptySubfolders = useMemo(
+    () => (subfolders || []).filter((item) => item && Number(item.count) > 0),
+    [subfolders]
+  );
+
   // Subcarpetas visibles filtradas por el modo oculto, sugerencias de sistema y buscador
   const visibleSubfolders = useMemo(() => {
     const base = showAllFolders
-      ? subfolders
-      : subfolders.filter((item) => !isSubfolderHidden(item));
+      ? nonEmptySubfolders
+      : nonEmptySubfolders.filter((item) => !isSubfolderHidden(item));
     const q = searchQuery.trim().toLowerCase();
     const list = q
       ? base.filter((item) => (item.name || '').toLowerCase().includes(q))
       : [...base];
     list.sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
     return list;
-  }, [subfolders, isSubfolderHidden, showAllFolders, searchQuery]);
+  }, [nonEmptySubfolders, isSubfolderHidden, showAllFolders, searchQuery]);
 
   const systemSubfoldersList = useMemo(() => {
-    return subfolders
+    return nonEmptySubfolders
       .map((sub) => {
         const sysInfo = folderService.classifySystemFolder(sub);
         return { ...sub, sysInfo };
       })
       .filter((s) => s.sysInfo.isSystemSuggested);
-  }, [subfolders]);
+  }, [nonEmptySubfolders]);
 
   const { mainSubfolders, smallSubfolders } = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1195,12 +1187,12 @@ export default function FolderBrowser({
   }, [visibleSubfolders, searchQuery, expandSmallSubfolders]);
 
   const hiddenSubfolderCount = useMemo(() => {
-    return subfolders.filter((item) => isSubfolderHidden(item)).length;
-  }, [subfolders, isSubfolderHidden]);
+    return nonEmptySubfolders.filter((item) => isSubfolderHidden(item)).length;
+  }, [nonEmptySubfolders, isSubfolderHidden]);
 
   // 1. SECCIÓN DE SUBCARPETAS ESTILO SAMSUNG GALAXY (3 columnas dentro de la carpeta actual)
   const renderSubfoldersGridHeader = () => {
-    if (viewMode !== 'folders' || subfolders.length === 0) return null;
+    if (viewMode !== 'folders' || nonEmptySubfolders.length === 0) return null;
 
     return (
       <View style={styles.subfoldersGalaxySection}>
@@ -1208,7 +1200,7 @@ export default function FolderBrowser({
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
             <Ionicons name="folder-open" size={16} color="#60a5fa" />
             <Text style={styles.subfoldersGalaxyTitle}>
-              Carpetas ({visibleSubfolders.length} de {subfolders.length})
+              Carpetas ({visibleSubfolders.length} de {nonEmptySubfolders.length})
             </Text>
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
@@ -1295,8 +1287,7 @@ export default function FolderBrowser({
               const isHidden = isSubfolderHidden(sub);
               const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
               const customSubCover = storageService.resolveCustomCover(customCovers, sub);
-              const coverToUse =
-                customSubCover || sub.coverUri || getSubfolderFallbackCover(displayLabel);
+              const coverToUse = customSubCover || sub.coverUri || null;
 
               return (
                 <TouchableOpacity
@@ -1310,11 +1301,28 @@ export default function FolderBrowser({
                   onLongPress={() => handleToggleSubfolderVisibility(sub)}
                   activeOpacity={0.82}
                 >
-                  <Image
-                    source={{ uri: coverToUse }}
-                    style={[styles.subfolderGalaxyImg, isHidden && { opacity: 0.45 }]}
-                    resizeMode="cover"
-                  />
+                  {coverToUse ? (
+                    <Image
+                      source={{ uri: coverToUse }}
+                      style={[styles.subfolderGalaxyImg, isHidden && { opacity: 0.45 }]}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View
+                      style={[
+                        styles.subfolderGalaxyImg,
+                        {
+                          backgroundColor: '#18181f',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          paddingBottom: 20,
+                        },
+                        isHidden && { opacity: 0.45 },
+                      ]}
+                    >
+                      <Ionicons name="folder-open-outline" size={28} color="#60a5fa" />
+                    </View>
+                  )}
                   <View style={styles.subfolderGalaxyScrim} />
 
                   <View style={styles.subfolderGalaxyTopBadge}>
@@ -1368,15 +1376,29 @@ export default function FolderBrowser({
                 onPress={() => setExpandSmallSubfolders(true)}
                 activeOpacity={0.82}
               >
-                <Image
-                  source={{
-                    uri:
-                      smallSubfolders.find((s) => s.coverUri)?.coverUri ||
-                      getSubfolderFallbackCover('Varios'),
-                  }}
-                  style={[styles.subfolderGalaxyImg, { opacity: 0.72 }]}
-                  resizeMode="cover"
-                />
+                {smallSubfolders.find((s) => s.coverUri)?.coverUri ? (
+                  <Image
+                    source={{
+                      uri: smallSubfolders.find((s) => s.coverUri)?.coverUri,
+                    }}
+                    style={[styles.subfolderGalaxyImg, { opacity: 0.72 }]}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View
+                    style={[
+                      styles.subfolderGalaxyImg,
+                      {
+                        backgroundColor: '#1e1b2e',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        paddingBottom: 20,
+                      },
+                    ]}
+                  >
+                    <Ionicons name="file-tray-stacked" size={28} color="#a78bfa" />
+                  </View>
+                )}
                 <View style={styles.subfolderGalaxyScrim} />
 
                 <View
@@ -1445,7 +1467,7 @@ export default function FolderBrowser({
               </Text>
 
               <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
-                {subfolders.map((sub) => {
+                {nonEmptySubfolders.map((sub) => {
                   const hidden = isSubfolderHidden(sub);
                   const sysInfo = folderService.classifySystemFolder(sub);
                   const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
@@ -2234,9 +2256,9 @@ export default function FolderBrowser({
             keyExtractor={(item) => item.id}
             numColumns={photoColumns}
             contentContainerStyle={styles.photoListContent}
-            initialNumToRender={24}
-            maxToRenderPerBatch={24}
-            windowSize={7}
+            initialNumToRender={16}
+            maxToRenderPerBatch={16}
+            windowSize={5}
             removeClippedSubviews={Platform.OS === 'android'}
             onEndReached={handleLoadMorePhotos}
             onEndReachedThreshold={0.5}

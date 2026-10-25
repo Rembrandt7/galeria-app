@@ -217,22 +217,21 @@ export const mediaService = {
       let mediaAlbums = [];
       try {
         const albums = await MediaLibrary.getAlbumsAsync({
-          includeSmartAlbums: true,
+          includeSmartAlbums: false,
         });
-        // Conservar todos los álbumes con al menos 1 archivo para que el detector de carpetas de sistema
-        // pueda sugerirlos, desactivarlos automáticamente y permitir activarlos manualmente en "Sistema (N)"
+        // Conservar únicamente álbumes que tengan al menos 1 archivo real
         const activeAlbums = (albums || []).filter((a) => {
-          if (!a || !(a.assetCount > 0)) return false;
+          if (!a || !(Number(a.assetCount) > 0)) return false;
           return true;
         });
 
-        // Ordenar primero por cantidad de fotos para consultar portada solo a las carpetas principales
+        // Ordenar primero por cantidad de fotos para consultar portada a las carpetas de usuario
         activeAlbums.sort((a, b) => (b.assetCount || 0) - (a.assetCount || 0));
 
-        // Limitar las consultas nativas de portada a las 12 carpetas principales de usuario (omitir carpetas de sistema)
-        let mainCoverBudget = 12;
-        let smallCoverBudget = 1;
-        mediaAlbums = await Promise.all(
+        // Consultar portada real de imagen/video y descartar carpetas sin imágenes ni videos
+        let mainCoverBudget = 40;
+        let smallCoverBudget = 15;
+        const resolvedAlbums = await Promise.all(
           activeAlbums.map(async (album) => {
             const sysInfo = folderService.classifySystemFolder(album);
             if (sysInfo.isSystemSuggested) {
@@ -255,10 +254,14 @@ export const mediaService = {
               const preview = await MediaLibrary.getAssetsAsync({
                 first: 1,
                 album: album.id,
+                mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
                 sortBy: [MediaLibrary.SortBy.creationTime],
               });
-              const coverUri =
-                preview.assets && preview.assets.length > 0 ? preview.assets[0].uri : null;
+              const validCount = Number(preview?.totalCount || preview?.assets?.length || 0);
+              if (validCount <= 0 || !preview.assets || preview.assets.length === 0) {
+                return null;
+              }
+              const coverUri = preview.assets[0].uri || null;
               let inferredDirUri = null;
               if (coverUri && coverUri.startsWith('file://')) {
                 const lastSlash = coverUri.lastIndexOf('/');
@@ -268,17 +271,16 @@ export const mediaService = {
               }
               return {
                 ...album,
+                assetCount: validCount,
                 uri: album.uri || inferredDirUri || null,
                 coverUri,
               };
             } catch (e) {
-              return {
-                ...album,
-                coverUri: null,
-              };
+              return null;
             }
           })
         );
+        mediaAlbums = resolvedAlbums.filter((a) => a && Number(a.assetCount) > 0);
       } catch (_mErr) {}
 
       // Combinar en paralelo con las carpetas guardadas por el usuario
@@ -316,10 +318,11 @@ export const mediaService = {
         const normPath = normalizePathKey(f.uri);
         if (normPath && seenNormPaths.has(normPath)) continue;
 
-        const total = f.totalMedia || info.count || 0;
+        const total = Number(info.count || f.totalMedia || 0);
         const isUserSaved = (saved || []).some((s) => s.uri === f.uri);
 
-        if (total > 0 || info.subfolderCount > 0 || isUserSaved) {
+        // Solo mostrar carpetas que realmente tengan al menos 1 imagen o video
+        if (total > 0) {
           if (normPath) seenNormPaths.add(normPath);
           seenTitles.add(title.toLowerCase());
           extraAlbums.push({
