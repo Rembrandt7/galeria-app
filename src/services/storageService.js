@@ -7,6 +7,8 @@ const HIDDEN_PIN_STORAGE_KEY = '@galeria_pin_ocultas_v1';
 const TRASH_BIN_STORAGE_KEY = '@galeria_papelera_modo_guardar_v1';
 const MANUALLY_ENABLED_SYSTEM_KEY = '@galeria_sistema_activadas_manual_v1';
 const AUTO_HIDE_SYSTEM_KEY = '@galeria_auto_desactivar_sistema_v1';
+const CUSTOM_FOLDER_COVERS_KEY = '@galeria_portadas_personalizadas_v1';
+const GRID_COLUMNS_CONFIG_KEY = '@galeria_columnas_config_v1';
 
 export const storageService = {
   async getFavorites() {
@@ -258,6 +260,94 @@ export const storageService = {
       return updated;
     } catch (e) {
       return {};
+    }
+  },
+
+  // ===== PORTADAS PERSONALIZADAS DE CARPETAS Y ÁLBUMES =====
+
+  normalizeCoverKey(rawKey) {
+    if (!rawKey) return '';
+    try {
+      return decodeURIComponent(String(rawKey)).trim().replace(/\/+$/, '').toLowerCase();
+    } catch (_e) {
+      return String(rawKey).trim().replace(/\/+$/, '').toLowerCase();
+    }
+  },
+
+  async getCustomFolderCovers() {
+    try {
+      const json = await AsyncStorage.getItem(CUSTOM_FOLDER_COVERS_KEY);
+      if (!json) return {};
+      return JSON.parse(json) || {};
+    } catch (_e) {
+      return {};
+    }
+  },
+
+  async setCustomFolderCover(keys = [], photoUri = '') {
+    if (!photoUri) return {};
+    try {
+      const current = await this.getCustomFolderCovers();
+      const updated = { ...current };
+      const keyArray = Array.isArray(keys) ? keys : [keys];
+      for (const k of keyArray) {
+        if (!k) continue;
+        updated[String(k)] = photoUri;
+        const norm = this.normalizeCoverKey(k);
+        if (norm) updated[norm] = photoUri;
+      }
+      await AsyncStorage.setItem(CUSTOM_FOLDER_COVERS_KEY, JSON.stringify(updated));
+      return updated;
+    } catch (_e) {
+      return {};
+    }
+  },
+
+  resolveCustomCover(customCovers = {}, item = {}) {
+    if (!customCovers || !item) return null;
+    const candidates = [
+      item.uri,
+      item.id,
+      item.title,
+      item.name,
+      item.rawName,
+      this.normalizeCoverKey(item.uri),
+      this.normalizeCoverKey(item.id),
+      this.normalizeCoverKey(item.title),
+      this.normalizeCoverKey(item.name),
+    ];
+    for (const c of candidates) {
+      if (c && customCovers[c]) return customCovers[c];
+    }
+    return null;
+  },
+
+  // ===== CONFIGURACIÓN DE COLUMNAS Y SISTEMA (SOPORTE FOLD + PERSONALIZADO) =====
+
+  async getGridColumnsConfig() {
+    const defaults = {
+      albumColumns: 0, // 0 = Auto (3 en pantalla normal, 5 en Fold desplegado)
+      photoColumns: 0, // 0 = Auto (4 en pantalla normal, 6 en Fold desplegado)
+      groupSmallInVarios: true,
+      showFoldersInScreen: true,
+    };
+    try {
+      const json = await AsyncStorage.getItem(GRID_COLUMNS_CONFIG_KEY);
+      if (!json) return defaults;
+      return { ...defaults, ...JSON.parse(json) };
+    } catch (_e) {
+      return defaults;
+    }
+  },
+
+  async setGridColumnsConfig(partial = {}) {
+    try {
+      const current = await this.getGridColumnsConfig();
+      const updated = { ...current, ...partial };
+      await AsyncStorage.setItem(GRID_COLUMNS_CONFIG_KEY, JSON.stringify(updated));
+      return updated;
+    } catch (_e) {
+      return partial;
     }
   },
 };

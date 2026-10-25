@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Dimensions,
+  useWindowDimensions,
   Platform,
   ScrollView,
   Alert,
@@ -24,6 +25,7 @@ import { compressionService } from '../services/compressionService';
 import { videoEngineService } from '../services/videoEngineService';
 import { cameraOrganizerService } from '../services/cameraOrganizerService';
 import { mediaService } from '../services/mediaService';
+import { storageService } from '../services/storageService';
 import PhotoThumbnail from './PhotoThumbnail';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -71,6 +73,12 @@ export default function FolderBrowser({
   onRemoveFolder,
   onSelectPhoto,
   favorites = {},
+  customCovers = {},
+  gridConfig = {
+    albumColumns: 0,
+    photoColumns: 0,
+  },
+  onSetFolderCover,
   filterType = 'all',
   onAssetsChange,
   hiddenFolders = {},
@@ -85,6 +93,8 @@ export default function FolderBrowser({
   trashCount = 0,
   trashBin = {},
 }) {
+  const { width: screenWidth } = useWindowDimensions();
+  const isFoldExpanded = screenWidth >= 580;
   // Historial de navegación dentro de la carpeta activa: [{ uri, name }]
   const [history, setHistory] = useState(() => {
     return rootUri ? [{ uri: rootUri, name: folderService.folderName(rootUri) }] : [];
@@ -184,13 +194,59 @@ export default function FolderBrowser({
   // Buscador instantáneo, filtro por peso y selector de columnas (2, 3 o 4)
   const [searchQuery, setSearchQuery] = useState('');
   const [sizeFilter, setSizeFilter] = useState('all'); // 'all' | 'heavy' (>4MB) | 'medium' (2-4MB)
-  const [photoColumns, setPhotoColumns] = useState(NUM_PHOTO_COLUMNS);
+  const [photoColumns, setPhotoColumns] = useState(() =>
+    gridConfig?.photoColumns > 0
+      ? Number(gridConfig.photoColumns)
+      : isFoldExpanded
+      ? 6
+      : NUM_PHOTO_COLUMNS
+  );
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [newSubfolderName, setNewSubfolderName] = useState('');
 
+  useEffect(() => {
+    if (gridConfig?.photoColumns > 0) {
+      setPhotoColumns(Number(gridConfig.photoColumns));
+    } else {
+      setPhotoColumns(isFoldExpanded ? 6 : NUM_PHOTO_COLUMNS);
+    }
+  }, [gridConfig?.photoColumns, isFoldExpanded]);
+
+  const effectiveSubfolderCols = useMemo(
+    () =>
+      gridConfig?.albumColumns > 0
+        ? Number(gridConfig.albumColumns)
+        : isFoldExpanded
+        ? 5
+        : SUBFOLDER_COLS,
+    [gridConfig?.albumColumns, isFoldExpanded]
+  );
+
+  const subfolderCardWidth = useMemo(
+    () =>
+      Math.max(
+        70,
+        Math.floor(
+          (screenWidth -
+            SUBFOLDER_SIDE_PADDING * 2 -
+            SUBFOLDER_GAP * (effectiveSubfolderCols - 1)) /
+            effectiveSubfolderCols
+        )
+      ),
+    [screenWidth, effectiveSubfolderCols]
+  );
+  const subfolderCardHeight = useMemo(
+    () => Math.round(subfolderCardWidth * 1.22),
+    [subfolderCardWidth]
+  );
+
   const dynamicPhotoSize = useMemo(
-    () => Math.floor((SCREEN_WIDTH - PHOTO_MARGIN * (photoColumns * 2)) / photoColumns),
-    [photoColumns]
+    () =>
+      Math.max(
+        50,
+        Math.floor((screenWidth - PHOTO_MARGIN * (photoColumns * 2)) / photoColumns)
+      ),
+    [screenWidth, photoColumns]
   );
 
   const cyclePhotoColumns = () => {
@@ -939,6 +995,16 @@ export default function FolderBrowser({
     [toggleSelectAsset]
   );
 
+  const currentFolderCoverUri = useMemo(
+    () =>
+      storageService.resolveCustomCover(customCovers, {
+        uri: currentFolder?.uri,
+        title: currentFolder?.name,
+        name: currentFolder?.name,
+      }),
+    [customCovers, currentFolder?.uri, currentFolder?.name]
+  );
+
   const renderPhotoItem = useCallback(
     ({ item }) => (
       <PhotoThumbnail
@@ -947,11 +1013,20 @@ export default function FolderBrowser({
         onPress={handlePressPhoto}
         onLongPress={handleLongPressPhoto}
         isFavorite={Boolean(favorites[item.id])}
+        isCover={Boolean(currentFolderCoverUri && item.uri === currentFolderCoverUri)}
         selectable={isSelecting}
         isSelected={Boolean(selectedIds[item.id])}
       />
     ),
-    [favorites, handlePressPhoto, handleLongPressPhoto, isSelecting, selectedIds, dynamicPhotoSize]
+    [
+      favorites,
+      handlePressPhoto,
+      handleLongPressPhoto,
+      isSelecting,
+      selectedIds,
+      dynamicPhotoSize,
+      currentFolderCoverUri,
+    ]
   );
 
   // Notificar al componente padre los assets totales visibles
@@ -1219,13 +1294,16 @@ export default function FolderBrowser({
             {mainSubfolders.map((sub) => {
               const isHidden = isSubfolderHidden(sub);
               const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
-              const coverToUse = sub.coverUri || getSubfolderFallbackCover(displayLabel);
+              const customSubCover = storageService.resolveCustomCover(customCovers, sub);
+              const coverToUse =
+                customSubCover || sub.coverUri || getSubfolderFallbackCover(displayLabel);
 
               return (
                 <TouchableOpacity
                   key={`sub_galaxy_${sub.uri}`}
                   style={[
                     styles.subfolderGalaxyCard,
+                    { width: subfolderCardWidth, height: subfolderCardHeight },
                     isHidden && { borderColor: '#f59e0b', borderWidth: 1.5, borderStyle: 'dashed' },
                   ]}
                   onPress={() => handleOpenSubfolder({ ...sub, name: displayLabel })}
@@ -1284,6 +1362,7 @@ export default function FolderBrowser({
                 key="sub_galaxy_varios_grouped"
                 style={[
                   styles.subfolderGalaxyCard,
+                  { width: subfolderCardWidth, height: subfolderCardHeight },
                   { borderColor: 'rgba(167, 139, 250, 0.6)', borderWidth: 1.5 },
                 ]}
                 onPress={() => setExpandSmallSubfolders(true)}
@@ -2070,6 +2149,26 @@ export default function FolderBrowser({
               </TouchableOpacity>
             </View>
             <View style={styles.selectionActionsRow}>
+              {onSetFolderCover && selectedAssets.length === 1 && (
+                <TouchableOpacity
+                  style={[
+                    styles.selActionBtn,
+                    {
+                      backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                      borderColor: '#f59e0b',
+                    },
+                  ]}
+                  onPress={() => {
+                    onSetFolderCover(selectedAssets[0], currentFolder);
+                    clearSelection();
+                  }}
+                >
+                  <Ionicons name="star" size={15} color="#fbbf24" />
+                  <Text style={[styles.selActionText, { color: '#fde68a' }]}>
+                    Portada
+                  </Text>
+                </TouchableOpacity>
+              )}
               {selectedReductionSummary.canCompress && (
                 <TouchableOpacity
                   style={[

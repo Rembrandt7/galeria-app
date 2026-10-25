@@ -322,11 +322,19 @@ export const folderService = {
     await AsyncStorage.removeItem(FOLDERS_LIST_KEY);
   },
 
+  _coverMemCache: new Map(),
+
   /**
    * Obtiene rápidamente la primera imagen/video (portada), el conteo de archivos y subcarpetas de una carpeta.
    */
   async getFolderCoverAndCount(uri, depth = 0) {
     if (!uri || depth > 1) return { coverUri: null, count: 0, subfolderCount: 0 };
+    if (depth === 0) {
+      const cached = folderService._coverMemCache.get(uri);
+      if (cached && Date.now() - cached.time < 180000) {
+        return cached.data;
+      }
+    }
     try {
       const phys = folderService.toPhysicalUri(uri) || uri;
       let entries = [];
@@ -339,33 +347,42 @@ export const folderService = {
         entries = children.map((u) => ({ name: nameFromUri(u), uri: u }));
       }
 
-      const mediaEntries = [];
+      let mediaCount = 0;
+      let bestCoverName = '';
+      let bestCoverUri = null;
       const subDirs = [];
       for (const e of entries) {
         if (!e.name || e.name.startsWith('.')) continue;
         const mType = mediaTypeByName(e.name);
         if (mType) {
-          mediaEntries.push(e);
+          mediaCount++;
+          if (!bestCoverUri || e.name > bestCoverName) {
+            bestCoverName = e.name;
+            bestCoverUri = e.uri;
+          }
         } else if (!hasExtension(e.name)) {
           subDirs.push(e);
         }
       }
 
-      if (mediaEntries.length > 0) {
-        mediaEntries.sort((a, b) => (a.name < b.name ? 1 : a.name > b.name ? -1 : 0));
-        return {
-          coverUri: mediaEntries[0].uri,
-          count: mediaEntries.length,
+      if (mediaCount > 0) {
+        const res = {
+          coverUri: bestCoverUri,
+          count: mediaCount,
           subfolderCount: subDirs.length,
         };
+        if (depth === 0) {
+          folderService._coverMemCache.set(uri, { data: res, time: Date.now() });
+        }
+        return res;
       }
 
       // Si la carpeta raíz solo tiene subcarpetas (ej. DCIM -> Camera o carpeta organizada por meses),
-      // buscar portada y sumar conteo en las primeras 4 subcarpetas en paralelo
+      // buscar portada y sumar conteo en las primeras 3 subcarpetas en paralelo
       let firstCover = null;
       let totalSubCount = 0;
       const subResults = await Promise.all(
-        subDirs.slice(0, 4).map((sub) => folderService.getFolderCoverAndCount(sub.uri, depth + 1))
+        subDirs.slice(0, 3).map((sub) => folderService.getFolderCoverAndCount(sub.uri, depth + 1))
       );
       for (const subRes of subResults) {
         if (!firstCover && subRes.coverUri) {
@@ -373,11 +390,15 @@ export const folderService = {
         }
         totalSubCount += subRes.count || 0;
       }
-      return {
+      const finalRes = {
         coverUri: firstCover,
         count: totalSubCount,
         subfolderCount: subDirs.length,
       };
+      if (depth === 0) {
+        folderService._coverMemCache.set(uri, { data: finalRes, time: Date.now() });
+      }
+      return finalRes;
     } catch (_e) {}
     return { coverUri: null, count: 0, subfolderCount: 0 };
   },
@@ -402,6 +423,7 @@ export const folderService = {
     const assets = [];
     const candidates = [];
     for (const e of entries) {
+      if (!e.name || e.name.startsWith('.')) continue;
       const mediaType = mediaTypeByName(e.name);
       if (mediaType) {
         assets.push({
@@ -420,19 +442,16 @@ export const folderService = {
     }
 
     let dirEntries = candidates;
-    if (uri.startsWith('file://')) {
-      // Confirmar cuáles candidatos son realmente carpetas (pocos, en lotes paralelos)
+    if (uri.startsWith('file://') && candidates.length > 0) {
+      // Confirmar cuáles candidatos son realmente carpetas (lote rápido de máximo 45)
       dirEntries = [];
-      const limited = candidates.slice(0, 400);
-      for (let i = 0; i < limited.length; i += 25) {
-        const slice = limited.slice(i, i + 25);
-        const infos = await Promise.all(
-          slice.map((c) => LegacyFS.getInfoAsync(c.uri).catch(() => null))
-        );
-        infos.forEach((info, j) => {
-          if (info && info.isDirectory) dirEntries.push(slice[j]);
-        });
-      }
+      const limited = candidates.slice(0, 45);
+      const infos = await Promise.all(
+        limited.map((c) => LegacyFS.getInfoAsync(c.uri).catch(() => null))
+      );
+      infos.forEach((info, j) => {
+        if (info && info.isDirectory) dirEntries.push(limited[j]);
+      });
     }
 
     const subfolders = dirEntries.map((e) => ({
@@ -543,14 +562,20 @@ export const folderService = {
    */
   async readDirectory(uri, onBatch, { forceRefresh = false } = {}) {
     try {
-      // Si ya tenemos esta carpeta en caché en memoria, entregarla al instante (0 ms) antes de refrescar
+      // Si ya tenemos esta carpeta en caché en memoria, entregarla al instante (0 ms)
       const cached = folderService._dirMemCache.get(uri);
-      if (!forceRefresh && cached && onBatch) {
-        onBatch({
-          subfolders: [...cached.subfolders],
-          assets: [...cached.assets],
-          isPartial: true,
-        });
+      if (!forceRefresh && cached) {
+        if (onBatch) {
+          onBatch({
+            subfolders: [...cached.subfolders],
+            assets: [...cached.assets],
+            isPartial: false,
+          });
+        }
+        // Si la caché tiene menos de 2 minutos, no volver a escanear el disco
+        if (Date.now() - (cached.time || 0) < 120000) {
+          return { subfolders: cached.subfolders, assets: cached.assets };
+        }
       }
 
       let { subfolders, assets } = await folderService._listLevel(uri);
@@ -591,11 +616,11 @@ export const folderService = {
       if (onBatch) {
         onBatch({ subfolders: [...subfolders], assets: [...assets], isPartial: true });
       }
-      // Enriquecer únicamente el primer lote visible en segundo plano sin bloquear el dibujado de miniaturas
+      // Enriquecer únicamente el primer lote visible en segundo plano de forma ultra ligera
       await Promise.all([
-        folderService.enrichAssetsFileSizes(assets.slice(0, 60)),
+        folderService.enrichAssetsFileSizes(assets.slice(0, 24)),
         Promise.all(
-          subfolders.slice(0, 15).map(async (sub) => {
+          subfolders.slice(0, 8).map(async (sub) => {
             if (!sub.coverUri) {
               const info = await folderService.getFolderCoverAndCount(sub.uri, 0);
               sub.coverUri = info.coverUri;
@@ -995,9 +1020,11 @@ export const folderService = {
   invalidateCache(uri = null) {
     if (!uri) {
       folderService._dirMemCache.clear();
+      folderService._coverMemCache.clear();
       return;
     }
     folderService._dirMemCache.delete(uri);
+    folderService._coverMemCache.delete(uri);
   },
 
   async deleteFile(uri) {

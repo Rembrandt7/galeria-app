@@ -208,7 +208,7 @@ export const mediaService = {
       !forceRefresh &&
       mediaService._albumsMemCache &&
       mediaService._albumsMemCache.length > 0 &&
-      Date.now() - mediaService._albumsMemTime < 45000
+      Date.now() - mediaService._albumsMemTime < 180000
     ) {
       return mediaService._albumsMemCache;
     }
@@ -229,11 +229,15 @@ export const mediaService = {
         // Ordenar primero por cantidad de fotos para consultar portada solo a las carpetas principales
         activeAlbums.sort((a, b) => (b.assetCount || 0) - (a.assetCount || 0));
 
-        // Limitar las consultas nativas de portada a las 16 carpetas principales y 2 pequeñas (< 5)
-        let mainCoverBudget = 16;
-        let smallCoverBudget = 2;
+        // Limitar las consultas nativas de portada a las 12 carpetas principales de usuario (omitir carpetas de sistema)
+        let mainCoverBudget = 12;
+        let smallCoverBudget = 1;
         mediaAlbums = await Promise.all(
           activeAlbums.map(async (album) => {
+            const sysInfo = folderService.classifySystemFolder(album);
+            if (sysInfo.isSystemSuggested) {
+              return { ...album, uri: album.uri || null, coverUri: null };
+            }
             const isSmall = (album.assetCount || 0) < 5;
             if (isSmall) {
               if (smallCoverBudget <= 0) {

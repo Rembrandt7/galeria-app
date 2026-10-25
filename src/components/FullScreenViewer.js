@@ -47,6 +47,8 @@ export default function FullScreenViewer({
   favorites = {},
   isFavorite = false,
   onToggleFavorite,
+  onSetFolderCover,
+  currentFolderCoverUri = null,
   onShare,
   onDelete,
   onMediaSaved,
@@ -991,6 +993,43 @@ export default function FullScreenViewer({
                 Favorito
               </Text>
             </TouchableOpacity>
+
+            {/* Definir foto como Portada de la carpeta actual */}
+            {onSetFolderCover && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => onSetFolderCover(currentAsset)}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={
+                    currentFolderCoverUri && currentAsset?.uri === currentFolderCoverUri
+                      ? 'star'
+                      : 'star-outline'
+                  }
+                  size={25}
+                  color={
+                    currentFolderCoverUri && currentAsset?.uri === currentFolderCoverUri
+                      ? '#fbbf24'
+                      : '#fde68a'
+                  }
+                />
+                <Text
+                  style={[
+                    styles.actionLabel,
+                    {
+                      color:
+                        currentFolderCoverUri && currentAsset?.uri === currentFolderCoverUri
+                          ? '#fbbf24'
+                          : '#fde68a',
+                      fontWeight: '700',
+                    },
+                  ]}
+                >
+                  Portada
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {/* Comprimir foto o video (siempre activo con su indicador de color) */}
             <TouchableOpacity

@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StyleSheet,
   Dimensions,
+  useWindowDimensions,
   RefreshControl,
   ScrollView,
   Modal,
@@ -17,15 +18,16 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
 import { folderService } from '../services/folderService';
+import { storageService } from '../services/storageService';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const SIDE_PADDING = 12;
+const { width: INITIAL_SCREEN_WIDTH } = Dimensions.get('window');
+const SIDE_PADDING = 10;
 const COLUMN_GAP = 8;
 const NUM_COLUMNS = 3;
 const CARD_WIDTH = Math.floor(
-  (SCREEN_WIDTH - SIDE_PADDING * 2 - COLUMN_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS
+  (INITIAL_SCREEN_WIDTH - SIDE_PADDING * 2 - COLUMN_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS
 );
-const CARD_HEIGHT = Math.round(CARD_WIDTH * 1.26);
+const CARD_HEIGHT = Math.round(CARD_WIDTH * 1.24);
 
 // Imágenes curadas de alta estética (paisajes nocturnos, montañas, nebulosa y naturaleza estilo Samsung Galaxy)
 // para portadas cuando una carpeta aún no tiene miniatura directa
@@ -50,6 +52,14 @@ function getFallbackCoverForKey(key = '') {
 export default function AlbumList({
   albums = [],
   favorites = {},
+  customCovers = {},
+  gridConfig = {
+    albumColumns: 0,
+    photoColumns: 0,
+    groupSmallInVarios: true,
+    showFoldersInScreen: true,
+  },
+  onChangeGridConfig,
   onSelectAlbum,
   onSelectFavorites,
   onRefresh,
@@ -71,6 +81,29 @@ export default function AlbumList({
   onCloseVisibilityModal,
   onOpenVisibilityModal,
 }) {
+  const { width: screenWidth } = useWindowDimensions();
+  const isFoldExpanded = screenWidth >= 580;
+  const effectiveColumns =
+    gridConfig?.albumColumns > 0
+      ? Number(gridConfig.albumColumns)
+      : isFoldExpanded
+      ? 5
+      : 3;
+
+  const cardWidth = useMemo(
+    () =>
+      Math.max(
+        70,
+        Math.floor(
+          (screenWidth - SIDE_PADDING * 2 - COLUMN_GAP * (effectiveColumns - 1)) /
+            effectiveColumns
+        )
+      ),
+    [screenWidth, effectiveColumns]
+  );
+  const cardHeight = useMemo(() => Math.round(cardWidth * 1.24), [cardWidth]);
+  const favStackSize = useMemo(() => Math.round(cardWidth * 0.64), [cardWidth]);
+
   const [showScannerModal, setShowScannerModal] = useState(false);
   const [isScanningFolders, setIsScanningFolders] = useState(false);
   const [scanProgressInfo, setScanProgressInfo] = useState(null);
@@ -79,11 +112,12 @@ export default function AlbumList({
   const [searchQuery, setSearchQuery] = useState('');
   const [quickEditVisibility, setQuickEditVisibility] = useState(false);
   const [sortBy, setSortBy] = useState('smart'); // 'smart' | 'count' | 'months' | 'az'
-  const [groupSmallInVarios, setGroupSmallInVarios] = useState(true);
   const [variosModalVisible, setVariosModalVisible] = useState(false);
-  const [showFoldersInScreen, setShowFoldersInScreen] = useState(true);
   const [managerTab, setManagerTab] = useState('system'); // 'system' | 'main' | 'all'
   const [managerSearch, setManagerSearch] = useState('');
+
+  const groupSmallInVarios = gridConfig?.groupSmallInVarios !== false;
+  const showFoldersInScreen = gridConfig?.showFoldersInScreen !== false;
 
   const favList = useMemo(() => Object.values(favorites || {}), [favorites]);
   const favCount = favList.length;
@@ -385,17 +419,24 @@ export default function AlbumList({
   };
 
   const renderItem = ({ item }) => {
+    const dynamicCardStyle = { width: cardWidth, height: cardHeight };
+
     // 1. Tarjeta especial "Favoritos" con efecto de fotos apiladas idéntico a Samsung Galaxy
     if (item.isFavoritesCard) {
       return (
         <TouchableOpacity
-          style={[styles.galaxyCard, styles.favoritesCardBg]}
+          style={[styles.galaxyCard, dynamicCardStyle, styles.favoritesCardBg]}
           activeOpacity={0.82}
           onPress={() => {
             if (onSelectFavorites) onSelectFavorites();
           }}
         >
-          <View style={styles.favStackContainer}>
+          <View
+            style={[
+              styles.favStackContainer,
+              { width: favStackSize, height: favStackSize },
+            ]}
+          >
             <View style={styles.favStackBack2} />
             <View style={styles.favStackBack1} />
             <View style={styles.favStackFront}>
@@ -403,7 +444,7 @@ export default function AlbumList({
                 source={{ uri: item.coverUri }}
                 style={styles.favStackImg}
                 contentFit="cover"
-                transition={120}
+                transition={0}
                 cachePolicy="memory-disk"
               />
             </View>
@@ -423,7 +464,7 @@ export default function AlbumList({
     if (item.isVariosCard) {
       return (
         <TouchableOpacity
-          style={[styles.galaxyCard, styles.variosCardBg]}
+          style={[styles.galaxyCard, dynamicCardStyle, styles.variosCardBg]}
           activeOpacity={0.82}
           onPress={() => {
             onSelectAlbum(item);
@@ -434,7 +475,7 @@ export default function AlbumList({
             source={{ uri: item.coverUri }}
             style={[styles.coverImage, { opacity: 0.78 }]}
             contentFit="cover"
-            transition={120}
+            transition={0}
             cachePolicy="memory-disk"
           />
           <View style={styles.bottomScrim} />
@@ -473,12 +514,15 @@ export default function AlbumList({
     const lowerTitle = displayTitle.toLowerCase();
     const isCameraAlbum = /^(camera|cámara|camara|dcim)$/i.test(lowerTitle);
     const isDownloadsAlbum = /descarg|download/i.test(lowerTitle);
-    const coverToUse = item.coverUri || getFallbackCoverForKey(item.id || displayTitle);
+    const customCover = storageService.resolveCustomCover(customCovers, item);
+    const coverToUse =
+      customCover || item.coverUri || getFallbackCoverForKey(item.id || displayTitle);
 
     return (
       <TouchableOpacity
         style={[
           styles.galaxyCard,
+          dynamicCardStyle,
           isHidden && styles.galaxyCardHidden,
         ]}
         activeOpacity={0.82}
@@ -497,7 +541,7 @@ export default function AlbumList({
           source={{ uri: coverToUse }}
           style={[styles.coverImage, isHidden && { opacity: 0.42 }]}
           contentFit="cover"
-          transition={120}
+          transition={0}
           cachePolicy="memory-disk"
         />
 
@@ -584,131 +628,7 @@ export default function AlbumList({
         </View>
       )}
 
-      {/* Encabezado idéntico a Samsung Galaxy: "Álbumes esenciales" + Número de carpetas a la izquierda y acciones a la derecha */}
-      <View style={styles.galaxySectionHeaderRow}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 1 }}>
-          <Text style={styles.galaxySectionTitle}>Carpetas</Text>
-          <View
-            style={{
-              backgroundColor: 'rgba(96, 165, 250, 0.16)',
-              borderWidth: 1,
-              borderColor: 'rgba(96, 165, 250, 0.4)',
-              paddingHorizontal: 9,
-              paddingVertical: 3,
-              borderRadius: 12,
-            }}
-          >
-            <Text style={{ color: '#93c5fd', fontSize: 12, fontWeight: '800' }}>
-              {visibleCount} de {albums.length}
-            </Text>
-          </View>
-        </View>
-
-        <View style={styles.galaxyHeaderRightActions}>
-          {/* Opción directa para Mostrar o No mostrar carpetas en pantalla */}
-          <TouchableOpacity
-            onPress={() => setShowFoldersInScreen((prev) => !prev)}
-            style={[
-              styles.quickEyePill,
-              !showFoldersInScreen && {
-                backgroundColor: 'rgba(245, 158, 11, 0.18)',
-                borderColor: '#f59e0b',
-              },
-            ]}
-            activeOpacity={0.8}
-          >
-            <Ionicons
-              name={showFoldersInScreen ? 'folder-open' : 'folder-outline'}
-              size={14}
-              color={showFoldersInScreen ? '#60a5fa' : '#fbbf24'}
-            />
-            <Text
-              style={[
-                styles.quickEyePillText,
-                !showFoldersInScreen && { color: '#fbbf24' },
-              ]}
-            >
-              {showFoldersInScreen ? 'Ocultar carpetas' : `Mostrar carpetas (${visibleCount})`}
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            onPress={() => {
-              setManagerTab('system');
-              if (onOpenVisibilityModal) {
-                onOpenVisibilityModal();
-              }
-            }}
-            style={[
-              styles.quickEyePill,
-              {
-                backgroundColor: 'rgba(16, 185, 129, 0.15)',
-                borderColor: 'rgba(16, 185, 129, 0.45)',
-              },
-            ]}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="options-outline" size={14} color="#34d399" />
-            <Text style={[styles.quickEyePillText, { color: '#6ee7b7' }]}>
-              Administrar ({albums.length})
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {/* Tarjeta resumen de Número de Carpetas y Carpetas de Sistema Sugeridas (Desactivadas automáticamente) */}
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          backgroundColor: '#12151f',
-          borderWidth: 1,
-          borderColor: 'rgba(56, 189, 248, 0.28)',
-          borderRadius: 14,
-          paddingHorizontal: 12,
-          paddingVertical: 9,
-          gap: 10,
-        }}
-      >
-        <View style={{ flex: 1, gap: 2 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-            <Ionicons name="shield-checkmark" size={15} color="#38bdf8" />
-            <Text style={{ color: '#ffffff', fontSize: 12.5, fontWeight: '800' }}>
-              {visibleCount} carpetas activas · {deactivatedSystemCount} de sistema desactivadas
-            </Text>
-          </View>
-          <Text style={{ color: '#94a3b8', fontSize: 11 }} numberOfLines={2}>
-            {systemSuggestedAlbums.length > 0
-              ? `Se detectaron ${systemSuggestedAlbums.length} carpetas de sistema/residuales (de ${albums.length} totales) y se ocultaron para no saturar. Puedes activarlas manualmente.`
-              : `Total de carpetas detectadas en el teléfono: ${albums.length}.`}
-          </Text>
-        </View>
-
-        <TouchableOpacity
-          onPress={() => {
-            setManagerTab('system');
-            if (onOpenVisibilityModal) onOpenVisibilityModal();
-          }}
-          style={{
-            backgroundColor: '#2563eb',
-            paddingHorizontal: 11,
-            paddingVertical: 7,
-            borderRadius: 11,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 5,
-          }}
-          activeOpacity={0.85}
-        >
-          <Ionicons name="construct-outline" size={13} color="#ffffff" />
-          <Text style={{ color: '#ffffff', fontSize: 11.5, fontWeight: '800' }}>
-            Sistema ({systemSuggestedAlbums.length})
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Barra de acomodo inteligente y agrupación "Varios (<5)" */}
+      {/* Barra ligera de acomodo rápido */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
@@ -777,31 +697,6 @@ export default function AlbumList({
         <TouchableOpacity
           style={[
             styles.sortChip,
-            groupSmallInVarios ? styles.variosChipActive : styles.sortChip,
-          ]}
-          onPress={() => setGroupSmallInVarios((prev) => !prev)}
-          activeOpacity={0.8}
-        >
-          <Ionicons
-            name="file-tray-stacked"
-            size={13}
-            color={groupSmallInVarios ? '#ffffff' : '#c4b5fd'}
-          />
-          <Text
-            style={[
-              styles.sortChipText,
-              groupSmallInVarios && styles.sortChipTextActive,
-            ]}
-          >
-            {groupSmallInVarios
-              ? `Varios <5 (${smallGroupedAlbums.length})`
-              : 'Agrupar <5 en Varios'}
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={[
-            styles.sortChip,
             quickEditVisibility && styles.sortChipActive,
           ]}
           onPress={() => setQuickEditVisibility((prev) => !prev)}
@@ -844,7 +739,9 @@ export default function AlbumList({
             </Text>
           </View>
           <TouchableOpacity
-            onPress={() => setShowFoldersInScreen(true)}
+            onPress={() =>
+              onChangeGridConfig && onChangeGridConfig({ showFoldersInScreen: true })
+            }
             style={{
               backgroundColor: '#f59e0b',
               paddingHorizontal: 10,
@@ -875,7 +772,7 @@ export default function AlbumList({
         <Ionicons name="folder-outline" size={64} color={theme.colors.textMuted} />
         <Text style={styles.emptyText}>
           {hiddenCount > 0 && !showAllFolders
-            ? 'Has ocultado las carpetas. Toca "Ver todo" o "Elegir visibles" arriba para activarlas.'
+            ? 'Has ocultado las carpetas. Toca "Sistema" arriba para activarlas.'
             : 'No se encontraron álbumes en el teléfono.'}
         </Text>
       </View>
@@ -885,13 +782,18 @@ export default function AlbumList({
   return (
     <View style={styles.container}>
       <FlatList
+        key={`albums_grid_${effectiveColumns}`}
         data={gridData}
         renderItem={renderItem}
         keyExtractor={(item) => item.id}
-        numColumns={NUM_COLUMNS}
-        columnWrapperStyle={styles.columnWrapper}
+        numColumns={effectiveColumns}
+        columnWrapperStyle={effectiveColumns > 1 ? styles.columnWrapper : undefined}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={5}
+        removeClippedSubviews={true}
         ListHeaderComponent={renderHeader}
         ListEmptyComponent={renderEmpty}
         refreshControl={

@@ -1,9 +1,10 @@
-import React, { useMemo, useCallback, useRef, useState } from 'react';
+import React, { useMemo, useCallback, useRef, useState, useEffect } from 'react';
 import {
   View,
   FlatList,
   StyleSheet,
   Dimensions,
+  useWindowDimensions,
   Text,
   ActivityIndicator,
   RefreshControl,
@@ -20,11 +21,8 @@ import { mediaService } from '../services/mediaService';
 import { folderService } from '../services/folderService';
 import { videoEngineService } from '../services/videoEngineService';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const NUM_COLUMNS = 4;
 const ITEM_MARGIN = 1;
-// Screen width minus spacing divided by 4
-const ITEM_SIZE = Math.floor((SCREEN_WIDTH - ITEM_MARGIN * (NUM_COLUMNS * 2)) / NUM_COLUMNS);
 
 export default function PhotoGrid({
   assets = [],
@@ -32,6 +30,9 @@ export default function PhotoGrid({
   onSelectPhoto,
   onOpenModoGuardar,
   trashCount = 0,
+  defaultColumns = 0,
+  onSetFolderCover,
+  currentFolderCoverUri = null,
   onRefresh,
   isRefreshing,
   onLoadMore,
@@ -39,6 +40,9 @@ export default function PhotoGrid({
   isLoadingMore,
   emptyMessage = 'No se encontraron fotos ni videos.',
 }) {
+  const { width: screenWidth } = useWindowDimensions();
+  const isFoldExpanded = screenWidth >= 580;
+
   const selectRef = useRef(onSelectPhoto);
   selectRef.current = onSelectPhoto;
   const assetsRef = useRef(assets);
@@ -47,11 +51,21 @@ export default function PhotoGrid({
   const [isCompressingBatch, setIsCompressingBatch] = useState(false);
   const [compressProgress, setCompressProgress] = useState(null);
   const [selectedIds, setSelectedIds] = useState({});
-  const [numColumns, setNumColumns] = useState(NUM_COLUMNS);
+  const [numColumns, setNumColumns] = useState(() =>
+    defaultColumns > 0 ? defaultColumns : isFoldExpanded ? 6 : NUM_COLUMNS
+  );
+
+  useEffect(() => {
+    if (defaultColumns > 0) {
+      setNumColumns(Number(defaultColumns));
+    } else {
+      setNumColumns(isFoldExpanded ? 6 : NUM_COLUMNS);
+    }
+  }, [defaultColumns, isFoldExpanded]);
 
   const itemSize = useMemo(
-    () => Math.floor((SCREEN_WIDTH - ITEM_MARGIN * (numColumns * 2)) / numColumns),
-    [numColumns]
+    () => Math.max(50, Math.floor((screenWidth - ITEM_MARGIN * (numColumns * 2)) / numColumns)),
+    [screenWidth, numColumns]
   );
 
   const cycleColumns = () => {
@@ -385,6 +399,7 @@ export default function PhotoGrid({
     ({ item }) => {
       const isFav = Boolean(favorites[item.id]);
       const isSel = Boolean(selectedIds[item.id]);
+      const isCov = Boolean(currentFolderCoverUri && item.uri === currentFolderCoverUri);
       return (
         <PhotoThumbnail
           asset={item}
@@ -392,12 +407,13 @@ export default function PhotoGrid({
           onPress={handlePress}
           onLongPress={handleLongPress}
           isFavorite={isFav}
+          isCover={isCov}
           selectable={isSelecting}
           isSelected={isSel}
         />
       );
     },
-    [favorites, handlePress, handleLongPress, isSelecting, selectedIds, itemSize]
+    [favorites, handlePress, handleLongPress, isSelecting, selectedIds, itemSize, currentFolderCoverUri]
   );
 
   // Con numColumns, FlatList pide el layout por FILA (no por elemento)
@@ -444,6 +460,26 @@ export default function PhotoGrid({
             </TouchableOpacity>
           </View>
           <View style={styles.selectionActionsRow}>
+            {onSetFolderCover && selectedAssets.length === 1 && (
+              <TouchableOpacity
+                style={[
+                  styles.selActionBtn,
+                  {
+                    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                    borderColor: '#f59e0b',
+                  },
+                ]}
+                onPress={() => {
+                  onSetFolderCover(selectedAssets[0]);
+                  clearSelection();
+                }}
+              >
+                <Ionicons name="star" size={15} color="#fbbf24" />
+                <Text style={[styles.selActionText, { color: '#fde68a' }]}>
+                  Portada
+                </Text>
+              </TouchableOpacity>
+            )}
             {selectedReductionSummary.canCompress && (
               <TouchableOpacity
                 style={[

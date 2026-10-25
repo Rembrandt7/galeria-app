@@ -97,10 +97,19 @@ export default function App() {
   const [pinAttempt, setPinAttempt] = useState('');
   const [storedPin, setStoredPin] = useState(null);
 
-  // Inicializar permisos y datos de arranque (ultra rápido)
+  // Portadas personalizadas de carpetas y configuración de columnas (Fold / Sistema)
+  const [customCovers, setCustomCovers] = useState({});
+  const [gridConfig, setGridConfig] = useState({
+    albumColumns: 0,
+    photoColumns: 0,
+    groupSmallInVarios: true,
+    showFoldersInScreen: true,
+  });
+
+  // Inicializar permisos y datos de arranque (ultra rápido y ligero)
   useEffect(() => {
     (async () => {
-      // 0. Hidratar álbumes desde caché local instantáneamente (< 0.1s) para que la pantalla aparezca al instante
+      // 0. Hidratar álbumes, portadas personalizadas y configuración de columnas instantáneamente
       AsyncStorage.getItem(ALBUMS_FAST_CACHE_KEY)
         .then((raw) => {
           if (raw) {
@@ -111,6 +120,13 @@ export default function App() {
           }
         })
         .catch(() => {});
+
+      storageService.getCustomFolderCovers().then((cc) => {
+        if (cc) setCustomCovers(cc);
+      });
+      storageService.getGridColumnsConfig().then((gc) => {
+        if (gc) setGridConfig(gc);
+      });
 
       // 1. Cargar favoritos y papelera temporal del Modo Guardar en segundo plano
       storageService.getFavorites().then(setFavorites);
@@ -127,18 +143,16 @@ export default function App() {
       setShowAllFolders(false);
       storageService.setShowAllFolders(false);
 
-      // 2. Asegurar carpeta propia "Videos Descargados" y cargar carpetas guardadas
-      folderService
-        .ensureDownloadedVideosFolder()
-        .catch(() => {})
-        .finally(() => {
-          folderService.getSavedFolders().then((folders) => {
-            if (folders && folders.length > 0) {
-              setSavedFolders(folders);
-              setFolderUri(folders[0].uri);
-            }
-          });
-        });
+      // 2. Cargar carpetas guardadas de inmediato sin bloquear el arranque
+      folderService.getSavedFolders().then((folders) => {
+        if (folders && folders.length > 0) {
+          setSavedFolders(folders);
+          setFolderUri(folders[0].uri);
+        }
+      });
+      setTimeout(() => {
+        folderService.ensureDownloadedVideosFolder().catch(() => {});
+      }, 1500);
 
       // 3. Revisar permisos y quitar pantalla de carga de inmediato
       const granted = await mediaService.checkAndRequestPermissions();
@@ -146,20 +160,21 @@ export default function App() {
       setInitialLoading(false);
 
       if (granted) {
-        // Actualizar álbumes y el primer bloque de fotos en paralelo sin bloquear la apertura
+        // Cargar primero únicamente los álbumes (pantalla principal) para no saturar la memoria al abrir
         loadAlbums();
-        loadAssets({ reset: true });
       } else if (!(await mediaService.canAskAgain())) {
         Linking.openSettings();
       }
 
-      // Verificar en segundo plano si existe una actualización disponible para encender el indicador
-      updateService
-        .checkForUpdates()
-        .then((res) => {
-          if (res?.hasUpdate) setHasUpdateAvailable(true);
-        })
-        .catch(() => {});
+      // Verificar en segundo plano si existe una actualización disponible
+      setTimeout(() => {
+        updateService
+          .checkForUpdates()
+          .then((res) => {
+            if (res?.hasUpdate) setHasUpdateAvailable(true);
+          })
+          .catch(() => {});
+      }, 1800);
     })();
   }, []);
 
@@ -413,8 +428,72 @@ export default function App() {
   const handleBackFromAlbum = () => {
     setSelectedAlbum(null);
     setActiveTab('albums');
-    loadAlbums();
   };
+
+  // Cambiar configuración de columnas y vista desde el botón de Sistema (arriba al lado de Actualizar)
+  const handleChangeGridConfig = useCallback(async (partial = {}) => {
+    setGridConfig((prev) => {
+      const next = { ...prev, ...partial };
+      storageService.setGridColumnsConfig(next).catch(() => {});
+      return next;
+    });
+  }, []);
+
+  // Alternar auto-desactivación de carpetas de sistema sugeridas
+  const handleToggleAutoHideSystem = useCallback(async () => {
+    const nextVal = !autoHideSystemFolders;
+    setAutoHideSystemFolders(nextVal);
+    await storageService.setAutoHideSystemFolders(nextVal);
+  }, [autoHideSystemFolders]);
+
+  // Definir cualquier foto dentro de una carpeta o álbum como su Foto Principal (Portada)
+  const handleSetFolderCover = useCallback(
+    async (asset, customTargetFolder = null) => {
+      if (!asset?.uri) return;
+      try {
+        const keys = [];
+        if (customTargetFolder?.uri) keys.push(customTargetFolder.uri);
+        if (customTargetFolder?.name) keys.push(customTargetFolder.name);
+        if (selectedAlbum?.id) keys.push(selectedAlbum.id);
+        if (selectedAlbum?.uri) keys.push(selectedAlbum.uri);
+        if (selectedAlbum?.title) keys.push(selectedAlbum.title);
+        if (activeTab === 'folder' && folderUri) {
+          keys.push(folderUri);
+          keys.push(`folder_${folderUri}`);
+          keys.push(folderService.folderName(folderUri));
+        }
+        // También inferir la carpeta física directa desde la ruta del archivo
+        if (asset.uri.startsWith('file://')) {
+          const lastSlash = asset.uri.lastIndexOf('/');
+          if (lastSlash > 7) {
+            const parentDir = asset.uri.slice(0, lastSlash);
+            keys.push(parentDir);
+            keys.push(`folder_${parentDir}`);
+            keys.push(folderService.folderName(parentDir));
+          }
+        }
+        if (asset.sourceFolderTitle) {
+          keys.push(asset.sourceFolderTitle);
+        }
+
+        const updatedCovers = await storageService.setCustomFolderCover(keys, asset.uri);
+        setCustomCovers(updatedCovers);
+
+        const targetLabel =
+          customTargetFolder?.name ||
+          selectedAlbum?.title ||
+          (folderUri ? folderService.folderName(folderUri) : 'esta carpeta');
+
+        Alert.alert(
+          '✨ Portada definida',
+          `Esta fotografía ahora aparecerá como la imagen principal de "${targetLabel}".`
+        );
+      } catch (e) {
+        Alert.alert('Aviso', 'No se pudo guardar la portada personalizada.');
+      }
+    },
+    [selectedAlbum, activeTab, folderUri]
+  );
 
   // Alternar favorito
   const handleToggleFavorite = async (asset) => {
@@ -724,6 +803,46 @@ export default function App() {
     activeTab,
   ]);
 
+  // Estadísticas memorizadas de carpetas activas y de sistema para no recalcular en cada render
+  const { activeAlbumsCount, systemAlbumsCount } = useMemo(() => {
+    let active = 0;
+    let sysCount = 0;
+    for (const item of albums) {
+      const sysInfo = folderService.classifySystemFolder(item);
+      if (sysInfo.isSystemSuggested) sysCount++;
+      if (
+        hiddenFolders[item.title] ||
+        hiddenFolders[item.id] ||
+        (item.uri && hiddenFolders[item.uri])
+      ) {
+        continue;
+      }
+      const manualOn = Boolean(
+        manuallyEnabledSystemFolders[item.uri] ||
+          manuallyEnabledSystemFolders[item.id] ||
+          manuallyEnabledSystemFolders[item.title]
+      );
+      if (sysInfo.isSystemSuggested && autoHideSystemFolders && !manualOn) {
+        continue;
+      }
+      active++;
+    }
+    return { activeAlbumsCount: active, systemAlbumsCount: sysCount };
+  }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders]);
+
+  const currentFolderCoverUri = useMemo(() => {
+    if (selectedAlbum) {
+      return storageService.resolveCustomCover(customCovers, selectedAlbum);
+    }
+    if (activeTab === 'folder' && folderUri) {
+      return storageService.resolveCustomCover(customCovers, {
+        uri: folderUri,
+        title: folderService.folderName(folderUri),
+      });
+    }
+    return null;
+  }, [customCovers, selectedAlbum, activeTab, folderUri]);
+
   // Título y subtítulo del Header
   const getHeaderProps = () => {
     if (selectedAlbum) {
@@ -745,21 +864,6 @@ export default function App() {
     }
 
     if (activeTab === 'albums') {
-      const activeAlbumsCount = albums.filter((item) => {
-        if (hiddenFolders[item.title] || hiddenFolders[item.id] || (item.uri && hiddenFolders[item.uri])) {
-          return false;
-        }
-        const sysInfo = folderService.classifySystemFolder(item);
-        const manualOn = Boolean(
-          manuallyEnabledSystemFolders[item.uri] ||
-            manuallyEnabledSystemFolders[item.id] ||
-            manuallyEnabledSystemFolders[item.title]
-        );
-        if (sysInfo.isSystemSuggested && autoHideSystemFolders && !manualOn) {
-          return false;
-        }
-        return true;
-      }).length;
       return {
         title: 'Álbumes esenciales',
         subtitle: `${activeAlbumsCount} activas de ${albums.length} carpetas`,
@@ -822,7 +926,7 @@ export default function App() {
       <SafeAreaView style={styles.rootContainer} edges={['top', 'left', 'right']}>
         <StatusBar barStyle="light-content" backgroundColor={theme.colors.background} />
 
-        {/* Encabezado Superior estilo Samsung Galaxy One UI */}
+        {/* Encabezado Superior con botón desplegable de Configuración / Sistema al lado de Actualizar */}
         <Header
           {...headerProps}
           hasUpdateAvailable={hasUpdateAvailable}
@@ -842,12 +946,21 @@ export default function App() {
               ? () => setAlbumSearchVisible((prev) => !prev)
               : null
           }
-          onOpenVisibilityManager={
-            activeTab === 'albums' && !selectedAlbum
-              ? () => setVisibilityModalVisible(true)
-              : () => setSettingsVisible(true)
-          }
+          onOpenVisibilityManager={() => {
+            if (activeTab !== 'albums' || selectedAlbum) {
+              setSelectedAlbum(null);
+              setActiveTab('albums');
+            }
+            setVisibilityModalVisible(true);
+          }}
           onOpenSettings={() => setSettingsVisible(true)}
+          gridConfig={gridConfig}
+          onChangeGridConfig={handleChangeGridConfig}
+          autoHideSystemFolders={autoHideSystemFolders}
+          onToggleAutoHideSystem={handleToggleAutoHideSystem}
+          activeAlbumsCount={activeAlbumsCount}
+          totalAlbumsCount={albums.length}
+          systemAlbumsCount={systemAlbumsCount}
         />
 
         {/* Contenido Principal */}
@@ -866,6 +979,9 @@ export default function App() {
               onRemoveFolder={handleRemoveFolder}
               onSelectPhoto={handleOpenViewer}
               favorites={favorites}
+              customCovers={customCovers}
+              gridConfig={gridConfig}
+              onSetFolderCover={handleSetFolderCover}
               filterType={filterType}
               onAssetsChange={(items) => setFolderAssets(items)}
               hiddenFolders={hiddenFolders}
@@ -884,6 +1000,9 @@ export default function App() {
             <AlbumList
               albums={albums}
               favorites={favorites}
+              customCovers={customCovers}
+              gridConfig={gridConfig}
+              onChangeGridConfig={handleChangeGridConfig}
               onSelectAlbum={handleSelectAlbum}
               onSelectFavorites={() => setActiveTab('favorites')}
               onRefresh={handleRefresh}
@@ -893,6 +1012,7 @@ export default function App() {
               manuallyEnabledSystemFolders={manuallyEnabledSystemFolders}
               autoHideSystemFolders={autoHideSystemFolders}
               onToggleSystemFolderManual={handleToggleSystemFolderManual}
+              onToggleAutoHideSystem={handleToggleAutoHideSystem}
               onSetAllSystemFoldersManual={handleSetAllSystemFoldersManual}
               showAllFolders={showAllFolders}
               onToggleShowAllFolders={handleToggleShowAllFolders}
@@ -909,6 +1029,9 @@ export default function App() {
               assets={displayedAssets}
               favorites={favorites}
               onSelectPhoto={handleOpenViewer}
+              defaultColumns={gridConfig?.photoColumns || 0}
+              onSetFolderCover={selectedAlbum ? handleSetFolderCover : null}
+              currentFolderCoverUri={currentFolderCoverUri}
               onRefresh={handleRefresh}
               isRefreshing={isRefreshing}
               onLoadMore={handleLoadMore}
@@ -957,6 +1080,10 @@ export default function App() {
               favorites={favorites}
               isFavorite={isCurrentAssetFavorite}
               onToggleFavorite={handleToggleFavorite}
+              onSetFolderCover={
+                selectedAlbum || activeTab === 'folder' ? handleSetFolderCover : null
+              }
+              currentFolderCoverUri={currentFolderCoverUri}
               onShare={handleShare}
               onDelete={handleDelete}
               onMediaSaved={() => handleRefresh()}

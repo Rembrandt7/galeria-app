@@ -17,6 +17,7 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
   onPress,
   onLongPress,
   isFavorite = false,
+  isCover = false,
   selectable = false,
   isSelected = false,
 }) {
@@ -69,6 +70,14 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
       {isFavorite && (
         <View style={styles.favoriteBadge}>
           <Ionicons name="heart" size={14} color={theme.colors.favorite} />
+        </View>
+      )}
+
+      {/* Folder Cover Badge */}
+      {isCover && (
+        <View style={styles.coverBadge}>
+          <Ionicons name="star" size={10} color="#fbbf24" />
+          <Text style={styles.coverBadgeText}>Portada</Text>
         </View>
       )}
     </TouchableOpacity>
@@ -128,6 +137,25 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     borderRadius: 12,
     padding: 3,
+  },
+  coverBadge: {
+    position: 'absolute',
+    bottom: 4,
+    right: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.65)',
+    borderRadius: 6,
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+  },
+  coverBadgeText: {
+    color: '#fde68a',
+    fontSize: 9,
+    fontWeight: '800',
   },
 });
 
