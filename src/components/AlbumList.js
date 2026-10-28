@@ -119,28 +119,31 @@ export default function AlbumList({
   const getItemKey = (item) => item?.uri || item?.id || item?.title || '';
 
   const isManuallyEnabledSystem = (item) => {
-    if (!item) return false;
+    if (!item || typeof item !== 'object') return false;
     return Boolean(
-      manuallyEnabledSystemFolders[item.uri] ||
-        manuallyEnabledSystemFolders[item.id] ||
-        manuallyEnabledSystemFolders[item.title]
+      (item.uri && manuallyEnabledSystemFolders?.[item.uri]) ||
+        (item.id && manuallyEnabledSystemFolders?.[item.id]) ||
+        (item.title && manuallyEnabledSystemFolders?.[item.title])
     );
   };
 
-  const isExplicitlyHidden = (item) =>
-    Boolean(
-      hiddenFolders[item.title] ||
-        hiddenFolders[item.id] ||
-        (item.uri && hiddenFolders[item.uri])
+  const isExplicitlyHidden = (item) => {
+    if (!item || typeof item !== 'object') return false;
+    return Boolean(
+      (item.title && hiddenFolders?.[item.title]) ||
+        (item.id && hiddenFolders?.[item.id]) ||
+        (item.uri && hiddenFolders?.[item.uri])
     );
+  };
 
   // Una carpeta está desactivada/oculta si:
   // 1) El usuario la ocultó manualmente, o
   // 2) Es una carpeta sugerida de sistema y el modo auto-desactivar sistema está activo (salvo que el usuario la haya activado manualmente)
   const isAlbumHidden = (item) => {
+    if (!item || typeof item !== 'object') return false;
     if (isExplicitlyHidden(item)) return true;
     const sysInfo = folderService.classifySystemFolder(item);
-    if (sysInfo.isSystemSuggested && autoHideSystemFolders && !isManuallyEnabledSystem(item)) {
+    if (sysInfo?.isSystemSuggested && autoHideSystemFolders && !isManuallyEnabledSystem(item)) {
       return true;
     }
     return false;
@@ -183,6 +186,7 @@ export default function AlbumList({
       : nonEmptyAlbums.filter((item) => !isAlbumHidden(item));
 
     const baseAfterSegment = (base || []).filter((item) => {
+      if (!item || typeof item !== 'object') return false;
       if (activeSegment === 'all') return true;
       const seg = getResolvedFolderSegment
         ? getResolvedFolderSegment(item)
@@ -944,113 +948,115 @@ export default function AlbumList({
         onRequestClose={() => setSelectedFolderForActions(null)}
         statusBarTranslucent
       >
-        <View style={styles.actionModalBackdrop}>
-          <View style={styles.actionModalCard}>
-            <View style={styles.actionModalHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.actionModalTitle} numberOfLines={1}>
-                  {selectedFolderForActions?.title || selectedFolderForActions?.name}
-                </Text>
-                <Text style={styles.actionModalSubtitle}>
-                  {selectedFolderForActions?.assetCount || 0} fotos y videos · {
-                    (getResolvedFolderSegment ? getResolvedFolderSegment(selectedFolderForActions) : 'photos') === 'photos'
-                      ? '📸 Sección: Fotos y Dron'
-                      : '📁 Sección: Archivos y Redes'
-                  }
-                </Text>
+        {selectedFolderForActions ? (
+          <View style={styles.actionModalBackdrop}>
+            <View style={styles.actionModalCard}>
+              <View style={styles.actionModalHeader}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.actionModalTitle} numberOfLines={1}>
+                    {selectedFolderForActions.title || selectedFolderForActions.name || 'Carpeta'}
+                  </Text>
+                  <Text style={styles.actionModalSubtitle}>
+                    {selectedFolderForActions.assetCount || 0} fotos y videos · {
+                      (getResolvedFolderSegment ? getResolvedFolderSegment(selectedFolderForActions) : 'photos') === 'photos'
+                        ? '📸 Sección: Fotos y Dron'
+                        : '📁 Sección: Archivos y Redes'
+                    }
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={() => setSelectedFolderForActions(null)}>
+                  <Ionicons name="close" size={24} color="#fff" />
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity onPress={() => setSelectedFolderForActions(null)}>
-                <Ionicons name="close" size={24} color="#fff" />
-              </TouchableOpacity>
-            </View>
 
-            {/* Botón para Mover de Sección */}
-            {(() => {
-              const currentSeg = getResolvedFolderSegment
-                ? getResolvedFolderSegment(selectedFolderForActions)
-                : 'photos';
-              const targetSeg = currentSeg === 'photos' ? 'files' : 'photos';
-              const targetLabel = targetSeg === 'photos' ? 'Fotos y Dron' : 'Archivos y Redes';
-              const targetIcon = targetSeg === 'photos' ? 'camera' : 'folder-open';
-              const isAmber = targetSeg === 'files';
+              {/* Botón para Mover de Sección */}
+              {(() => {
+                const currentSeg = getResolvedFolderSegment
+                  ? getResolvedFolderSegment(selectedFolderForActions)
+                  : 'photos';
+                const targetSeg = currentSeg === 'photos' ? 'files' : 'photos';
+                const targetLabel = targetSeg === 'photos' ? 'Fotos y Dron' : 'Archivos y Redes';
+                const targetIcon = targetSeg === 'photos' ? 'camera' : 'folder-open';
+                const isAmber = targetSeg === 'files';
 
-              return (
+                return (
+                  <TouchableOpacity
+                    style={[
+                      styles.moveSectionBtn,
+                      isAmber ? styles.moveSectionBtnAmber : styles.moveSectionBtnBlue,
+                    ]}
+                    onPress={() => {
+                      const item = selectedFolderForActions;
+                      setSelectedFolderForActions(null);
+                      if (onMoveFolderSegment && item) {
+                        onMoveFolderSegment(item, targetSeg);
+                      }
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name={targetIcon} size={20} color="#ffffff" />
+                    <View style={{ flex: 1, marginLeft: 10 }}>
+                      <Text style={styles.moveSectionBtnTitle}>
+                        Mover a {targetLabel}
+                      </Text>
+                      <Text style={styles.moveSectionBtnDesc}>
+                        {targetSeg === 'photos'
+                          ? 'Aparecerá en Fotos y no se mostrará en Archivos'
+                          : 'Aparecerá en Archivos y no se mostrará en Fotos'}
+                      </Text>
+                    </View>
+                    <Ionicons name="arrow-forward-circle" size={22} color="#ffffff" />
+                  </TouchableOpacity>
+                );
+              })()}
+
+              {/* Abrir en el Explorador */}
+              {Boolean(onOpenInExplorer) && (
                 <TouchableOpacity
-                  style={[
-                    styles.moveSectionBtn,
-                    isAmber ? styles.moveSectionBtnAmber : styles.moveSectionBtnBlue,
-                  ]}
+                  style={styles.modalOptionRow}
                   onPress={() => {
                     const item = selectedFolderForActions;
                     setSelectedFolderForActions(null);
-                    if (onMoveFolderSegment) {
-                      onMoveFolderSegment(item, targetSeg);
-                    }
+                    if (item) onOpenInExplorer(item);
                   }}
-                  activeOpacity={0.8}
+                  activeOpacity={0.7}
                 >
-                  <Ionicons name={targetIcon} size={20} color="#ffffff" />
-                  <View style={{ flex: 1, marginLeft: 10 }}>
-                    <Text style={styles.moveSectionBtnTitle}>
-                      Mover a {targetLabel}
-                    </Text>
-                    <Text style={styles.moveSectionBtnDesc}>
-                      {targetSeg === 'photos'
-                        ? 'Aparecerá en Fotos y no se mostrará en Archivos'
-                        : 'Aparecerá en Archivos y no se mostrará en Fotos'}
-                    </Text>
-                  </View>
-                  <Ionicons name="arrow-forward-circle" size={22} color="#ffffff" />
+                  <Ionicons name="folder-open-outline" size={20} color="#38bdf8" />
+                  <Text style={styles.modalOptionRowText}>Abrir en el Explorador</Text>
+                  <Ionicons name="chevron-forward" size={16} color="#71717a" />
                 </TouchableOpacity>
-              );
-            })()}
+              )}
 
-            {/* Abrir en el Explorador */}
-            {onOpenInExplorer && (
+              {/* Ocultar / Mostrar */}
               <TouchableOpacity
                 style={styles.modalOptionRow}
                 onPress={() => {
                   const item = selectedFolderForActions;
                   setSelectedFolderForActions(null);
-                  onOpenInExplorer(item);
+                  if (item) handleToggleAlbumOrSystem(item);
                 }}
                 activeOpacity={0.7}
               >
-                <Ionicons name="folder-open-outline" size={20} color="#38bdf8" />
-                <Text style={styles.modalOptionRowText}>Abrir en el Explorador</Text>
+                <Ionicons
+                  name={isAlbumHidden(selectedFolderForActions) ? 'eye' : 'eye-off'}
+                  size={20}
+                  color="#f59e0b"
+                />
+                <Text style={styles.modalOptionRowText}>
+                  {isAlbumHidden(selectedFolderForActions) ? 'Mostrar carpeta' : 'Ocultar carpeta'}
+                </Text>
                 <Ionicons name="chevron-forward" size={16} color="#71717a" />
               </TouchableOpacity>
-            )}
 
-            {/* Ocultar / Mostrar */}
-            <TouchableOpacity
-              style={styles.modalOptionRow}
-              onPress={() => {
-                const item = selectedFolderForActions;
-                setSelectedFolderForActions(null);
-                handleToggleAlbumOrSystem(item);
-              }}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name={isAlbumHidden(selectedFolderForActions) ? 'eye' : 'eye-off'}
-                size={20}
-                color="#f59e0b"
-              />
-              <Text style={styles.modalOptionRowText}>
-                {isAlbumHidden(selectedFolderForActions) ? 'Mostrar carpeta' : 'Ocultar carpeta'}
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color="#71717a" />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.actionModalCloseBtn}
-              onPress={() => setSelectedFolderForActions(null)}
-            >
-              <Text style={styles.actionModalCloseText}>Cerrar</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.actionModalCloseBtn}
+                onPress={() => setSelectedFolderForActions(null)}
+              >
+                <Text style={styles.actionModalCloseText}>Cerrar</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-        </View>
+        ) : null}
       </Modal>
 
       {/* Modal Gestor de Carpetas y Sugerencias de Sistema (Auto-desactivadas con activación manual) */}

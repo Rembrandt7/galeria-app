@@ -250,7 +250,7 @@ export default function App() {
   // Resuelve a qué sección pertenece exclusivamente una carpeta ('photos' | 'files')
   const getResolvedFolderSegment = useCallback(
     (item) => {
-      if (!item) return 'photos';
+      if (!item || typeof item !== 'object') return 'photos';
       if (item.isFavoritesCard) return 'photos';
       if (item.isVariosCard) return 'all';
 
@@ -260,10 +260,10 @@ export default function App() {
       const keyId = item.id ? String(item.id).trim() : '';
 
       // La asignación manual del usuario tiene máxima prioridad
-      if (keyUri && folderSegments[keyUri]) return folderSegments[keyUri];
-      if (keyTitle && folderSegments[keyTitle]) return folderSegments[keyTitle];
-      if (keyName && folderSegments[keyName]) return folderSegments[keyName];
-      if (keyId && folderSegments[keyId]) return folderSegments[keyId];
+      if (keyUri && folderSegments?.[keyUri]) return folderSegments[keyUri];
+      if (keyTitle && folderSegments?.[keyTitle]) return folderSegments[keyTitle];
+      if (keyName && folderSegments?.[keyName]) return folderSegments[keyName];
+      if (keyId && folderSegments?.[keyId]) return folderSegments[keyId];
 
       // Si no fue asignada manualmente, usar la clasificación inteligente
       return folderService.classifyMediaSegment(item);
@@ -933,26 +933,27 @@ export default function App() {
     let sysCount = 0;
     let pCount = 0;
     let fCount = 0;
-    for (const item of albums) {
+    for (const item of (albums || [])) {
+      if (!item || typeof item !== 'object') continue;
       const sysInfo = folderService.classifySystemFolder(item);
-      if (sysInfo.isSystemSuggested) sysCount++;
+      if (sysInfo?.isSystemSuggested) sysCount++;
       if (
-        hiddenFolders[item.title] ||
-        hiddenFolders[item.id] ||
-        (item.uri && hiddenFolders[item.uri])
+        (item.title && hiddenFolders?.[item.title]) ||
+        (item.id && hiddenFolders?.[item.id]) ||
+        (item.uri && hiddenFolders?.[item.uri])
       ) {
         continue;
       }
       const manualOn = Boolean(
-        manuallyEnabledSystemFolders[item.uri] ||
-          manuallyEnabledSystemFolders[item.id] ||
-          manuallyEnabledSystemFolders[item.title]
+        (item.uri && manuallyEnabledSystemFolders?.[item.uri]) ||
+          (item.id && manuallyEnabledSystemFolders?.[item.id]) ||
+          (item.title && manuallyEnabledSystemFolders?.[item.title])
       );
-      if (sysInfo.isSystemSuggested && autoHideSystemFolders && !manualOn) {
+      if (sysInfo?.isSystemSuggested && autoHideSystemFolders && !manualOn) {
         continue;
       }
       active++;
-      const seg = getResolvedFolderSegment(item);
+      const seg = getResolvedFolderSegment ? getResolvedFolderSegment(item) : 'photos';
       if (seg === 'photos') pCount++;
       else if (seg === 'files') fCount++;
     }
@@ -969,8 +970,8 @@ export default function App() {
   const { photosAssetsCount, filesAssetsCount } = useMemo(() => {
     let p = 0;
     let f = 0;
-    for (const a of assets || []) {
-      if (!a || trashBin[a.id]) continue;
+    for (const a of (assets || [])) {
+      if (!a || typeof a !== 'object' || (trashBin && trashBin[a.id])) continue;
       const seg = folderService.classifyMediaSegment(a);
       if (seg === 'photos') p++;
       else if (seg === 'files') f++;
@@ -1131,7 +1132,8 @@ export default function App() {
 
         {/* Contenido Principal */}
         <View style={styles.content}>
-          {/* Barra de Segmentos estilo Samsung Galaxy One UI: Fotos y Dron vs Archivos y Redes vs Todo */}
+          <ErrorBoundary onReset={() => { setActiveTab('albums'); setSelectedAlbum(null); }}>
+            {/* Barra de Segmentos estilo Samsung Galaxy One UI: Fotos y Dron vs Archivos y Redes vs Todo */}
           {!selectedAlbum && (activeTab === 'albums' || activeTab === 'photos') && (
             <SegmentBar
               activeSegment={activeSegment}
@@ -1237,6 +1239,7 @@ export default function App() {
               }
             />
           )}
+          </ErrorBoundary>
 
           {/* Cápsula Flotante Inferior Estilo Samsung Galaxy con todas las opciones y herramientas */}
           <TabBar

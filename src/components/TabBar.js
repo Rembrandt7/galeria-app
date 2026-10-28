@@ -118,10 +118,7 @@ export default function TabBar({
           contentContainerStyle={styles.capsuleScrollContent}
         >
           {dockItems.map((item) => {
-            const isSelected =
-              item.isTab &&
-              (activeTab === item.key ||
-                (item.key === 'albums' && activeTab === 'folder'));
+            const isSelected = item.isTab && activeTab === item.key;
 
             const iconColor = isSelected
               ? '#ffffff'
