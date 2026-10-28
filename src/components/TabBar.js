@@ -37,6 +37,14 @@ export default function TabBar({
       isTab: true,
     },
     {
+      key: 'folder',
+      label: 'Explorador',
+      icon: 'folder-open-outline',
+      iconActive: 'folder-open',
+      isTab: true,
+      accentColor: '#38bdf8',
+    },
+    {
       key: 'modo_guardar',
       label: trashCount > 0 ? `Modo Guardar (${trashCount})` : 'Modo Guardar',
       icon: 'swap-vertical-outline',

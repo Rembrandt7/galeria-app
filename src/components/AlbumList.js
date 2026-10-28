@@ -34,6 +34,11 @@ export default function AlbumList({
   favorites = {},
   customCovers = {},
   activeSegment = 'photos',
+  folderSegments = {},
+  getResolvedFolderSegment,
+  onMoveFolderSegment,
+  onOpenInExplorer,
+  onAddNewFolderToSegment,
   gridConfig = {
     albumColumns: 0,
     photoColumns: 0,
@@ -96,6 +101,7 @@ export default function AlbumList({
   const [variosModalVisible, setVariosModalVisible] = useState(false);
   const [managerTab, setManagerTab] = useState('system'); // 'system' | 'main' | 'all'
   const [managerSearch, setManagerSearch] = useState('');
+  const [selectedFolderForActions, setSelectedFolderForActions] = useState(null);
 
   const groupSmallInVarios = gridConfig?.groupSmallInVarios !== false;
   const showFoldersInScreen = gridConfig?.showFoldersInScreen !== false;
@@ -178,7 +184,9 @@ export default function AlbumList({
 
     const baseAfterSegment = (base || []).filter((item) => {
       if (activeSegment === 'all') return true;
-      const seg = folderService.classifyMediaSegment(item);
+      const seg = getResolvedFolderSegment
+        ? getResolvedFolderSegment(item)
+        : folderService.classifyMediaSegment(item);
       return seg === activeSegment;
     });
 
@@ -252,6 +260,8 @@ export default function AlbumList({
     groupSmallInVarios,
     sortBy,
     activeSegment,
+    folderSegments,
+    getResolvedFolderSegment,
   ]);
 
   // Clasificación de carpetas para mostrar conteos exactos y sugerencias de sistema
@@ -561,7 +571,11 @@ export default function AlbumList({
           onSelectAlbum({ ...item, title: displayTitle });
         }}
         onLongPress={() => {
-          handleToggleAlbumOrSystem(item);
+          if (quickEditVisibility) {
+            handleToggleAlbumOrSystem(item);
+          } else {
+            setSelectedFolderForActions(item);
+          }
         }}
       >
         {coverToUse ? (
@@ -672,6 +686,76 @@ export default function AlbumList({
           )}
         </View>
       )}
+
+      {/* Botones de acción: Agregar carpeta a la sección activa y acceso directo al Explorador */}
+      <View
+        style={{
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 8,
+          marginBottom: 8,
+        }}
+      >
+        <TouchableOpacity
+          style={{
+            flex: 1,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            paddingVertical: 7,
+            paddingHorizontal: 12,
+            borderRadius: 10,
+            backgroundColor:
+              activeSegment === 'files'
+                ? 'rgba(217, 119, 6, 0.16)'
+                : 'rgba(37, 99, 235, 0.16)',
+            borderWidth: 1,
+            borderColor: activeSegment === 'files' ? '#f59e0b' : '#3b82f6',
+          }}
+          onPress={() => onAddNewFolderToSegment && onAddNewFolderToSegment(activeSegment)}
+          activeOpacity={0.8}
+        >
+          <Ionicons
+            name="add-circle"
+            size={16}
+            color={activeSegment === 'files' ? '#fbbf24' : '#60a5fa'}
+          />
+          <Text
+            style={{
+              fontSize: 12,
+              fontWeight: '700',
+              color: activeSegment === 'files' ? '#fde68a' : '#bfdbfe',
+            }}
+            numberOfLines={1}
+          >
+            + Agregar a {activeSegment === 'files' ? 'Archivos y Redes' : 'Fotos y Dron'}
+          </Text>
+        </TouchableOpacity>
+
+        {onOpenInExplorer && (
+          <TouchableOpacity
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 5,
+              paddingVertical: 7,
+              paddingHorizontal: 11,
+              borderRadius: 10,
+              backgroundColor: '#18181b',
+              borderWidth: 1,
+              borderColor: '#38bdf8',
+            }}
+            onPress={() => onOpenInExplorer(null)}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="folder-open" size={15} color="#38bdf8" />
+            <Text style={{ fontSize: 12, fontWeight: '700', color: '#38bdf8' }}>
+              Explorador
+            </Text>
+          </TouchableOpacity>
+        )}
+      </View>
 
       {/* Barra ligera de acomodo rápido */}
       <ScrollView
@@ -851,6 +935,123 @@ export default function AlbumList({
           />
         }
       />
+
+      {/* Modal de Acciones de Carpeta / Mover entre Secciones */}
+      <Modal
+        visible={Boolean(selectedFolderForActions)}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setSelectedFolderForActions(null)}
+        statusBarTranslucent
+      >
+        <View style={styles.actionModalBackdrop}>
+          <View style={styles.actionModalCard}>
+            <View style={styles.actionModalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.actionModalTitle} numberOfLines={1}>
+                  {selectedFolderForActions?.title || selectedFolderForActions?.name}
+                </Text>
+                <Text style={styles.actionModalSubtitle}>
+                  {selectedFolderForActions?.assetCount || 0} fotos y videos · {
+                    (getResolvedFolderSegment ? getResolvedFolderSegment(selectedFolderForActions) : 'photos') === 'photos'
+                      ? '📸 Sección: Fotos y Dron'
+                      : '📁 Sección: Archivos y Redes'
+                  }
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setSelectedFolderForActions(null)}>
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Botón para Mover de Sección */}
+            {(() => {
+              const currentSeg = getResolvedFolderSegment
+                ? getResolvedFolderSegment(selectedFolderForActions)
+                : 'photos';
+              const targetSeg = currentSeg === 'photos' ? 'files' : 'photos';
+              const targetLabel = targetSeg === 'photos' ? 'Fotos y Dron' : 'Archivos y Redes';
+              const targetIcon = targetSeg === 'photos' ? 'camera' : 'folder-open';
+              const isAmber = targetSeg === 'files';
+
+              return (
+                <TouchableOpacity
+                  style={[
+                    styles.moveSectionBtn,
+                    isAmber ? styles.moveSectionBtnAmber : styles.moveSectionBtnBlue,
+                  ]}
+                  onPress={() => {
+                    const item = selectedFolderForActions;
+                    setSelectedFolderForActions(null);
+                    if (onMoveFolderSegment) {
+                      onMoveFolderSegment(item, targetSeg);
+                    }
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name={targetIcon} size={20} color="#ffffff" />
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <Text style={styles.moveSectionBtnTitle}>
+                      Mover a {targetLabel}
+                    </Text>
+                    <Text style={styles.moveSectionBtnDesc}>
+                      {targetSeg === 'photos'
+                        ? 'Aparecerá en Fotos y no se mostrará en Archivos'
+                        : 'Aparecerá en Archivos y no se mostrará en Fotos'}
+                    </Text>
+                  </View>
+                  <Ionicons name="arrow-forward-circle" size={22} color="#ffffff" />
+                </TouchableOpacity>
+              );
+            })()}
+
+            {/* Abrir en el Explorador */}
+            {onOpenInExplorer && (
+              <TouchableOpacity
+                style={styles.modalOptionRow}
+                onPress={() => {
+                  const item = selectedFolderForActions;
+                  setSelectedFolderForActions(null);
+                  onOpenInExplorer(item);
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="folder-open-outline" size={20} color="#38bdf8" />
+                <Text style={styles.modalOptionRowText}>Abrir en el Explorador</Text>
+                <Ionicons name="chevron-forward" size={16} color="#71717a" />
+              </TouchableOpacity>
+            )}
+
+            {/* Ocultar / Mostrar */}
+            <TouchableOpacity
+              style={styles.modalOptionRow}
+              onPress={() => {
+                const item = selectedFolderForActions;
+                setSelectedFolderForActions(null);
+                handleToggleAlbumOrSystem(item);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name={isAlbumHidden(selectedFolderForActions) ? 'eye' : 'eye-off'}
+                size={20}
+                color="#f59e0b"
+              />
+              <Text style={styles.modalOptionRowText}>
+                {isAlbumHidden(selectedFolderForActions) ? 'Mostrar carpeta' : 'Ocultar carpeta'}
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color="#71717a" />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.actionModalCloseBtn}
+              onPress={() => setSelectedFolderForActions(null)}
+            >
+              <Text style={styles.actionModalCloseText}>Cerrar</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {/* Modal Gestor de Carpetas y Sugerencias de Sistema (Auto-desactivadas con activación manual) */}
       <Modal
@@ -1921,5 +2122,95 @@ const styles = StyleSheet.create({
     paddingHorizontal: 32,
     marginTop: theme.spacing.md,
     lineHeight: 20,
+  },
+  actionModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  actionModalCard: {
+    width: '100%',
+    maxWidth: 440,
+    backgroundColor: '#18181b',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+    padding: 18,
+    gap: 12,
+  },
+  actionModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  actionModalTitle: {
+    color: '#ffffff',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  actionModalSubtitle: {
+    color: '#94a3b8',
+    fontSize: 12,
+    marginTop: 2,
+    fontWeight: '600',
+  },
+  moveSectionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 14,
+    borderWidth: 1,
+    marginVertical: 4,
+  },
+  moveSectionBtnBlue: {
+    backgroundColor: 'rgba(37, 99, 235, 0.22)',
+    borderColor: '#3b82f6',
+  },
+  moveSectionBtnAmber: {
+    backgroundColor: 'rgba(217, 119, 6, 0.22)',
+    borderColor: '#f59e0b',
+  },
+  moveSectionBtnTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  moveSectionBtnDesc: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  modalOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#27272a',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  modalOptionRowText: {
+    flex: 1,
+    color: '#f4f4f5',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  actionModalCloseBtn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: '#27272a',
+    marginTop: 4,
+  },
+  actionModalCloseText: {
+    color: '#e4e4e7',
+    fontSize: 13,
+    fontWeight: '700',
   },
 });

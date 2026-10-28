@@ -78,6 +78,7 @@ export default function FolderBrowser({
   onOpenModoGuardar,
   trashCount = 0,
   trashBin = {},
+  onAssignFolderToSegment,
 }) {
   const { width: screenWidth } = useWindowDimensions();
   const isFoldExpanded = screenWidth >= 580;
@@ -1617,6 +1618,74 @@ export default function FolderBrowser({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.optionsBoxesScroll}
         >
+          {/* Opción A: Agregar esta carpeta exclusivamente a Fotos y Dron */}
+          {currentFolder?.uri && onAssignFolderToSegment && (
+            <TouchableOpacity
+              style={[
+                styles.optionSquareCard,
+                {
+                  backgroundColor: 'rgba(37, 99, 235, 0.18)',
+                  borderColor: '#3b82f6',
+                },
+              ]}
+              onPress={() => {
+                onAssignFolderToSegment(currentFolder.uri, 'photos', currentFolder.name);
+                Alert.alert(
+                  'Carpeta agregada',
+                  `"${currentFolder.name || 'Carpeta'}" se guardó en Fotos y Dron y no aparecerá en Archivos.`
+                );
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionToolHeader}>
+                <Ionicons name="camera" size={15} color="#60a5fa" />
+                <Text
+                  style={[styles.actionToolTitle, { color: '#93c5fd' }]}
+                  numberOfLines={1}
+                >
+                  + A Fotos y Dron
+                </Text>
+              </View>
+              <Text style={[styles.actionToolSub, { color: '#60a5fa' }]} numberOfLines={1}>
+                Sección Fotos (exclusiva)
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Opción B: Agregar esta carpeta exclusivamente a Archivos y Redes */}
+          {currentFolder?.uri && onAssignFolderToSegment && (
+            <TouchableOpacity
+              style={[
+                styles.optionSquareCard,
+                {
+                  backgroundColor: 'rgba(217, 119, 6, 0.18)',
+                  borderColor: '#f59e0b',
+                },
+              ]}
+              onPress={() => {
+                onAssignFolderToSegment(currentFolder.uri, 'files', currentFolder.name);
+                Alert.alert(
+                  'Carpeta agregada',
+                  `"${currentFolder.name || 'Carpeta'}" se guardó en Archivos y Redes y no aparecerá en Fotos.`
+                );
+              }}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionToolHeader}>
+                <Ionicons name="folder-open" size={15} color="#fbbf24" />
+                <Text
+                  style={[styles.actionToolTitle, { color: '#fde68a' }]}
+                  numberOfLines={1}
+                >
+                  + A Archivos
+                </Text>
+              </View>
+              <Text style={[styles.actionToolSub, { color: '#fbbf24' }]} numberOfLines={1}>
+                Sección Archivos (exclusiva)
+              </Text>
+            </TouchableOpacity>
+          )}
+
           {/* Opción 0: Modo Guardar (Deslizar Arriba = Favorito, Abajo = Papelera) */}
           {onOpenModoGuardar && (totalFilteredAssets.length > 0 || trashCount > 0) && (
             <TouchableOpacity

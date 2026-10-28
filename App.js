@@ -22,6 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 const ALBUMS_FAST_CACHE_KEY = '@galeria_albums_fast_cache_v1';
 const ACTIVE_SEGMENT_KEY = '@galeria_active_segment_v1';
+const FOLDER_SEGMENTS_STORAGE_KEY = '@galeria_folder_segments_v2';
 
 import { theme } from './src/constants/theme';
 import { mediaService } from './src/services/mediaService';
@@ -52,6 +53,8 @@ export default function App() {
   const [filterType, setFilterType] = useState('all'); // 'all' | 'photos' | 'videos'
   // Segmentos: 'photos' (DCIM y Dron) | 'files' (Archivos, Screenshots, WhatsApp, X, Threads) | 'all' (Todo)
   const [activeSegment, setActiveSegment] = useState('photos');
+  // Asignaciones manuales exclusivas de carpetas a segmentos: { [uri_or_title]: 'photos' | 'files' }
+  const [folderSegments, setFolderSegments] = useState({});
 
   // Datos
   const [assets, setAssets] = useState([]);
@@ -156,6 +159,20 @@ export default function App() {
         })
         .catch(() => {});
 
+      // 1d. Cargar asignaciones exclusivas de carpetas a segmentos
+      AsyncStorage.getItem(FOLDER_SEGMENTS_STORAGE_KEY)
+        .then((raw) => {
+          if (raw) {
+            try {
+              const parsed = JSON.parse(raw);
+              if (parsed && typeof parsed === 'object') {
+                setFolderSegments(parsed);
+              }
+            } catch (_e) {}
+          }
+        })
+        .catch(() => {});
+
       // 2. Cargar carpetas guardadas de inmediato sin bloquear el arranque
       folderService.getSavedFolders().then((folders) => {
         if (folders && folders.length > 0) {
@@ -230,17 +247,89 @@ export default function App() {
     };
   }, []);
 
-  // Elegir o agregar una nueva carpeta del sistema
-  const handlePickFolder = async () => {
+  // Resuelve a qué sección pertenece exclusivamente una carpeta ('photos' | 'files')
+  const getResolvedFolderSegment = useCallback(
+    (item) => {
+      if (!item) return 'photos';
+      if (item.isFavoritesCard) return 'photos';
+      if (item.isVariosCard) return 'all';
+
+      const keyUri = item.uri ? String(item.uri).trim() : '';
+      const keyTitle = item.title ? String(item.title).trim() : '';
+      const keyName = item.name ? String(item.name).trim() : '';
+      const keyId = item.id ? String(item.id).trim() : '';
+
+      // La asignación manual del usuario tiene máxima prioridad
+      if (keyUri && folderSegments[keyUri]) return folderSegments[keyUri];
+      if (keyTitle && folderSegments[keyTitle]) return folderSegments[keyTitle];
+      if (keyName && folderSegments[keyName]) return folderSegments[keyName];
+      if (keyId && folderSegments[keyId]) return folderSegments[keyId];
+
+      // Si no fue asignada manualmente, usar la clasificación inteligente
+      return folderService.classifyMediaSegment(item);
+    },
+    [folderSegments]
+  );
+
+  // Asignar o mover una carpeta exclusivamente a una sección
+  const handleSetFolderSegment = useCallback(
+    async (folderItemOrUri, targetSegment, folderTitle = '') => {
+      const seg = targetSegment === 'files' ? 'files' : 'photos';
+      const uri = typeof folderItemOrUri === 'string' ? folderItemOrUri : folderItemOrUri?.uri || '';
+      const title =
+        folderTitle ||
+        (typeof folderItemOrUri === 'object' ? folderItemOrUri?.title || folderItemOrUri?.name : '') ||
+        (uri ? folderService.folderName(uri) : '');
+
+      setFolderSegments((prev) => {
+        const next = { ...prev };
+        if (uri) next[uri] = seg;
+        if (title) next[title] = seg;
+        AsyncStorage.setItem(FOLDER_SEGMENTS_STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+
+      if (uri) {
+        await folderService.addSavedFolder(uri, title);
+        const updated = await folderService.getSavedFolders();
+        setSavedFolders(updated);
+      }
+
+      await loadAlbums(true);
+    },
+    []
+  );
+
+  // Abrir cualquier carpeta directamente en el Explorador
+  const handleOpenInExplorer = useCallback((folderItem) => {
+    const uri =
+      (typeof folderItem === 'string' ? folderItem : folderItem?.uri) ||
+      (folderItem?.id && String(folderItem.id).startsWith('file://') ? folderItem.id : null);
+    if (uri) {
+      setFolderUri(uri);
+    } else if (folderItem?.title) {
+      setFolderUri(`file:///storage/emulated/0/DCIM/${folderItem.title}`);
+    } else {
+      setFolderUri('file:///storage/emulated/0');
+    }
+    setSelectedAlbum(null);
+    setActiveTab('folder');
+  }, []);
+
+  // Elegir o agregar una nueva carpeta del sistema exclusivamente a la sección activa
+  const handlePickFolder = async (targetSegment = activeSegment) => {
     try {
       const res = await folderService.pickFolder();
       if (res && res.uri) {
-        const updated = await folderService.getSavedFolders();
-        setSavedFolders(updated);
-        await loadAlbums(true);
+        const seg = targetSegment === 'files' ? 'files' : 'photos';
+        await handleSetFolderSegment(res.uri, seg, res.name);
         setFolderUri(res.uri);
-        setActiveTab('folder');
-        setSelectedAlbum(null);
+        Alert.alert(
+          '¡Carpeta agregada!',
+          `"${res.name}" se guardó exclusivamente en ${
+            seg === 'photos' ? 'Fotos y Dron' : 'Archivos y Redes'
+          } y no aparecerá en la otra sección.`
+        );
       }
     } catch (e) {
       Alert.alert('Error', 'No se pudo seleccionar la carpeta.');
@@ -370,9 +459,16 @@ export default function App() {
     }
   };
 
-  // Cambio de pestaña con carga de álbumes o fotos
+  // Cambio de pestaña con carga de álbumes, fotos o explorador
   const handleSelectTab = (tab) => {
     setSelectedAlbum(null);
+    if (tab === 'folder') {
+      if (!folderUri) {
+        setFolderUri('file:///storage/emulated/0');
+      }
+      setActiveTab('folder');
+      return;
+    }
     setActiveTab(tab);
     if (tab === 'albums') {
       loadAlbums(false);
@@ -856,7 +952,7 @@ export default function App() {
         continue;
       }
       active++;
-      const seg = folderService.classifyMediaSegment(item);
+      const seg = getResolvedFolderSegment(item);
       if (seg === 'photos') pCount++;
       else if (seg === 'files') fCount++;
     }
@@ -867,7 +963,7 @@ export default function App() {
       filesAlbumsCount: fCount,
       totalActiveAlbumsCount: active,
     };
-  }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders]);
+  }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders, folderSegments, getResolvedFolderSegment]);
 
   // Conteo de fotos por segmento
   const { photosAssetsCount, filesAssetsCount } = useMemo(() => {
@@ -1081,6 +1177,7 @@ export default function App() {
               onOpenModoGuardar={handleOpenModoGuardar}
               trashCount={Object.keys(trashBin).length}
               trashBin={trashBin}
+              onAssignFolderToSegment={handleSetFolderSegment}
             />
           ) : activeTab === 'albums' && !selectedAlbum ? (
             <AlbumList
@@ -1088,6 +1185,11 @@ export default function App() {
               favorites={favorites}
               customCovers={customCovers}
               activeSegment={activeSegment}
+              folderSegments={folderSegments}
+              getResolvedFolderSegment={getResolvedFolderSegment}
+              onMoveFolderSegment={handleSetFolderSegment}
+              onOpenInExplorer={handleOpenInExplorer}
+              onAddNewFolderToSegment={handlePickFolder}
               gridConfig={gridConfig}
               onChangeGridConfig={handleChangeGridConfig}
               onSelectAlbum={handleSelectAlbum}
