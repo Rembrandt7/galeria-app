@@ -24,9 +24,9 @@ export default function TabBar({
   const dockItems = [
     {
       key: 'photos',
-      label: 'Imágenes',
-      icon: 'images-outline',
-      iconActive: 'images',
+      label: 'Fotos',
+      icon: 'camera-outline',
+      iconActive: 'camera',
       isTab: true,
     },
     {

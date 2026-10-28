@@ -21,6 +21,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 
 const ALBUMS_FAST_CACHE_KEY = '@galeria_albums_fast_cache_v1';
+const ACTIVE_SEGMENT_KEY = '@galeria_active_segment_v1';
 
 import { theme } from './src/constants/theme';
 import { mediaService } from './src/services/mediaService';
@@ -29,6 +30,7 @@ import { folderService } from './src/services/folderService';
 import { updateService, CURRENT_VERSION } from './src/services/updateService';
 
 import Header from './src/components/Header';
+import SegmentBar from './src/components/SegmentBar';
 import TabBar from './src/components/TabBar';
 import PhotoGrid from './src/components/PhotoGrid';
 import AlbumList from './src/components/AlbumList';
@@ -48,6 +50,8 @@ export default function App() {
   // Por defecto: 'albums' (Vista principal estilo Samsung Galaxy One UI con carpetas y álbumes)
   const [activeTab, setActiveTab] = useState('albums'); // 'albums' | 'folder' | 'photos' | 'favorites'
   const [filterType, setFilterType] = useState('all'); // 'all' | 'photos' | 'videos'
+  // Segmentos: 'photos' (DCIM y Dron) | 'files' (Archivos, Screenshots, WhatsApp, X, Threads) | 'all' (Todo)
+  const [activeSegment, setActiveSegment] = useState('photos');
 
   // Datos
   const [assets, setAssets] = useState([]);
@@ -142,6 +146,15 @@ export default function App() {
       });
       setShowAllFolders(false);
       storageService.setShowAllFolders(false);
+
+      // 1c. Cargar segmento activo (Fotos y Dron vs Archivos y Redes)
+      AsyncStorage.getItem(ACTIVE_SEGMENT_KEY)
+        .then((seg) => {
+          if (seg && ['photos', 'files', 'all'].includes(seg)) {
+            setActiveSegment(seg);
+          }
+        })
+        .catch(() => {});
 
       // 2. Cargar carpetas guardadas de inmediato sin bloquear el arranque
       folderService.getSavedFolders().then((folders) => {
@@ -542,9 +555,24 @@ export default function App() {
       });
     } else if (activeTab === 'folder') {
       baseList = folderAssets;
+    } else if (activeTab === 'photos' && !selectedAlbum) {
+      baseList = (assets || []).filter((a) => {
+        if (filterType === 'photos' && a.mediaType !== 'photo') return false;
+        if (filterType === 'videos' && a.mediaType !== 'video') return false;
+        if (activeSegment !== 'all') {
+          const seg = folderService.classifyMediaSegment(a);
+          return seg === activeSegment;
+        }
+        return true;
+      });
     }
     return (baseList || []).filter((a) => a && !trashBin[a.id]);
-  }, [activeTab, favorites, assets, folderAssets, filterType, trashBin]);
+  }, [activeTab, favorites, assets, folderAssets, filterType, trashBin, activeSegment, selectedAlbum]);
+
+  const handleSelectSegment = useCallback((seg) => {
+    setActiveSegment(seg);
+    AsyncStorage.setItem(ACTIVE_SEGMENT_KEY, seg).catch(() => {});
+  }, []);
 
   // Abrir Modo Guardar (organizador por deslizamiento + papelera con restauración en 1 clic)
   const handleOpenModoGuardar = useCallback(
@@ -803,10 +831,12 @@ export default function App() {
     activeTab,
   ]);
 
-  // Estadísticas memorizadas de carpetas activas y de sistema para no recalcular en cada render
-  const { activeAlbumsCount, systemAlbumsCount } = useMemo(() => {
+  // Estadísticas memorizadas de carpetas activas, de sistema y por segmento (Fotos/Dron vs Archivos/Redes)
+  const { activeAlbumsCount, systemAlbumsCount, photosAlbumsCount, filesAlbumsCount, totalActiveAlbumsCount } = useMemo(() => {
     let active = 0;
     let sysCount = 0;
+    let pCount = 0;
+    let fCount = 0;
     for (const item of albums) {
       const sysInfo = folderService.classifySystemFolder(item);
       if (sysInfo.isSystemSuggested) sysCount++;
@@ -826,9 +856,31 @@ export default function App() {
         continue;
       }
       active++;
+      const seg = folderService.classifyMediaSegment(item);
+      if (seg === 'photos') pCount++;
+      else if (seg === 'files') fCount++;
     }
-    return { activeAlbumsCount: active, systemAlbumsCount: sysCount };
+    return {
+      activeAlbumsCount: active,
+      systemAlbumsCount: sysCount,
+      photosAlbumsCount: pCount,
+      filesAlbumsCount: fCount,
+      totalActiveAlbumsCount: active,
+    };
   }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders]);
+
+  // Conteo de fotos por segmento
+  const { photosAssetsCount, filesAssetsCount } = useMemo(() => {
+    let p = 0;
+    let f = 0;
+    for (const a of assets || []) {
+      if (!a || trashBin[a.id]) continue;
+      const seg = folderService.classifyMediaSegment(a);
+      if (seg === 'photos') p++;
+      else if (seg === 'files') f++;
+    }
+    return { photosAssetsCount: p, filesAssetsCount: f };
+  }, [assets, trashBin]);
 
   const currentFolderCoverUri = useMemo(() => {
     if (selectedAlbum) {
@@ -864,16 +916,34 @@ export default function App() {
     }
 
     if (activeTab === 'albums') {
+      const segName =
+        activeSegment === 'photos'
+          ? 'Fotos y Dron'
+          : activeSegment === 'files'
+          ? 'Archivos y Redes'
+          : 'Álbumes esenciales';
+      const segCount =
+        activeSegment === 'photos'
+          ? photosAlbumsCount
+          : activeSegment === 'files'
+          ? filesAlbumsCount
+          : activeAlbumsCount;
       return {
-        title: 'Álbumes esenciales',
-        subtitle: `${activeAlbumsCount} activas de ${albums.length} carpetas`,
+        title: segName,
+        subtitle: `${segCount} carpetas activas de ${albums.length}`,
         showBack: false,
       };
     }
 
     if (activeTab === 'photos') {
+      const segName =
+        activeSegment === 'photos'
+          ? 'Fotos y Dron'
+          : activeSegment === 'files'
+          ? 'Archivos y Redes'
+          : 'Todas las Fotos';
       return {
-        title: 'Imágenes',
+        title: segName,
         subtitle: `${displayedAssets.length} fotos y videos`,
         showBack: false,
       };
@@ -965,6 +1035,22 @@ export default function App() {
 
         {/* Contenido Principal */}
         <View style={styles.content}>
+          {/* Barra de Segmentos estilo Samsung Galaxy One UI: Fotos y Dron vs Archivos y Redes vs Todo */}
+          {!selectedAlbum && (activeTab === 'albums' || activeTab === 'photos') && (
+            <SegmentBar
+              activeSegment={activeSegment}
+              onSelectSegment={handleSelectSegment}
+              photosCount={activeTab === 'albums' ? photosAlbumsCount : photosAssetsCount}
+              filesCount={activeTab === 'albums' ? filesAlbumsCount : filesAssetsCount}
+              allCount={
+                activeTab === 'albums'
+                  ? totalActiveAlbumsCount
+                  : (assets ? assets.length : 0)
+              }
+              labelMode={activeTab === 'albums' ? 'albums' : 'assets'}
+            />
+          )}
+
           {activeTab === 'folder' ? (
             <FolderBrowser
               rootUri={folderUri}
@@ -1001,6 +1087,7 @@ export default function App() {
               albums={albums}
               favorites={favorites}
               customCovers={customCovers}
+              activeSegment={activeSegment}
               gridConfig={gridConfig}
               onChangeGridConfig={handleChangeGridConfig}
               onSelectAlbum={handleSelectAlbum}

@@ -1142,4 +1142,67 @@ export const folderService = {
 
     return { isSystemSuggested: false, reason: '', category: 'normal' };
   },
+
+  /**
+   * Clasifica si una carpeta, álbum o archivo multimedia pertenece al segmento:
+   * - 'photos': Fotos de cámara (DCIM y sus subcarpetas) y Dron (DJI, Drone).
+   * - 'files': Archivos (Download, Archivos, Documentos), Screenshots, WhatsApp, X (Twitter), Threads, Redes.
+   *
+   * Cumple la regla estricta del usuario:
+   * "uno de fotos: alli se guardaran las cosas que esten dentro de la carpeta de dcmi las carpetas que esten alli y las del dron
+   *  y en otro archivos: los archivos que esten en la carpeta de archivos y los screenshots y whatsapp, x threds guardalas alli que esas no aparescan en las fotos"
+   */
+  classifyMediaSegment(itemOrAsset) {
+    if (!itemOrAsset) return 'photos';
+
+    if (itemOrAsset.isFavoritesCard) return 'photos';
+    if (itemOrAsset.isVariosCard) return 'all';
+
+    const rawTitle = String(
+      itemOrAsset.title || itemOrAsset.name || itemOrAsset.sourceFolderTitle || ''
+    ).trim();
+    const uri = String(itemOrAsset.uri || '').trim();
+    const filename = String(itemOrAsset.filename || '').trim();
+
+    const lowerTitle = rawTitle.toLowerCase();
+    const lowerUri = uri.toLowerCase();
+    const lowerFilename = filename.toLowerCase();
+    const combined = `${lowerTitle} ${lowerUri} ${lowerFilename}`;
+
+    // 1. REGLA ESTRICTA DE EXCLUSIÓN: "que esas no aparescan en las fotos"
+    // Screenshots / capturas, WhatsApp, X (Twitter), Threads, Descargas, Archivos, Documentos y Redes van al segmento 'files'
+    const isFilesOrSocial =
+      /screenshot|captura|screen_capture|grabaci[oó]n.*pantalla/i.test(combined) ||
+      /whatsapp|wa\d{4}|wa_|_wa\d/i.test(combined) ||
+      /\b(x|twitter|x-corp)\b/i.test(lowerTitle) ||
+      /\/x\//i.test(lowerUri) ||
+      /twitter/i.test(combined) ||
+      /threads/i.test(combined) ||
+      /download|descarga|descargas|archivos|documents|documentos|files/i.test(combined) ||
+      /facebook|fb_temp|instagram|tiktok|telegram|reddit|pinterest|snaptube|videos descargados/i.test(
+        combined
+      );
+
+    if (isFilesOrSocial) {
+      return 'files';
+    }
+
+    // 2. Segmento 'photos': DCIM y sus subcarpetas, Cámara y Drones (DJI, dron)
+    const isPhotosOrDrone =
+      /dcim/i.test(lowerUri) ||
+      /dcim/i.test(lowerTitle) ||
+      /^(camera|c[aá]mara|camara)$/i.test(lowerTitle) ||
+      /dron|drone|dji/i.test(combined) ||
+      /100media|100andro|restored/i.test(combined) ||
+      /^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+20\d{2}/i.test(
+        lowerTitle
+      );
+
+    if (isPhotosOrDrone) {
+      return 'photos';
+    }
+
+    // Por defecto, fotos
+    return 'photos';
+  },
 };

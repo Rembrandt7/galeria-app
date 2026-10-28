@@ -33,6 +33,7 @@ export default function AlbumList({
   albums = [],
   favorites = {},
   customCovers = {},
+  activeSegment = 'photos',
   gridConfig = {
     albumColumns: 0,
     photoColumns: 0,
@@ -174,14 +175,21 @@ export default function AlbumList({
     const base = showAllFolders || quickEditVisibility
       ? nonEmptyAlbums
       : nonEmptyAlbums.filter((item) => !isAlbumHidden(item));
+
+    const baseAfterSegment = (base || []).filter((item) => {
+      if (activeSegment === 'all') return true;
+      const seg = folderService.classifyMediaSegment(item);
+      return seg === activeSegment;
+    });
+
     const q = searchQuery.trim().toLowerCase();
 
     const filtered = q
-      ? base.filter((item) => {
+      ? baseAfterSegment.filter((item) => {
           const displayTitle = folderService.formatFolderDisplayName(item.title, item.uri || '');
           return displayTitle.toLowerCase().includes(q);
         })
-      : base;
+      : baseAfterSegment;
 
     const mainList = [];
     const smallList = [];
@@ -243,6 +251,7 @@ export default function AlbumList({
     searchQuery,
     groupSmallInVarios,
     sortBy,
+    activeSegment,
   ]);
 
   // Clasificación de carpetas para mostrar conteos exactos y sugerencias de sistema
@@ -326,8 +335,10 @@ export default function AlbumList({
     const q = searchQuery.trim().toLowerCase();
     const list = [];
 
-    if (!q || 'favoritos'.includes(q)) {
-      list.push(favCard);
+    if (activeSegment !== 'files') {
+      if (!q || 'favoritos'.includes(q)) {
+        list.push(favCard);
+      }
     }
 
     list.push(...mainVisibleAlbums);
@@ -357,6 +368,7 @@ export default function AlbumList({
     mainVisibleAlbums,
     smallGroupedAlbums,
     searchQuery,
+    activeSegment,
   ]);
 
   const handleOpenFolderScanner = async () => {
