@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,8 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  Vibration,
+  Animated,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -102,6 +104,26 @@ export default function AlbumList({
   const [managerTab, setManagerTab] = useState('system'); // 'system' | 'main' | 'all'
   const [managerSearch, setManagerSearch] = useState('');
   const [selectedFolderForActions, setSelectedFolderForActions] = useState(null);
+  const shakeAnim = useRef(new Animated.Value(0)).current;
+
+  // Temblor háptico (vibración física) y animación de sacudida visual al dejar presionada una carpeta
+  const triggerShakeAndSelect = (item) => {
+    try {
+      Vibration.vibrate([0, 50, 30, 60]);
+    } catch (_e) {}
+
+    shakeAnim.setValue(0);
+    Animated.sequence([
+      Animated.timing(shakeAnim, { toValue: 12, duration: 40, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: -12, duration: 40, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 8, duration: 35, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: -8, duration: 35, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 4, duration: 30, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 0, duration: 25, useNativeDriver: true }),
+    ]).start();
+
+    setSelectedFolderForActions(item);
+  };
 
   const groupSmallInVarios = gridConfig?.groupSmallInVarios !== false;
   const showFoldersInScreen = gridConfig?.showFoldersInScreen !== false;
@@ -578,7 +600,7 @@ export default function AlbumList({
           if (quickEditVisibility) {
             handleToggleAlbumOrSystem(item);
           } else {
-            setSelectedFolderForActions(item);
+            triggerShakeAndSelect(item);
           }
         }}
       >
@@ -940,7 +962,7 @@ export default function AlbumList({
         }
       />
 
-      {/* Modal de Acciones de Carpeta / Mover entre Secciones */}
+      {/* Modal de Acciones de Carpeta / Mover entre Secciones con Temblor Háptico y Visual */}
       <Modal
         visible={Boolean(selectedFolderForActions)}
         animationType="fade"
@@ -950,65 +972,179 @@ export default function AlbumList({
       >
         {selectedFolderForActions ? (
           <View style={styles.actionModalBackdrop}>
-            <View style={styles.actionModalCard}>
+            <Animated.View
+              style={[
+                styles.actionModalCard,
+                { transform: [{ translateX: shakeAnim }] },
+              ]}
+            >
               <View style={styles.actionModalHeader}>
-                <View style={{ flex: 1 }}>
+                <View style={{ flex: 1, paddingRight: 8 }}>
                   <Text style={styles.actionModalTitle} numberOfLines={1}>
                     {selectedFolderForActions.title || selectedFolderForActions.name || 'Carpeta'}
                   </Text>
                   <Text style={styles.actionModalSubtitle}>
-                    {selectedFolderForActions.assetCount || 0} fotos y videos · {
-                      (getResolvedFolderSegment ? getResolvedFolderSegment(selectedFolderForActions) : 'photos') === 'photos'
-                        ? '📸 Sección: Fotos y Dron'
-                        : '📁 Sección: Archivos y Redes'
-                    }
+                    {selectedFolderForActions.assetCount || 0} fotos y videos
                   </Text>
                 </View>
-                <TouchableOpacity onPress={() => setSelectedFolderForActions(null)}>
-                  <Ionicons name="close" size={24} color="#fff" />
+                <TouchableOpacity
+                  onPress={() => setSelectedFolderForActions(null)}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                >
+                  <Ionicons name="close" size={24} color="#a1a1aa" />
                 </TouchableOpacity>
               </View>
 
-              {/* Botón para Mover de Sección */}
+              {/* Título de la sección de elección */}
+              <View style={{ marginTop: 2, marginBottom: 2 }}>
+                <Text style={styles.choiceHeaderTitle}>
+                  ¿Dónde deseas ver esta carpeta?
+                </Text>
+                <Text style={styles.choiceHeaderDesc}>
+                  Elige en qué sección aparecerá exclusivamente:
+                </Text>
+              </View>
+
+              {/* Opciones interactivas: Fotos y Dron vs Archivos y Redes */}
               {(() => {
                 const currentSeg = getResolvedFolderSegment
                   ? getResolvedFolderSegment(selectedFolderForActions)
                   : 'photos';
-                const targetSeg = currentSeg === 'photos' ? 'files' : 'photos';
-                const targetLabel = targetSeg === 'photos' ? 'Fotos y Dron' : 'Archivos y Redes';
-                const targetIcon = targetSeg === 'photos' ? 'camera' : 'folder-open';
-                const isAmber = targetSeg === 'files';
+                const isPhotos = currentSeg === 'photos';
+                const isFiles = currentSeg === 'files';
 
                 return (
-                  <TouchableOpacity
-                    style={[
-                      styles.moveSectionBtn,
-                      isAmber ? styles.moveSectionBtnAmber : styles.moveSectionBtnBlue,
-                    ]}
-                    onPress={() => {
-                      const item = selectedFolderForActions;
-                      setSelectedFolderForActions(null);
-                      if (onMoveFolderSegment && item) {
-                        onMoveFolderSegment(item, targetSeg);
-                      }
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name={targetIcon} size={20} color="#ffffff" />
-                    <View style={{ flex: 1, marginLeft: 10 }}>
-                      <Text style={styles.moveSectionBtnTitle}>
-                        Mover a {targetLabel}
-                      </Text>
-                      <Text style={styles.moveSectionBtnDesc}>
-                        {targetSeg === 'photos'
-                          ? 'Aparecerá en Fotos y no se mostrará en Archivos'
-                          : 'Aparecerá en Archivos y no se mostrará en Fotos'}
-                      </Text>
-                    </View>
-                    <Ionicons name="arrow-forward-circle" size={22} color="#ffffff" />
-                  </TouchableOpacity>
+                  <View style={{ gap: 10 }}>
+                    {/* Opción 1: Fotos y Dron */}
+                    <TouchableOpacity
+                      style={[
+                        styles.choiceOptionCard,
+                        isPhotos ? styles.choiceOptionCardActiveBlue : styles.choiceOptionCardInactive,
+                      ]}
+                      onPress={() => {
+                        const item = selectedFolderForActions;
+                        if (isPhotos) {
+                          setSelectedFolderForActions(null);
+                          return;
+                        }
+                        try {
+                          Vibration.vibrate(40);
+                        } catch (_e) {}
+                        setSelectedFolderForActions(null);
+                        if (onMoveFolderSegment && item) {
+                          onMoveFolderSegment(item, 'photos');
+                        }
+                      }}
+                      activeOpacity={0.82}
+                    >
+                      <View
+                        style={[
+                          styles.choiceIconBox,
+                          isPhotos ? { backgroundColor: '#2563eb' } : { backgroundColor: '#27272a' },
+                        ]}
+                      >
+                        <Ionicons
+                          name="camera"
+                          size={20}
+                          color={isPhotos ? '#ffffff' : '#94a3b8'}
+                        />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text
+                            style={[
+                              styles.choiceOptionTitle,
+                              isPhotos && { color: '#60a5fa' },
+                            ]}
+                          >
+                            Fotos y Dron
+                          </Text>
+                          {isPhotos && (
+                            <View style={styles.activeCheckBadge}>
+                              <Ionicons name="checkmark-circle" size={13} color="#22c55e" />
+                              <Text style={styles.activeCheckText}>Visible aquí</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.choiceOptionDesc}>
+                          DCIM, fotos de cámara y tomas de dron.
+                        </Text>
+                      </View>
+                      {!isPhotos && (
+                        <View style={styles.moveButtonBlue}>
+                          <Text style={styles.moveButtonBlueText}>Mover aquí</Text>
+                          <Ionicons name="arrow-forward" size={13} color="#ffffff" />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+
+                    {/* Opción 2: Archivos y Redes */}
+                    <TouchableOpacity
+                      style={[
+                        styles.choiceOptionCard,
+                        isFiles ? styles.choiceOptionCardActiveAmber : styles.choiceOptionCardInactive,
+                      ]}
+                      onPress={() => {
+                        const item = selectedFolderForActions;
+                        if (isFiles) {
+                          setSelectedFolderForActions(null);
+                          return;
+                        }
+                        try {
+                          Vibration.vibrate(40);
+                        } catch (_e) {}
+                        setSelectedFolderForActions(null);
+                        if (onMoveFolderSegment && item) {
+                          onMoveFolderSegment(item, 'files');
+                        }
+                      }}
+                      activeOpacity={0.82}
+                    >
+                      <View
+                        style={[
+                          styles.choiceIconBox,
+                          isFiles ? { backgroundColor: '#d97706' } : { backgroundColor: '#27272a' },
+                        ]}
+                      >
+                        <Ionicons
+                          name="folder-open"
+                          size={20}
+                          color={isFiles ? '#ffffff' : '#94a3b8'}
+                        />
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <Text
+                            style={[
+                              styles.choiceOptionTitle,
+                              isFiles && { color: '#fbbf24' },
+                            ]}
+                          >
+                            Archivos y Redes
+                          </Text>
+                          {isFiles && (
+                            <View style={styles.activeCheckBadge}>
+                              <Ionicons name="checkmark-circle" size={13} color="#22c55e" />
+                              <Text style={styles.activeCheckText}>Visible aquí</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.choiceOptionDesc}>
+                          Screenshots, WhatsApp, descargas, X, Threads.
+                        </Text>
+                      </View>
+                      {!isFiles && (
+                        <View style={styles.moveButtonAmber}>
+                          <Text style={styles.moveButtonAmberText}>Mover aquí</Text>
+                          <Ionicons name="arrow-forward" size={13} color="#ffffff" />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 );
               })()}
+
+              <View style={{ height: 1, backgroundColor: 'rgba(255, 255, 255, 0.08)', marginVertical: 4 }} />
 
               {/* Abrir en el Explorador */}
               {Boolean(onOpenInExplorer) && (
@@ -1021,9 +1157,9 @@ export default function AlbumList({
                   }}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="folder-open-outline" size={20} color="#38bdf8" />
+                  <Ionicons name="folder-open-outline" size={18} color="#38bdf8" />
                   <Text style={styles.modalOptionRowText}>Abrir en el Explorador</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#71717a" />
+                  <Ionicons name="chevron-forward" size={15} color="#71717a" />
                 </TouchableOpacity>
               )}
 
@@ -1039,22 +1175,22 @@ export default function AlbumList({
               >
                 <Ionicons
                   name={isAlbumHidden(selectedFolderForActions) ? 'eye' : 'eye-off'}
-                  size={20}
+                  size={18}
                   color="#f59e0b"
                 />
                 <Text style={styles.modalOptionRowText}>
                   {isAlbumHidden(selectedFolderForActions) ? 'Mostrar carpeta' : 'Ocultar carpeta'}
                 </Text>
-                <Ionicons name="chevron-forward" size={16} color="#71717a" />
+                <Ionicons name="chevron-forward" size={15} color="#71717a" />
               </TouchableOpacity>
 
               <TouchableOpacity
                 style={styles.actionModalCloseBtn}
                 onPress={() => setSelectedFolderForActions(null)}
               >
-                <Text style={styles.actionModalCloseText}>Cerrar</Text>
+                <Text style={styles.actionModalCloseText}>Listo</Text>
               </TouchableOpacity>
-            </View>
+            </Animated.View>
           </View>
         ) : null}
       </Modal>
@@ -2165,31 +2301,94 @@ const styles = StyleSheet.create({
     marginTop: 2,
     fontWeight: '600',
   },
-  moveSectionBtn: {
+  choiceHeaderTitle: {
+    color: '#f4f4f5',
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  choiceHeaderDesc: {
+    color: '#a1a1aa',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  choiceOptionCard: {
     flexDirection: 'row',
     alignItems: 'center',
     padding: 12,
     borderRadius: 14,
-    borderWidth: 1,
-    marginVertical: 4,
+    borderWidth: 1.5,
   },
-  moveSectionBtnBlue: {
-    backgroundColor: 'rgba(37, 99, 235, 0.22)',
+  choiceOptionCardActiveBlue: {
+    backgroundColor: 'rgba(37, 99, 235, 0.18)',
     borderColor: '#3b82f6',
   },
-  moveSectionBtnAmber: {
-    backgroundColor: 'rgba(217, 119, 6, 0.22)',
+  choiceOptionCardActiveAmber: {
+    backgroundColor: 'rgba(217, 119, 6, 0.18)',
     borderColor: '#f59e0b',
   },
-  moveSectionBtnTitle: {
+  choiceOptionCardInactive: {
+    backgroundColor: '#202024',
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  choiceIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  choiceOptionTitle: {
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '800',
   },
-  moveSectionBtnDesc: {
-    color: '#cbd5e1',
+  choiceOptionDesc: {
+    color: '#94a3b8',
     fontSize: 11,
     marginTop: 2,
+  },
+  activeCheckBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(34, 197, 94, 0.16)',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  activeCheckText: {
+    color: '#4ade80',
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  moveButtonBlue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#2563eb',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  moveButtonBlueText: {
+    color: '#ffffff',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  moveButtonAmber: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#d97706',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+  },
+  moveButtonAmberText: {
+    color: '#ffffff',
+    fontSize: 11.5,
+    fontWeight: '700',
   },
   modalOptionRow: {
     flexDirection: 'row',

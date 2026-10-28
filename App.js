@@ -280,11 +280,21 @@ export default function App() {
         folderTitle ||
         (typeof folderItemOrUri === 'object' ? folderItemOrUri?.title || folderItemOrUri?.name : '') ||
         (uri ? folderService.folderName(uri) : '');
+      const id =
+        typeof folderItemOrUri === 'object' && folderItemOrUri?.id
+          ? String(folderItemOrUri.id).trim()
+          : '';
+      const name =
+        typeof folderItemOrUri === 'object' && folderItemOrUri?.name
+          ? String(folderItemOrUri.name).trim()
+          : '';
 
       setFolderSegments((prev) => {
         const next = { ...prev };
         if (uri) next[uri] = seg;
         if (title) next[title] = seg;
+        if (name) next[name] = seg;
+        if (id) next[id] = seg;
         AsyncStorage.setItem(FOLDER_SEGMENTS_STORAGE_KEY, JSON.stringify(next)).catch(() => {});
         return next;
       });

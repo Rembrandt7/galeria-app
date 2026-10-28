@@ -7,8 +7,8 @@ import { Alert, Linking, Platform } from 'react-native';
 const REPO_OWNER = 'Rembrandt7';
 const REPO_NAME = 'galeria-app';
 
-export const CURRENT_VERSION = 'v1.4.2';
-export const CURRENT_BUILD_NUMBER = 50;
+export const CURRENT_VERSION = 'v1.4.3';
+export const CURRENT_BUILD_NUMBER = 51;
 
 const SAVED_APKS_STORAGE_KEY = '@galeria_saved_apks_v1';
 const APK_STORAGE_DIR = `${FileSystem.documentDirectory}apk_updates/`;
