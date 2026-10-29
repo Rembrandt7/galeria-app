@@ -11,6 +11,8 @@ import {
   StatusBar,
   SafeAreaView,
   BackHandler,
+  Vibration,
+  Animated,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,10 +28,13 @@ const THUMB_COUNT = 6;
 
 const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
-function formatTime(sec, showTenths = false) {
+function formatTime(sec, showTenths = false, showCentis = false) {
   const s = Math.max(0, Number.isFinite(sec) ? sec : 0);
   const m = Math.floor(s / 60);
   const rem = s - m * 60;
+  if (showCentis) {
+    return `${m}:${rem.toFixed(2).padStart(5, '0')}`;
+  }
   if (!showTenths) {
     return `${m}:${Math.floor(rem).toString().padStart(2, '0')}`;
   }
@@ -77,6 +82,9 @@ export default function VideoPlayerScreen({
   const [currentFileSize, setCurrentFileSize] = useState(asset?.fileSize || 0);
   const [filmstripThumbs, setFilmstripThumbs] = useState([]);
   const [seekFeedback, setSeekFeedback] = useState(null);
+  const [capturedPreview, setCapturedPreview] = useState(null); // { uri, timeText }
+  const [isCapturing, setIsCapturing] = useState(false);
+  const flashAnim = useRef(new Animated.Value(0)).current;
 
   // Modo amigable: 'play' (Ver Video) | 'trim' (Recortar) | 'compress' (Bajar Peso)
   const [studioMode, setStudioMode] = useState(initialMode || 'play');
@@ -321,6 +329,35 @@ export default function VideoPlayerScreen({
     const label = delta > 0 ? `+${Math.round(delta)} seg` : `${Math.round(delta)} seg`;
     setSeekFeedback(label);
     setTimeout(() => setSeekFeedback(null), 650);
+  };
+
+  // Salto exacto de 1 cuadro / frame (~0.033 seg a 30fps)
+  const stepFrame = (direction) => {
+    try {
+      player.pause();
+    } catch (_e) {}
+    setPreviewingCut(false);
+    const FRAME_DURATION = 0.034;
+    const current = Number.isFinite(player.currentTime) ? player.currentTime : time;
+    const delta = direction > 0 ? FRAME_DURATION : -FRAME_DURATION;
+    seekTo(current + delta);
+    try {
+      Vibration.vibrate(18);
+    } catch (_e) {}
+    setSeekFeedback(direction > 0 ? '+1 cuadro' : '-1 cuadro');
+    setTimeout(() => setSeekFeedback(null), 500);
+  };
+
+  const triggerShutterFlash = () => {
+    try {
+      Vibration.vibrate([0, 30, 20, 35]);
+    } catch (_e) {}
+    flashAnim.setValue(0.85);
+    Animated.timing(flashAnim, {
+      toValue: 0,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
   };
 
   const toggleMute = () => {
@@ -600,14 +637,17 @@ export default function VideoPlayerScreen({
     setSavedClips([]);
   };
 
-  // Guardar foto del momento actual
+  // Capturar foto del momento / fotograma actual con efecto flash y miniatura
   const handleCaptureFrame = async () => {
     try {
       player.pause();
     } catch (_e) {}
     const captureTime = Number.isFinite(player.currentTime) ? player.currentTime : time;
-    setBusy(true);
-    setProgressInfo({ percent: 0.6, stage: 'Guardando foto de este momento...' });
+    const formatted = formatTime(captureTime, false, true);
+
+    triggerShutterFlash();
+    setIsCapturing(true);
+
     try {
       let frameUri = await videoEngineService.captureFrame(asset, captureTime);
       if (!frameUri) {
@@ -619,20 +659,23 @@ export default function VideoPlayerScreen({
         const rendered = await context.renderAsync();
         const saved = await rendered.saveAsync({
           format: SaveFormat.JPEG,
-          compress: 0.95,
+          compress: 0.96,
         });
         frameUri = saved.uri;
       }
       await MediaLibrary.saveToLibraryAsync(frameUri);
-      Alert.alert(
-        '📸 ¡Foto guardada!',
-        `Se guardó la imagen del minuto ${formatTime(captureTime)} en tu galería.`
-      );
+
+      // Mostrar previsualización flotante y feedback táctil sin interrumpir la reproducción con Alert
+      setCapturedPreview({ uri: frameUri, timeText: formatted });
+      setTimeout(() => {
+        setCapturedPreview(null);
+      }, 3200);
+
       if (onSaved) onSaved();
     } catch (e) {
-      Alert.alert('Error al guardar foto', String(e?.message || e));
+      Alert.alert('Error al capturar foto', String(e?.message || e));
     } finally {
-      setBusy(false);
+      setIsCapturing(false);
     }
   };
 
@@ -820,6 +863,26 @@ export default function VideoPlayerScreen({
           </View>
 
           <View style={styles.headerRightActions}>
+            <TouchableOpacity
+              style={[
+                styles.iconCircleBtn,
+                {
+                  backgroundColor: 'rgba(56, 189, 248, 0.22)',
+                  borderColor: '#38bdf8',
+                  borderWidth: 1,
+                },
+              ]}
+              onPress={handleCaptureFrame}
+              disabled={isCapturing || busy}
+              activeOpacity={0.75}
+            >
+              {isCapturing ? (
+                <ActivityIndicator size="small" color="#38bdf8" />
+              ) : (
+                <Ionicons name="camera" size={19} color="#38bdf8" />
+              )}
+            </TouchableOpacity>
+
             {onShare && (
               <TouchableOpacity
                 style={styles.iconCircleBtn}
@@ -852,6 +915,15 @@ export default function VideoPlayerScreen({
             nativeControls={useNativeControls}
           />
 
+          {/* Flash blanco de obturador al tomar foto */}
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              StyleSheet.absoluteFill,
+              { backgroundColor: '#ffffff', opacity: flashAnim, zIndex: 99 },
+            ]}
+          />
+
           {!useNativeControls && (
             <TouchableOpacity
               style={StyleSheet.absoluteFill}
@@ -868,6 +940,43 @@ export default function VideoPlayerScreen({
               <Text style={styles.centerPlayHint}>Toca para reproducir</Text>
             </View>
           )}
+
+          {/* Toast / Miniatura flotante de captura exitosa */}
+          {capturedPreview && (
+            <View style={styles.capturePreviewPill}>
+              <Image
+                source={{ uri: capturedPreview.uri }}
+                style={styles.capturePreviewThumb}
+                contentFit="cover"
+              />
+              <View style={{ flex: 1, marginLeft: 10 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                  <Ionicons name="checkmark-circle" size={15} color="#22c55e" />
+                  <Text style={styles.capturePreviewTitle}>¡Foto guardada!</Text>
+                </View>
+                <Text style={styles.capturePreviewSubtitle}>
+                  Momento {capturedPreview.timeText} en Galería
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Botón flotante de captura rápida en la esquina del video */}
+          <TouchableOpacity
+            style={styles.floatingCaptureBtn}
+            onPress={handleCaptureFrame}
+            disabled={isCapturing || busy}
+            activeOpacity={0.8}
+          >
+            {isCapturing ? (
+              <ActivityIndicator size="small" color="#38bdf8" />
+            ) : (
+              <>
+                <Ionicons name="camera" size={17} color="#38bdf8" />
+                <Text style={styles.floatingCaptureText}>Capturar</Text>
+              </>
+            )}
+          </TouchableOpacity>
 
           {seekFeedback && (
             <View pointerEvents="none" style={styles.seekFeedbackPill}>
@@ -971,9 +1080,11 @@ export default function VideoPlayerScreen({
           {/* ================= MODO 1: VER VIDEO (REPRODUCTOR AMIGABLE) ================= */}
           {studioMode === 'play' && (
             <View style={styles.playModeContainer}>
-              {/* Barra de tiempo grande y fácil de mover con el dedo */}
+              {/* Barra de tiempo grande y fácil de mover con el dedo (muestra centésimas al estar en pausa para precisión de cuadro) */}
               <View style={styles.scrubberRow}>
-                <Text style={styles.scrubberTimeText}>{formatTime(time)}</Text>
+                <Text style={[styles.scrubberTimeText, !playing && styles.scrubberTimeTextPrecision]}>
+                  {formatTime(time, false, !playing)}
+                </Text>
 
                 <View
                   style={styles.scrubberTrackHitArea}
@@ -996,17 +1107,29 @@ export default function VideoPlayerScreen({
                 <Text style={styles.scrubberTimeText}>{formatTime(duration)}</Text>
               </View>
 
-              {/* 3 Botones grandes principales: Atrasar 10s | Reproducir/Pausar | Adelantar 10s */}
-              <View style={styles.friendlyMainRow}>
+              {/* Controles de reproducción principales con Avance/Retroceso Cuadro por Cuadro (Frame by Frame) y saltos de 10s */}
+              <View style={styles.friendlyControlsMasterRow}>
+                {/* 1. Salto -10 segundos */}
                 <TouchableOpacity
-                  style={styles.friendlySkipBtn}
+                  style={styles.friendlySkipBtnCompact}
                   onPress={() => seekBy(-10)}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="play-back" size={20} color="#ffffff" />
-                  <Text style={styles.friendlySkipText}>-10 seg</Text>
+                  <Ionicons name="play-back" size={16} color="#cbd5e1" />
+                  <Text style={styles.friendlySkipTextCompact}>-10s</Text>
                 </TouchableOpacity>
 
+                {/* 2. Paso fino: -1 Cuadro (Frame anterior) */}
+                <TouchableOpacity
+                  style={styles.frameStepBtn}
+                  onPress={() => stepFrame(-1)}
+                  activeOpacity={0.78}
+                >
+                  <Ionicons name="play-skip-back" size={15} color="#38bdf8" />
+                  <Text style={styles.frameStepBtnText}>-1 Cuadro</Text>
+                </TouchableOpacity>
+
+                {/* 3. Botón central grande: Reproducir / Pausar */}
                 <TouchableOpacity
                   style={styles.friendlyPlayPauseBtn}
                   onPress={togglePlay}
@@ -1022,27 +1145,48 @@ export default function VideoPlayerScreen({
                   </Text>
                 </TouchableOpacity>
 
+                {/* 4. Paso fino: +1 Cuadro (Frame siguiente) */}
                 <TouchableOpacity
-                  style={styles.friendlySkipBtn}
+                  style={styles.frameStepBtn}
+                  onPress={() => stepFrame(1)}
+                  activeOpacity={0.78}
+                >
+                  <Text style={styles.frameStepBtnText}>+1 Cuadro</Text>
+                  <Ionicons name="play-skip-forward" size={15} color="#38bdf8" />
+                </TouchableOpacity>
+
+                {/* 5. Salto +10 segundos */}
+                <TouchableOpacity
+                  style={styles.friendlySkipBtnCompact}
                   onPress={() => seekBy(10)}
                   activeOpacity={0.8}
                 >
-                  <Text style={styles.friendlySkipText}>+10 seg</Text>
-                  <Ionicons name="play-forward" size={20} color="#ffffff" />
+                  <Text style={styles.friendlySkipTextCompact}>+10s</Text>
+                  <Ionicons name="play-forward" size={16} color="#cbd5e1" />
                 </TouchableOpacity>
               </View>
 
-              {/* Fila de opciones útiles con nombres claros */}
-              <View style={styles.friendlyToolsRow}>
-                <TouchableOpacity
-                  style={styles.friendlyToolChip}
-                  onPress={handleCaptureFrame}
-                  disabled={busy}
-                >
-                  <Ionicons name="camera-outline" size={18} color="#38bdf8" />
-                  <Text style={styles.friendlyToolChipText}>Guardar foto</Text>
-                </TouchableOpacity>
+              {/* Botón de Captura Rápida de Fotograma Prominente y accesible */}
+              <TouchableOpacity
+                style={styles.prominentCaptureBtn}
+                onPress={handleCaptureFrame}
+                disabled={isCapturing}
+                activeOpacity={0.82}
+              >
+                {isCapturing ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <Ionicons name="camera" size={20} color="#ffffff" />
+                    <Text style={styles.prominentCaptureBtnText}>
+                      Capturar Foto de este Cuadro ({formatTime(time, false, true)})
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
 
+              {/* Fila de opciones útiles: Sonido, Velocidad */}
+              <View style={styles.friendlyToolsRow}>
                 <TouchableOpacity
                   style={[
                     styles.friendlyToolChip,
@@ -2460,5 +2604,121 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 12,
     fontWeight: '700',
+  },
+  scrubberTimeTextPrecision: {
+    color: '#38bdf8',
+    fontWeight: '800',
+  },
+  friendlyControlsMasterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 4,
+    marginVertical: 6,
+  },
+  friendlySkipBtnCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+  },
+  friendlySkipTextCompact: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  frameStepBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+    borderWidth: 1,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+  },
+  frameStepBtnText: {
+    color: '#7dd3fc',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  prominentCaptureBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#0284c7',
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 14,
+    marginVertical: 4,
+    shadowColor: '#0284c7',
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  prominentCaptureBtnText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  floatingCaptureBtn: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderColor: '#38bdf8',
+    borderWidth: 1.5,
+    paddingVertical: 6,
+    paddingHorizontal: 11,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  floatingCaptureText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  capturePreviewPill: {
+    position: 'absolute',
+    bottom: 16,
+    left: 14,
+    right: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#18181b',
+    borderColor: '#22c55e',
+    borderWidth: 1.5,
+    padding: 8,
+    borderRadius: 14,
+    zIndex: 30,
+    shadowColor: '#000',
+    shadowOpacity: 0.5,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  capturePreviewThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 8,
+    backgroundColor: '#27272a',
+  },
+  capturePreviewTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  capturePreviewSubtitle: {
+    color: '#a1a1aa',
+    fontSize: 11,
+    marginTop: 1,
   },
 });
