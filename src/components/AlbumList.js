@@ -755,7 +755,7 @@ export default function AlbumList({
             }}
             numberOfLines={1}
           >
-            + Agregar a {activeSegment === 'files' ? 'Archivos y Redes' : 'Fotos y Dron'}
+            + Agregar a {activeSegment === 'files' ? 'Archivos' : 'Fotos'}
           </Text>
         </TouchableOpacity>
 
@@ -1057,7 +1057,7 @@ export default function AlbumList({
                               isPhotos && { color: '#60a5fa' },
                             ]}
                           >
-                            Fotos y Dron
+                            Fotos
                           </Text>
                           {isPhotos && (
                             <View style={styles.activeCheckBadge}>
@@ -1120,7 +1120,7 @@ export default function AlbumList({
                               isFiles && { color: '#fbbf24' },
                             ]}
                           >
-                            Archivos y Redes
+                            Archivos
                           </Text>
                           {isFiles && (
                             <View style={styles.activeCheckBadge}>

@@ -3,46 +3,68 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function SegmentBar({
-  activeSegment = 'photos', // 'photos' | 'files' | 'all'
+  activeSegment = 'photos', // 'photos' | 'files'
+  activeTab = 'albums',
   onSelectSegment,
+  onOpenCamera,
+  onOpenExplorer,
   photosCount = 0,
   filesCount = 0,
-  allCount = 0,
-  labelMode = 'albums', // 'albums' | 'assets'
 }) {
+  const isExplorerActive = activeTab === 'folder';
+
   const segments = [
     {
       key: 'photos',
-      label: 'Fotos y Dron',
-      icon: 'camera',
-      iconOutline: 'camera-outline',
+      label: 'Fotos',
+      icon: 'images',
+      iconOutline: 'images-outline',
       count: photosCount,
       activeBg: '#2563eb',
       activeText: '#ffffff',
       activeBorder: '#60a5fa',
       badgeBg: 'rgba(255, 255, 255, 0.22)',
+      isActive: !isExplorerActive && activeSegment === 'photos',
+      onPress: () => onSelectSegment && onSelectSegment('photos'),
     },
     {
       key: 'files',
-      label: 'Archivos y Redes',
-      icon: 'folder-open',
-      iconOutline: 'folder-outline',
+      label: 'Archivos',
+      icon: 'lock-open',
+      iconOutline: 'lock-closed-outline',
       count: filesCount,
       activeBg: '#d97706',
       activeText: '#ffffff',
       activeBorder: '#fbbf24',
       badgeBg: 'rgba(255, 255, 255, 0.22)',
+      isActive: !isExplorerActive && activeSegment === 'files',
+      onPress: () => onSelectSegment && onSelectSegment('files'),
     },
     {
-      key: 'all',
-      label: 'Todo',
-      icon: 'grid',
-      iconOutline: 'grid-outline',
-      count: allCount,
-      activeBg: '#374151',
+      key: 'camera',
+      label: 'Cámara',
+      icon: 'camera',
+      iconOutline: 'camera-outline',
+      count: 0,
+      activeBg: '#0284c7',
       activeText: '#ffffff',
-      activeBorder: '#9ca3af',
-      badgeBg: 'rgba(255, 255, 255, 0.18)',
+      activeBorder: '#38bdf8',
+      badgeBg: 'rgba(255, 255, 255, 0.22)',
+      isActive: false,
+      onPress: () => onOpenCamera && onOpenCamera(),
+    },
+    {
+      key: 'explorer',
+      label: 'Explorador',
+      icon: 'folder-open',
+      iconOutline: 'folder-outline',
+      count: 0,
+      activeBg: '#059669',
+      activeText: '#ffffff',
+      activeBorder: '#34d399',
+      badgeBg: 'rgba(255, 255, 255, 0.22)',
+      isActive: isExplorerActive,
+      onPress: () => onOpenExplorer && onOpenExplorer(),
     },
   ];
 
@@ -50,7 +72,7 @@ export default function SegmentBar({
     <View style={styles.outerContainer}>
       <View style={styles.segmentTrack}>
         {segments.map((seg) => {
-          const isActive = activeSegment === seg.key;
+          const isActive = seg.isActive;
           return (
             <TouchableOpacity
               key={`segment_${seg.key}`}
@@ -66,14 +88,14 @@ export default function SegmentBar({
                   elevation: 4,
                 },
               ]}
-              onPress={() => onSelectSegment && onSelectSegment(seg.key)}
+              onPress={seg.onPress}
               activeOpacity={0.78}
             >
               <Ionicons
                 name={isActive ? seg.icon : seg.iconOutline}
-                size={14}
+                size={13}
                 color={isActive ? seg.activeText : '#94a3b8'}
-                style={{ marginRight: 5 }}
+                style={{ marginRight: 4 }}
               />
               <Text
                 style={[
@@ -114,15 +136,15 @@ export default function SegmentBar({
 
 const styles = StyleSheet.create({
   outerContainer: {
-    paddingHorizontal: 10,
-    paddingTop: 4,
-    paddingBottom: 6,
+    paddingHorizontal: 8,
+    paddingTop: 3,
+    paddingBottom: 5,
     backgroundColor: '#09090b',
   },
   segmentTrack: {
     flexDirection: 'row',
     backgroundColor: '#18181b',
-    borderRadius: 14,
+    borderRadius: 13,
     padding: 3,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.08)',
@@ -134,13 +156,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 7,
-    paddingHorizontal: 6,
-    borderRadius: 11,
-    minHeight: 34,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    borderRadius: 10,
+    minHeight: 32,
   },
   segmentLabel: {
-    fontSize: 11.5,
+    fontSize: 11,
     letterSpacing: -0.2,
   },
   segmentLabelInactive: {
@@ -148,11 +170,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   countBadge: {
-    marginLeft: 5,
-    paddingHorizontal: 5,
+    marginLeft: 4,
+    paddingHorizontal: 4,
     paddingVertical: 1,
-    borderRadius: 8,
-    minWidth: 18,
+    borderRadius: 7,
+    minWidth: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -160,7 +182,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#27272a',
   },
   countText: {
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: '800',
   },
   countTextInactive: {

@@ -106,8 +106,10 @@ export default function FolderBrowser({
   // Modal de carpetas del sistema y permisos especiales
   const [showSystemModal, setShowSystemModal] = useState(false);
 
-  // División y categoría interna: 'all' | 'photos' | 'videos'
-  const [folderCategory, setFolderCategory] = useState('all');
+  // Filtro múltiple de Fotos y Videos (por defecto solo Fotos activo; permite seleccionar ambas)
+  const [showPhotosFilter, setShowPhotosFilter] = useState(true);
+  const [showVideosFilter, setShowVideosFilter] = useState(false);
+  const [folderCategory, setFolderCategory] = useState('photos');
   // Compresión de carpeta completa (con soporte en segundo plano no bloqueante)
   const [isCompressingFolder, setIsCompressingFolder] = useState(false);
   const [compressProgress, setCompressProgress] = useState(null);
@@ -360,8 +362,10 @@ export default function FolderBrowser({
     }
   }, [rootUri]);
 
-  // Ejecutar carga cuando cambia la carpeta activa o el modo
+  // Ejecutar carga cuando cambia la carpeta activa o el modo y reiniciar filtro por defecto a solo Fotos
   useEffect(() => {
+    setShowPhotosFilter(true);
+    setShowVideosFilter(false);
     if (currentFolder?.uri) {
       if (viewMode === 'folders') {
         loadCurrentLevel(currentFolder.uri);
@@ -418,25 +422,59 @@ export default function FolderBrowser({
     [rawFolderList]
   );
 
-  // Solo mostrar la división Fotos / Videos si existen AMBOS tipos en la carpeta actual
-  const hasBothPhotosAndVideos = folderPhotos.length > 0 && folderVideos.length > 0;
-  const effectiveCategory = hasBothPhotosAndVideos ? folderCategory : 'all';
+  const hasPhotos = folderPhotos.length > 0;
+  const hasVideos = folderVideos.length > 0;
+  const hasBothPhotosAndVideos = hasPhotos && hasVideos;
+
+  // Si existen fotos y videos, usa la selección del usuario (por defecto Fotos = true, Videos = false, o ambas).
+  // Si NO hay videos, Videos no aparece y se muestran las fotos.
+  // Si NO hay fotos, Fotos no aparece y se muestran automáticamente los videos.
+  const isPhotosActive = hasPhotos ? (hasVideos ? showPhotosFilter : true) : false;
+  const isVideosActive = hasVideos ? (hasPhotos ? showVideosFilter : true) : false;
+
+  const handleTogglePhotosChip = useCallback(() => {
+    if (!hasVideos) return;
+    if (showPhotosFilter && !showVideosFilter) {
+      setShowPhotosFilter(false);
+      setShowVideosFilter(true);
+    } else {
+      setShowPhotosFilter((prev) => !prev);
+    }
+  }, [hasVideos, showPhotosFilter, showVideosFilter]);
+
+  const handleToggleVideosChip = useCallback(() => {
+    if (!hasPhotos) return;
+    if (showVideosFilter && !showPhotosFilter) {
+      setShowVideosFilter(false);
+      setShowPhotosFilter(true);
+    } else {
+      setShowVideosFilter((prev) => !prev);
+    }
+  }, [hasPhotos, showPhotosFilter, showVideosFilter]);
 
   // Lista base por categoría y búsqueda para calcular si existen archivos Grandes o Medianos
   const categoryAndSearchList = useMemo(() => {
-    let base =
-      effectiveCategory === 'photos' || filterType === 'photos'
-        ? folderPhotos
-        : effectiveCategory === 'videos' || filterType === 'videos'
-        ? folderVideos
-        : [...folderPhotos, ...folderVideos];
+    let base = [];
+    if (filterType === 'photos') {
+      base = folderPhotos;
+    } else if (filterType === 'videos') {
+      base = folderVideos;
+    } else if (isPhotosActive && isVideosActive) {
+      base = rawFolderList;
+    } else if (isPhotosActive) {
+      base = folderPhotos;
+    } else if (isVideosActive) {
+      base = folderVideos;
+    } else {
+      base = rawFolderList;
+    }
 
     const q = searchQuery.trim().toLowerCase();
     if (q) {
       base = base.filter((a) => (a.filename || '').toLowerCase().includes(q));
     }
     return base;
-  }, [effectiveCategory, filterType, folderPhotos, folderVideos, searchQuery]);
+  }, [isPhotosActive, isVideosActive, filterType, rawFolderList, folderPhotos, folderVideos, searchQuery]);
 
   // Contabilizar archivos Grandes (>4MB) y Medianos (2-4MB) para mostrar filtros solo si existen
   const { heavyCount, mediumCount } = useMemo(() => {
@@ -1058,10 +1096,6 @@ export default function FolderBrowser({
         setSizeFilter('all');
         return true;
       }
-      if (folderCategory !== 'all') {
-        setFolderCategory('all');
-        return true;
-      }
       if (viewMode === 'all') {
         setViewMode('folders');
         return true;
@@ -1618,7 +1652,7 @@ export default function FolderBrowser({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.optionsBoxesScroll}
         >
-          {/* Opción A: Agregar esta carpeta exclusivamente a Fotos y Dron */}
+          {/* Opción A: Agregar esta carpeta exclusivamente a Fotos */}
           {currentFolder?.uri && onAssignFolderToSegment && (
             <TouchableOpacity
               style={[
@@ -1632,7 +1666,7 @@ export default function FolderBrowser({
                 onAssignFolderToSegment(currentFolder.uri, 'photos', currentFolder.name);
                 Alert.alert(
                   'Carpeta agregada',
-                  `"${currentFolder.name || 'Carpeta'}" se guardó en Fotos y Dron y no aparecerá en Archivos.`
+                  `"${currentFolder.name || 'Carpeta'}" se guardó en Fotos y no aparecerá en Archivos.`
                 );
               }}
               activeOpacity={0.8}
@@ -1643,7 +1677,7 @@ export default function FolderBrowser({
                   style={[styles.actionToolTitle, { color: '#93c5fd' }]}
                   numberOfLines={1}
                 >
-                  + A Fotos y Dron
+                  + A Fotos
                 </Text>
               </View>
               <Text style={[styles.actionToolSub, { color: '#60a5fa' }]} numberOfLines={1}>
@@ -1652,7 +1686,7 @@ export default function FolderBrowser({
             </TouchableOpacity>
           )}
 
-          {/* Opción B: Agregar esta carpeta exclusivamente a Archivos y Redes */}
+          {/* Opción B: Agregar esta carpeta exclusivamente a Archivos */}
           {currentFolder?.uri && onAssignFolderToSegment && (
             <TouchableOpacity
               style={[
@@ -1666,7 +1700,7 @@ export default function FolderBrowser({
                 onAssignFolderToSegment(currentFolder.uri, 'files', currentFolder.name);
                 Alert.alert(
                   'Carpeta agregada',
-                  `"${currentFolder.name || 'Carpeta'}" se guardó en Archivos y Redes y no aparecerá en Fotos.`
+                  `"${currentFolder.name || 'Carpeta'}" se guardó en Archivos y no aparecerá en Fotos.`
                 );
               }}
               activeOpacity={0.8}
@@ -2061,6 +2095,57 @@ export default function FolderBrowser({
             </Text>
           </View>
 
+          {/* Filtro directo en la barra de la carpeta: Fotos (por defecto) y Videos (pueden seleccionarse ambas; si no hay fotos no aparece Fotos y si no hay videos no aparece Videos) */}
+          {hasPhotos && (
+            <TouchableOpacity
+              style={[
+                styles.weightFilterPill,
+                isPhotosActive && styles.categoryFilterPillActive,
+              ]}
+              onPress={handleTogglePhotosChip}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={isPhotosActive ? 'checkmark-circle' : 'images-outline'}
+                size={13}
+                color={isPhotosActive ? '#fff' : theme.colors.primaryLight}
+              />
+              <Text
+                style={[
+                  styles.weightFilterText,
+                  isPhotosActive && { color: '#fff', fontWeight: '800' },
+                ]}
+              >
+                Fotos ({folderPhotos.length})
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {hasVideos && (
+            <TouchableOpacity
+              style={[
+                styles.weightFilterPill,
+                isVideosActive && styles.categoryFilterPillActive,
+              ]}
+              onPress={handleToggleVideosChip}
+              activeOpacity={0.8}
+            >
+              <Ionicons
+                name={isVideosActive ? 'checkmark-circle' : 'videocam-outline'}
+                size={13}
+                color={isVideosActive ? '#fff' : theme.colors.primaryLight}
+              />
+              <Text
+                style={[
+                  styles.weightFilterText,
+                  isVideosActive && { color: '#fff', fontWeight: '800' },
+                ]}
+              >
+                Videos ({folderVideos.length})
+              </Text>
+            </TouchableOpacity>
+          )}
+
           {/* Buscador Compacto dentro del mismo renglón */}
           <View style={styles.inlineSearchBox}>
             <Ionicons name="search" size={13} color={theme.colors.textMuted} />
@@ -2077,79 +2162,6 @@ export default function FolderBrowser({
               </TouchableOpacity>
             )}
           </View>
-
-          {/* Filtros Fotos / Videos (SOLO aparece si existen AMBOS fotos y videos) */}
-          {hasBothPhotosAndVideos && (
-            <>
-              <TouchableOpacity
-                style={[
-                  styles.weightFilterPill,
-                  effectiveCategory === 'all' && styles.categoryFilterPillActive,
-                ]}
-                onPress={() => setFolderCategory('all')}
-                activeOpacity={0.8}
-              >
-                <Text
-                  style={[
-                    styles.weightFilterText,
-                    effectiveCategory === 'all' && { color: '#fff', fontWeight: '800' },
-                  ]}
-                >
-                  Todo ({folderPhotos.length + folderVideos.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.weightFilterPill,
-                  effectiveCategory === 'photos' && styles.categoryFilterPillActive,
-                ]}
-                onPress={() =>
-                  setFolderCategory(effectiveCategory === 'photos' ? 'all' : 'photos')
-                }
-                activeOpacity={0.8}
-              >
-                <Ionicons
-                  name="images"
-                  size={12}
-                  color={effectiveCategory === 'photos' ? '#fff' : theme.colors.primaryLight}
-                />
-                <Text
-                  style={[
-                    styles.weightFilterText,
-                    effectiveCategory === 'photos' && { color: '#fff', fontWeight: '800' },
-                  ]}
-                >
-                  Fotos ({folderPhotos.length})
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.weightFilterPill,
-                  effectiveCategory === 'videos' && styles.categoryFilterPillActive,
-                ]}
-                onPress={() =>
-                  setFolderCategory(effectiveCategory === 'videos' ? 'all' : 'videos')
-                }
-                activeOpacity={0.8}
-              >
-                <Ionicons
-                  name="videocam"
-                  size={12}
-                  color={effectiveCategory === 'videos' ? '#fff' : theme.colors.primaryLight}
-                />
-                <Text
-                  style={[
-                    styles.weightFilterText,
-                    effectiveCategory === 'videos' && { color: '#fff', fontWeight: '800' },
-                  ]}
-                >
-                  Videos ({folderVideos.length})
-                </Text>
-              </TouchableOpacity>
-            </>
-          )}
 
           {/* Filtros de Peso: Grandes / Medianos / Todos (SOLO si existen archivos grandes o medianos) */}
           {hasWeightFilters && (

@@ -51,6 +51,8 @@ export default function PhotoGrid({
   const [isCompressingBatch, setIsCompressingBatch] = useState(false);
   const [compressProgress, setCompressProgress] = useState(null);
   const [selectedIds, setSelectedIds] = useState({});
+  const [showPhotosFilter, setShowPhotosFilter] = useState(true);
+  const [showVideosFilter, setShowVideosFilter] = useState(false);
   const [numColumns, setNumColumns] = useState(() =>
     defaultColumns > 0 ? defaultColumns : isFoldExpanded ? 6 : NUM_COLUMNS
   );
@@ -145,6 +147,40 @@ export default function PhotoGrid({
     () => (assets || []).filter((a) => a && a.mediaType === 'video'),
     [assets]
   );
+
+  const hasPhotos = photoAssets.length > 0;
+  const hasVideos = videoAssets.length > 0;
+  const isPhotosActive = hasPhotos ? (hasVideos ? showPhotosFilter : true) : false;
+  const isVideosActive = hasVideos ? (hasPhotos ? showVideosFilter : true) : false;
+
+  const filteredGridAssets = useMemo(() => {
+    if (isPhotosActive && isVideosActive) return assets || [];
+    if (isPhotosActive) return photoAssets;
+    if (isVideosActive) return videoAssets;
+    return assets || [];
+  }, [assets, photoAssets, videoAssets, isPhotosActive, isVideosActive]);
+
+  assetsRef.current = filteredGridAssets;
+
+  const handleTogglePhotosChip = useCallback(() => {
+    if (!hasVideos) return;
+    if (showPhotosFilter && !showVideosFilter) {
+      setShowPhotosFilter(false);
+      setShowVideosFilter(true);
+    } else {
+      setShowPhotosFilter((prev) => !prev);
+    }
+  }, [hasVideos, showPhotosFilter, showVideosFilter]);
+
+  const handleToggleVideosChip = useCallback(() => {
+    if (!hasPhotos) return;
+    if (showVideosFilter && !showPhotosFilter) {
+      setShowVideosFilter(false);
+      setShowPhotosFilter(true);
+    } else {
+      setShowVideosFilter((prev) => !prev);
+    }
+  }, [hasPhotos, showPhotosFilter, showVideosFilter]);
 
   const photoReductionSummary = useMemo(
     () => compressionService.getBatchReductionSummary(assets, null),
@@ -515,9 +551,63 @@ export default function PhotoGrid({
       ) : (
         assets.length > 0 && (
           <View style={styles.toolsBar}>
-            <Text style={[styles.toolsInfoText, { flex: 1 }]} numberOfLines={1}>
-              {assets.length} archivos · Zoom ({numColumns} col)
-            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, flex: 1, flexWrap: 'wrap' }}>
+              {hasPhotos && (
+                <TouchableOpacity
+                  style={[
+                    styles.compressBatchBtn,
+                    {
+                      backgroundColor: isPhotosActive ? '#2563eb' : 'rgba(255,255,255,0.06)',
+                      borderColor: isPhotosActive ? '#60a5fa' : 'rgba(255,255,255,0.15)',
+                    },
+                  ]}
+                  onPress={handleTogglePhotosChip}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name={isPhotosActive ? 'checkmark-circle' : 'images-outline'}
+                    size={13}
+                    color={isPhotosActive ? '#ffffff' : '#94a3b8'}
+                  />
+                  <Text
+                    style={[
+                      styles.compressBatchBtnText,
+                      { color: isPhotosActive ? '#ffffff' : '#94a3b8' },
+                    ]}
+                  >
+                    Fotos ({photoAssets.length})
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              {hasVideos && (
+                <TouchableOpacity
+                  style={[
+                    styles.compressBatchBtn,
+                    {
+                      backgroundColor: isVideosActive ? '#2563eb' : 'rgba(255,255,255,0.06)',
+                      borderColor: isVideosActive ? '#60a5fa' : 'rgba(255,255,255,0.15)',
+                    },
+                  ]}
+                  onPress={handleToggleVideosChip}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons
+                    name={isVideosActive ? 'checkmark-circle' : 'videocam-outline'}
+                    size={13}
+                    color={isVideosActive ? '#ffffff' : '#94a3b8'}
+                  />
+                  <Text
+                    style={[
+                      styles.compressBatchBtnText,
+                      { color: isVideosActive ? '#ffffff' : '#94a3b8' },
+                    ]}
+                  >
+                    Videos ({videoAssets.length})
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               {onOpenModoGuardar && (
                 <TouchableOpacity
@@ -651,7 +741,7 @@ export default function PhotoGrid({
       >
         <FlatList
           key={`photo_grid_${numColumns}`}
-          data={assets}
+          data={filteredGridAssets}
           renderItem={renderItem}
           keyExtractor={(item) => item.id}
           numColumns={numColumns}

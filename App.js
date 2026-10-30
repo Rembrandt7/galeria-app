@@ -103,6 +103,7 @@ export default function App() {
   const [autoHideSystemFolders, setAutoHideSystemFolders] = useState(true);
   const [showAllFolders, setShowAllFolders] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
+  const [pinModalMode, setPinModalMode] = useState('files'); // 'files' | 'hidden'
   const [pinAttempt, setPinAttempt] = useState('');
   const [storedPin, setStoredPin] = useState(null);
 
@@ -152,14 +153,8 @@ export default function App() {
       setShowAllFolders(false);
       storageService.setShowAllFolders(false);
 
-      // 1c. Cargar segmento activo (Fotos y Dron vs Archivos y Redes)
-      AsyncStorage.getItem(ACTIVE_SEGMENT_KEY)
-        .then((seg) => {
-          if (seg && ['photos', 'files', 'all'].includes(seg)) {
-            setActiveSegment(seg);
-          }
-        })
-        .catch(() => {});
+      // 1c. Iniciar siempre en 'photos' para que 'Archivos' pida contraseña al querer entrar
+      setActiveSegment('photos');
 
       // 1d. Cargar asignaciones exclusivas de carpetas a segmentos
       AsyncStorage.getItem(FOLDER_SEGMENTS_STORAGE_KEY)
@@ -339,7 +334,7 @@ export default function App() {
         Alert.alert(
           '¡Carpeta agregada!',
           `"${res.name}" se guardó exclusivamente en ${
-            seg === 'photos' ? 'Fotos y Dron' : 'Archivos y Redes'
+            seg === 'photos' ? 'Fotos' : 'Archivos'
           } y no aparecerá en la otra sección.`
         );
       }
@@ -411,6 +406,7 @@ export default function App() {
       if (state !== 'active') {
         setShowAllFolders(false);
         storageService.setShowAllFolders(false);
+        setActiveSegment('photos');
         return;
       }
       if (hasPermission !== false) return;
@@ -677,10 +673,28 @@ export default function App() {
     return (baseList || []).filter((a) => a && !trashBin[a.id]);
   }, [activeTab, favorites, assets, folderAssets, filterType, trashBin, activeSegment, selectedAlbum]);
 
-  const handleSelectSegment = useCallback((seg) => {
-    setActiveSegment(seg);
-    AsyncStorage.setItem(ACTIVE_SEGMENT_KEY, seg).catch(() => {});
-  }, []);
+  const handleSelectSegment = useCallback(
+    async (seg) => {
+      if (seg === 'files') {
+        if (activeSegment === 'files' && activeTab !== 'folder') {
+          return;
+        }
+        const pin = await storageService.getPin();
+        setStoredPin(pin || null);
+        setPinAttempt('');
+        setPinModalMode('files');
+        setPinModalVisible(true);
+        return;
+      }
+      setActiveSegment(seg);
+      setSelectedAlbum(null);
+      if (activeTab === 'folder') {
+        setActiveTab('albums');
+      }
+      AsyncStorage.setItem(ACTIVE_SEGMENT_KEY, seg).catch(() => {});
+    },
+    [activeSegment, activeTab]
+  );
 
   // Abrir Modo Guardar (organizador por deslizamiento + papelera con restauración en 1 clic)
   const handleOpenModoGuardar = useCallback(
@@ -851,6 +865,7 @@ export default function App() {
     if (pin) {
       setStoredPin(pin);
       setPinAttempt('');
+      setPinModalMode('hidden');
       setPinModalVisible(true);
     } else {
       setShowAllFolders(true);
@@ -859,13 +874,46 @@ export default function App() {
   };
 
   const handleConfirmPin = async () => {
-    if (pinAttempt.trim() === storedPin) {
+    const cleanInput = pinAttempt.trim();
+    if (pinModalMode === 'files') {
+      if (!storedPin) {
+        if (cleanInput.length < 1) {
+          Alert.alert('Contraseña requerida', 'Escribe una contraseña para proteger la sección Archivos.');
+          return;
+        }
+        await storageService.setPin(cleanInput);
+        setStoredPin(cleanInput);
+        setPinModalVisible(false);
+        setPinAttempt('');
+        setSelectedAlbum(null);
+        if (activeTab === 'folder') {
+          setActiveTab('albums');
+        }
+        setActiveSegment('files');
+        return;
+      }
+      if (cleanInput === storedPin) {
+        setPinModalVisible(false);
+        setPinAttempt('');
+        setSelectedAlbum(null);
+        if (activeTab === 'folder') {
+          setActiveTab('albums');
+        }
+        setActiveSegment('files');
+      } else {
+        Alert.alert('Contraseña incorrecta', 'La contraseña ingresada no coincide.');
+        setPinAttempt('');
+      }
+      return;
+    }
+
+    if (cleanInput === storedPin) {
       setPinModalVisible(false);
       setPinAttempt('');
       setShowAllFolders(true);
       await storageService.setShowAllFolders(true);
     } else {
-      Alert.alert('PIN incorrecto', 'El PIN ingresado no coincide.');
+      Alert.alert('Contraseña incorrecta', 'La contraseña ingresada no coincide.');
       setPinAttempt('');
     }
   };
@@ -1027,9 +1075,9 @@ export default function App() {
     if (activeTab === 'albums') {
       const segName =
         activeSegment === 'photos'
-          ? 'Fotos y Dron'
+          ? 'Fotos'
           : activeSegment === 'files'
-          ? 'Archivos y Redes'
+          ? 'Archivos'
           : 'Álbumes esenciales';
       const segCount =
         activeSegment === 'photos'
@@ -1047,9 +1095,9 @@ export default function App() {
     if (activeTab === 'photos') {
       const segName =
         activeSegment === 'photos'
-          ? 'Fotos y Dron'
+          ? 'Fotos'
           : activeSegment === 'files'
-          ? 'Archivos y Redes'
+          ? 'Archivos'
           : 'Todas las Fotos';
       return {
         title: segName,
@@ -1145,19 +1193,16 @@ export default function App() {
         {/* Contenido Principal */}
         <View style={styles.content}>
           <ErrorBoundary onReset={() => { setActiveTab('albums'); setSelectedAlbum(null); }}>
-            {/* Barra de Segmentos estilo Samsung Galaxy One UI: Fotos y Dron vs Archivos y Redes vs Todo */}
-          {!selectedAlbum && (activeTab === 'albums' || activeTab === 'photos') && (
+            {/* Barra de Segmentos: Fotos | Archivos (con contraseña) | Cámara | Explorador */}
+          {!selectedAlbum && (activeTab === 'albums' || activeTab === 'photos' || activeTab === 'folder') && (
             <SegmentBar
               activeSegment={activeSegment}
+              activeTab={activeTab}
               onSelectSegment={handleSelectSegment}
-              photosCount={activeTab === 'albums' ? photosAlbumsCount : photosAssetsCount}
-              filesCount={activeTab === 'albums' ? filesAlbumsCount : filesAssetsCount}
-              allCount={
-                activeTab === 'albums'
-                  ? totalActiveAlbumsCount
-                  : (assets ? assets.length : 0)
-              }
-              labelMode={activeTab === 'albums' ? 'albums' : 'assets'}
+              onOpenCamera={() => setCameraVisible(true)}
+              onOpenExplorer={() => handleSelectTab('folder')}
+              photosCount={activeTab === 'albums' || activeTab === 'folder' ? photosAlbumsCount : photosAssetsCount}
+              filesCount={activeTab === 'albums' || activeTab === 'folder' ? filesAlbumsCount : filesAssetsCount}
             />
           )}
 
@@ -1383,7 +1428,7 @@ export default function App() {
           }}
         />
 
-        {/* Modal de PIN para desbloquear carpetas ocultas */}
+        {/* Modal de Contraseña para entrar a Archivos o desbloquear carpetas ocultas */}
         <Modal
           visible={pinModalVisible}
           transparent={true}
@@ -1394,18 +1439,31 @@ export default function App() {
           <View style={styles.pinModalBackdrop}>
             <View style={styles.pinModalCard}>
               <Ionicons name="lock-closed" size={36} color={theme.colors.warning} />
-              <Text style={styles.pinModalTitle}>Desbloquear carpetas ocultas</Text>
-              <Text style={styles.pinModalSub}>Ingresa tu PIN de 4 dígitos</Text>
+              <Text style={styles.pinModalTitle}>
+                {pinModalMode === 'files'
+                  ? storedPin
+                    ? 'Entrar a Archivos'
+                    : 'Crear contraseña de Archivos'
+                  : 'Desbloquear carpetas ocultas'}
+              </Text>
+              <Text style={styles.pinModalSub}>
+                {pinModalMode === 'files'
+                  ? storedPin
+                    ? 'Ingresa tu contraseña para abrir la sección Archivos'
+                    : 'Configura tu contraseña para proteger la sección Archivos'
+                  : 'Ingresa tu contraseña'}
+              </Text>
               <TextInput
                 style={styles.pinModalInput}
                 value={pinAttempt}
-                onChangeText={(t) => setPinAttempt(t.replace(/[^0-9]/g, '').slice(0, 4))}
-                keyboardType="numeric"
-                maxLength={4}
+                onChangeText={(t) => setPinAttempt(t)}
+                maxLength={20}
                 secureTextEntry
                 autoFocus
                 placeholder="••••"
                 placeholderTextColor={theme.colors.textMuted}
+                returnKeyType="done"
+                onSubmitEditing={handleConfirmPin}
               />
               <View style={styles.pinModalActions}>
                 <TouchableOpacity
@@ -1418,7 +1476,9 @@ export default function App() {
                   style={styles.pinConfirmBtn}
                   onPress={handleConfirmPin}
                 >
-                  <Text style={styles.pinConfirmText}>Desbloquear</Text>
+                  <Text style={styles.pinConfirmText}>
+                    {pinModalMode === 'files' && !storedPin ? 'Guardar y Entrar' : 'Entrar'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
