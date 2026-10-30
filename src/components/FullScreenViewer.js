@@ -869,22 +869,48 @@ export default function FullScreenViewer({
                   />
                 ) : null}
 
-                {/* Botón central amigable de reproducción si es un video */}
+                {/* Botones centrales amigables si es un video: Reproducir o Cuadro por Cuadro */}
                 {isVideo && !playerAsset && (
-                  <TouchableOpacity
-                    style={styles.centerVideoOverlay}
-                    activeOpacity={0.85}
-                    onPress={() => {
-                      setOpenedDirectlyAsVideo(false);
-                      setPlayerInitialMode('play');
-                      setPlayerAsset(currentAsset);
-                    }}
-                  >
-                    <View style={styles.friendlyVideoPlayCard}>
-                      <Ionicons name="play-circle" size={68} color="#ffffff" />
+                  <View style={styles.centerVideoOverlay}>
+                    <TouchableOpacity
+                      style={styles.friendlyVideoPlayCard}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        setOpenedDirectlyAsVideo(false);
+                        setPlayerInitialMode('play');
+                        setPlayerAsset(currentAsset);
+                      }}
+                    >
+                      <Ionicons name="play-circle" size={64} color="#ffffff" />
                       <Text style={styles.friendlyVideoPlayTitle}>Reproducir Video</Text>
-                    </View>
-                  </TouchableOpacity>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.friendlyVideoPlayCard,
+                        {
+                          marginTop: 10,
+                          paddingVertical: 10,
+                          paddingHorizontal: 18,
+                          backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                          borderColor: '#38bdf8',
+                          flexDirection: 'row',
+                          gap: 8,
+                        },
+                      ]}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        setOpenedDirectlyAsVideo(false);
+                        setPlayerInitialMode('frame');
+                        setPlayerAsset(currentAsset);
+                      }}
+                    >
+                      <Ionicons name="film-outline" size={20} color="#38bdf8" />
+                      <Text style={[styles.friendlyVideoPlayTitle, { color: '#38bdf8', fontSize: 13 }]}>
+                        Avanzar Cuadro por Cuadro
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 )}
               </Animated.View>
             </Animated.View>
@@ -1099,13 +1125,13 @@ export default function FullScreenViewer({
               </TouchableOpacity>
             )}
 
-            {/* Recortar (foto) / Reproducir (video) */}
+            {/* Recortar (foto) / Cuadro por Cuadro (video) */}
             <TouchableOpacity
               style={styles.actionItem}
               onPress={() => {
                 if (isVideo) {
                   setOpenedDirectlyAsVideo(false);
-                  setPlayerInitialMode('play');
+                  setPlayerInitialMode('frame');
                   setPlayerAsset(currentAsset);
                 } else {
                   setCropAsset(currentAsset);
@@ -1114,11 +1140,13 @@ export default function FullScreenViewer({
               activeOpacity={0.7}
             >
               <Ionicons
-                name={isVideo ? 'play-circle-outline' : 'crop'}
+                name={isVideo ? 'film-outline' : 'crop'}
                 size={24}
-                color="#ffffff"
+                color={isVideo ? '#38bdf8' : '#ffffff'}
               />
-              <Text style={styles.actionLabel}>{isVideo ? 'Reproducir' : 'Recortar'}</Text>
+              <Text style={[styles.actionLabel, isVideo && { color: '#38bdf8', fontWeight: '700' }]}>
+                {isVideo ? 'Cuadro x Cuadro' : 'Recortar'}
+              </Text>
             </TouchableOpacity>
 
             {/* Tapón de Clonar / Borrador de objetos (solo fotos) */}

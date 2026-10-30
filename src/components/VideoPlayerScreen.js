@@ -87,7 +87,14 @@ export default function VideoPlayerScreen({
   const flashAnim = useRef(new Animated.Value(0)).current;
 
   // Modo amigable: 'play' (Ver Video) | 'trim' (Recortar) | 'compress' (Bajar Peso)
-  const [studioMode, setStudioMode] = useState(initialMode || 'play');
+  const [studioMode, setStudioMode] = useState(
+    initialMode === 'frame' ? 'play' : initialMode || 'play'
+  );
+  const [showFrameByFrameBar, setShowFrameByFrameBar] = useState(true);
+  const holdStepTimerRef = useRef(null);
+  const holdStepIntervalRef = useRef(null);
+  const jogGrantXRef = useRef(0);
+  const jogStartFrameTimeRef = useRef(0);
 
   // Estado de Recorte
   // 'keep' = Dejar solo esta parte | 'cut_middle' = Borrar parte de en medio | 'multi' = Unir varios tramos
@@ -124,8 +131,23 @@ export default function VideoPlayerScreen({
   trimEndRef.current = trimEnd;
 
   useEffect(() => {
-    setStudioMode(initialMode || 'play');
+    if (initialMode === 'frame') {
+      setStudioMode('play');
+      setShowFrameByFrameBar(true);
+      try {
+        player.pause();
+      } catch (_e) {}
+    } else {
+      setStudioMode(initialMode || 'play');
+    }
   }, [initialMode, asset?.uri]);
+
+  useEffect(() => {
+    return () => {
+      if (holdStepTimerRef.current) clearTimeout(holdStepTimerRef.current);
+      if (holdStepIntervalRef.current) clearInterval(holdStepIntervalRef.current);
+    };
+  }, []);
 
   // Obtener peso y resolución sin bloquear el reproductor
   useEffect(() => {
@@ -331,22 +353,103 @@ export default function VideoPlayerScreen({
     setTimeout(() => setSeekFeedback(null), 650);
   };
 
-  // Salto exacto de 1 cuadro / frame (~0.033 seg a 30fps)
-  const stepFrame = (direction) => {
+  const fps = useMemo(() => {
+    const rawFps = Number(videoMeta?.fps || asset?.fps || 30);
+    return rawFps >= 15 && rawFps <= 240 ? rawFps : 30;
+  }, [videoMeta?.fps, asset?.fps]);
+
+  const frameDuration = useMemo(() => 1 / fps, [fps]);
+  const currentFrameNumber = useMemo(
+    () => Math.max(1, Math.round((time || 0) * fps) + 1),
+    [time, fps]
+  );
+  const totalFrames = useMemo(
+    () => Math.max(1, Math.round((duration || 0) * fps)),
+    [duration, fps]
+  );
+
+  // Salto exacto de N cuadros / frames (por defecto 1 cuadro ~0.033 seg a 30fps)
+  const stepFrame = (framesDelta = 1) => {
     try {
       player.pause();
     } catch (_e) {}
     setPreviewingCut(false);
-    const FRAME_DURATION = 0.034;
     const current = Number.isFinite(player.currentTime) ? player.currentTime : time;
-    const delta = direction > 0 ? FRAME_DURATION : -FRAME_DURATION;
-    seekTo(current + delta);
+    const delta = framesDelta * frameDuration;
+    const nextTime = clamp(current + delta, 0, durationRef.current || duration || current + 1);
+    seekTo(nextTime);
     try {
-      Vibration.vibrate(18);
+      Vibration.vibrate(14);
     } catch (_e) {}
-    setSeekFeedback(direction > 0 ? '+1 cuadro' : '-1 cuadro');
-    setTimeout(() => setSeekFeedback(null), 500);
+    const nextFrameNum = Math.max(1, Math.round(nextTime * fps) + 1);
+    const sign = framesDelta > 0 ? '+' : '';
+    setSeekFeedback(
+      `${sign}${framesDelta} ${Math.abs(framesDelta) === 1 ? 'cuadro' : 'cuadros'} · #${nextFrameNum}`
+    );
+    setTimeout(() => setSeekFeedback(null), 550);
   };
+
+  const startHoldStepFrame = (framesDelta = 1) => {
+    stopHoldStepFrame();
+    stepFrame(framesDelta);
+    holdStepTimerRef.current = setTimeout(() => {
+      holdStepIntervalRef.current = setInterval(() => {
+        stepFrame(framesDelta);
+      }, 95);
+    }, 280);
+  };
+
+  const stopHoldStepFrame = () => {
+    if (holdStepTimerRef.current) {
+      clearTimeout(holdStepTimerRef.current);
+      holdStepTimerRef.current = null;
+    }
+    if (holdStepIntervalRef.current) {
+      clearInterval(holdStepIntervalRef.current);
+      holdStepIntervalRef.current = null;
+    }
+  };
+
+  // Rueda / Deslizador táctil (Jog Shuttle) para avanzar o retroceder cuadro por cuadro deslizando el dedo
+  const frameJogPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        isScrubbingRef.current = true;
+        setPreviewingCut(false);
+        try {
+          player.pause();
+        } catch (_e) {}
+        jogGrantXRef.current = 0;
+        jogStartFrameTimeRef.current = Number.isFinite(player.currentTime)
+          ? player.currentTime
+          : time;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        // Cada 10px de arrastre horizontal equivale a 1 cuadro (frame)
+        const framesMoved = Math.trunc(gestureState.dx / 10);
+        if (framesMoved !== jogGrantXRef.current) {
+          jogGrantXRef.current = framesMoved;
+          const nextT = clamp(
+            jogStartFrameTimeRef.current + framesMoved * (1 / 30),
+            0,
+            durationRef.current || 1
+          );
+          seekTo(nextT);
+          try {
+            Vibration.vibrate(10);
+          } catch (_e) {}
+        }
+      },
+      onPanResponderRelease: () => {
+        isScrubbingRef.current = false;
+      },
+      onPanResponderTerminate: () => {
+        isScrubbingRef.current = false;
+      },
+    })
+  ).current;
 
   const triggerShutterFlash = () => {
     try {
@@ -1119,10 +1222,11 @@ export default function VideoPlayerScreen({
                   <Text style={styles.friendlySkipTextCompact}>-10s</Text>
                 </TouchableOpacity>
 
-                {/* 2. Paso fino: -1 Cuadro (Frame anterior) */}
+                {/* 2. Paso fino: -1 Cuadro (Frame anterior, soporta mantener presionado) */}
                 <TouchableOpacity
                   style={styles.frameStepBtn}
-                  onPress={() => stepFrame(-1)}
+                  onPressIn={() => startHoldStepFrame(-1)}
+                  onPressOut={stopHoldStepFrame}
                   activeOpacity={0.78}
                 >
                   <Ionicons name="play-skip-back" size={15} color="#38bdf8" />
@@ -1145,10 +1249,11 @@ export default function VideoPlayerScreen({
                   </Text>
                 </TouchableOpacity>
 
-                {/* 4. Paso fino: +1 Cuadro (Frame siguiente) */}
+                {/* 4. Paso fino: +1 Cuadro (Frame siguiente, soporta mantener presionado) */}
                 <TouchableOpacity
                   style={styles.frameStepBtn}
-                  onPress={() => stepFrame(1)}
+                  onPressIn={() => startHoldStepFrame(1)}
+                  onPressOut={stopHoldStepFrame}
                   activeOpacity={0.78}
                 >
                   <Text style={styles.frameStepBtnText}>+1 Cuadro</Text>
@@ -1165,6 +1270,73 @@ export default function VideoPlayerScreen({
                   <Ionicons name="play-forward" size={16} color="#cbd5e1" />
                 </TouchableOpacity>
               </View>
+
+              {/* PANEL DEDICADO DE AVANCE CUADRO POR CUADRO (Botones rápidos + Rueda deslizable Jog) */}
+              {showFrameByFrameBar && (
+                <View style={styles.frameByFramePanel}>
+                  <View style={styles.frameByFrameTopRow}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Ionicons name="film-outline" size={15} color="#38bdf8" />
+                      <Text style={styles.frameByFrameTitle}>
+                        Cuadro #{currentFrameNumber}{' '}
+                        <Text style={{ color: '#64748b', fontWeight: '600' }}>
+                          / {totalFrames} ({Math.round(fps)} fps)
+                        </Text>
+                      </Text>
+                    </View>
+                    <Text style={styles.frameByFrameHint}>
+                      Mantén presionado o desliza la rueda
+                    </Text>
+                  </View>
+
+                  <View style={styles.frameButtonsStrip}>
+                    <TouchableOpacity
+                      style={styles.frameMultiBtn}
+                      onPress={() => stepFrame(-5)}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.frameMultiBtnText}>-5</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.frameSingleActionBtn}
+                      onPressIn={() => startHoldStepFrame(-1)}
+                      onPressOut={stopHoldStepFrame}
+                      activeOpacity={0.75}
+                    >
+                      <Ionicons name="chevron-back" size={16} color="#ffffff" />
+                      <Text style={styles.frameSingleActionText}>Cuadro ant.</Text>
+                    </TouchableOpacity>
+
+                    {/* Rueda táctil central para deslizar cuadro por cuadro */}
+                    <View
+                      style={styles.frameJogWheel}
+                      {...frameJogPanResponder.panHandlers}
+                    >
+                      <Ionicons name="swap-horizontal" size={14} color="#38bdf8" />
+                      <Text style={styles.frameJogWheelText}>Deslizar cuadros</Text>
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.frameSingleActionBtn}
+                      onPressIn={() => startHoldStepFrame(1)}
+                      onPressOut={stopHoldStepFrame}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.frameSingleActionText}>Sig. cuadro</Text>
+                      <Ionicons name="chevron-forward" size={16} color="#ffffff" />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.frameMultiBtn}
+                      onPress={() => stepFrame(5)}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.frameMultiBtnText}>+5</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
 
               {/* Botón de Captura Rápida de Fotograma Prominente y accesible */}
               <TouchableOpacity
@@ -2642,6 +2814,85 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   frameStepBtnText: {
+    color: '#7dd3fc',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  frameByFramePanel: {
+    backgroundColor: '#111827',
+    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+    gap: 7,
+  },
+  frameByFrameTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  frameByFrameTitle: {
+    color: '#e0f2fe',
+    fontSize: 12,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  frameByFrameHint: {
+    color: '#94a3b8',
+    fontSize: 10.5,
+    fontWeight: '600',
+  },
+  frameButtonsStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  frameMultiBtn: {
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingVertical: 8,
+    paddingHorizontal: 9,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  frameMultiBtnText: {
+    color: '#cbd5e1',
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  frameSingleActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    backgroundColor: '#0284c7',
+    paddingVertical: 8,
+    paddingHorizontal: 9,
+    borderRadius: 10,
+  },
+  frameSingleActionText: {
+    color: '#ffffff',
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  frameJogWheel: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.45)',
+    borderStyle: 'dashed',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderRadius: 10,
+  },
+  frameJogWheelText: {
     color: '#7dd3fc',
     fontSize: 11,
     fontWeight: '800',
