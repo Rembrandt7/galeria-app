@@ -15,8 +15,8 @@ import {
   Modal,
   TextInput,
   BackHandler,
-  Image,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 import { theme } from '../constants/theme';
@@ -106,9 +106,9 @@ export default function FolderBrowser({
   // Modal de carpetas del sistema y permisos especiales
   const [showSystemModal, setShowSystemModal] = useState(false);
 
-  // Filtro múltiple de Fotos y Videos (por defecto solo Fotos activo; permite seleccionar ambas)
+  // Filtro múltiple de Fotos y Videos (por defecto ambos activos para ver videos y fotos al instante)
   const [showPhotosFilter, setShowPhotosFilter] = useState(true);
-  const [showVideosFilter, setShowVideosFilter] = useState(false);
+  const [showVideosFilter, setShowVideosFilter] = useState(true);
   const [folderCategory, setFolderCategory] = useState('photos');
   // Compresión de carpeta completa (con soporte en segundo plano no bloqueante)
   const [isCompressingFolder, setIsCompressingFolder] = useState(false);
@@ -1340,7 +1340,11 @@ export default function FolderBrowser({
                     <Image
                       source={{ uri: coverToUse }}
                       style={[styles.subfolderGalaxyImg, isHidden && { opacity: 0.45 }]}
-                      resizeMode="cover"
+                      contentFit="cover"
+                      allowDownscaling={true}
+                      decodeFormat="rgb"
+                      cachePolicy="memory-disk"
+                      transition={0}
                     />
                   ) : (
                     <View
@@ -1417,7 +1421,11 @@ export default function FolderBrowser({
                       uri: smallSubfolders.find((s) => s.coverUri)?.coverUri,
                     }}
                     style={[styles.subfolderGalaxyImg, { opacity: 0.72 }]}
-                    resizeMode="cover"
+                    contentFit="cover"
+                    allowDownscaling={true}
+                    decodeFormat="rgb"
+                    cachePolicy="memory-disk"
+                    transition={0}
                   />
                 ) : (
                   <View

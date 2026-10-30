@@ -52,7 +52,7 @@ export default function PhotoGrid({
   const [compressProgress, setCompressProgress] = useState(null);
   const [selectedIds, setSelectedIds] = useState({});
   const [showPhotosFilter, setShowPhotosFilter] = useState(true);
-  const [showVideosFilter, setShowVideosFilter] = useState(false);
+  const [showVideosFilter, setShowVideosFilter] = useState(true);
   const [numColumns, setNumColumns] = useState(() =>
     defaultColumns > 0 ? defaultColumns : isFoldExpanded ? 6 : NUM_COLUMNS
   );

@@ -139,7 +139,10 @@ export const videoEngineService = {
     if (!asset?.uri) return null;
     const rawUri = asset.uri;
     if (rawUri.startsWith('file://')) {
-      return normalizeFileUri(rawUri);
+      return rawUri;
+    }
+    if (rawUri.startsWith('/')) {
+      return `file://${rawUri}`;
     }
     // Si es un URI SAF (content://.../document/primary:...), preferir la ruta física file:// para lectura directa de kernel
     if (rawUri.startsWith('content://') && rawUri.includes('/document/')) {
@@ -163,10 +166,105 @@ export const videoEngineService = {
   async preparePlayableFallbackUri(asset) {
     if (!asset?.uri) return null;
     try {
+      if (asset.id && !String(asset.id).startsWith('file://') && !String(asset.id).startsWith('content://')) {
+        try {
+          const info = await MediaLibrary.getAssetInfoAsync(asset.id);
+          if (info?.localUri) return info.localUri;
+        } catch (_e) {}
+      }
       const res = await resolveVideoInputFile(asset.uri);
       return res?.path || null;
     } catch (_e) {
       return null;
+    }
+  },
+
+  /**
+   * Analiza el video de forma inteligente para detectar pedazos totalmente negros y/o sin ningún movimiento,
+   * devolviendo los tramos óptimos a conservar y los tramos descartados para comparación y visto bueno.
+   */
+  async analyzeSmartTrim({
+    asset,
+    detectBlack = true,
+    detectStatic = true,
+    sensitivity = 1.0,
+    onProgress,
+  }) {
+    if (!asset?.uri) throw new Error('Video no válido.');
+    if (!VideoEngineModule?.analyzeSmartTrimNative) {
+      throw new Error('El motor nativo de Recorte Inteligente no está disponible en esta compilación.');
+    }
+
+    let sub = null;
+    try {
+      if (onProgress) {
+        sub = DeviceEventEmitter.addListener('VideoEngineProgress', (evt) => {
+          onProgress({
+            percent: evt?.percent ?? 0.5,
+            stage: evt?.stage || 'Analizando cuadros negros y sin movimiento...',
+          });
+        });
+      }
+
+      const target = extractPhysicalFilePath(asset.uri) || asset.uri;
+      let rawRes = null;
+      try {
+        rawRes = await VideoEngineModule.analyzeSmartTrimNative(
+          target,
+          Boolean(detectBlack),
+          Boolean(detectStatic),
+          Number(sensitivity) || 1.0
+        );
+      } catch (_firstErr) {
+        if (target !== asset.uri) {
+          rawRes = await VideoEngineModule.analyzeSmartTrimNative(
+            asset.uri,
+            Boolean(detectBlack),
+            Boolean(detectStatic),
+            Number(sensitivity) || 1.0
+          );
+        } else {
+          const fallbackInput = await resolveVideoInputFile(asset.uri);
+          rawRes = await VideoEngineModule.analyzeSmartTrimNative(
+            fallbackInput.path,
+            Boolean(detectBlack),
+            Boolean(detectStatic),
+            Number(sensitivity) || 1.0
+          );
+        }
+      }
+
+      const durationSec = (rawRes?.durationMs || 0) / 1000;
+      const keepSegments = Array.isArray(rawRes?.keepSegments)
+        ? rawRes.keepSegments.map((s, idx) => ({
+            id: `smart_keep_${idx}_${ Math.round(s.startMs || 0)}`,
+            start: Math.max(0, (s.startMs || 0) / 1000),
+            end: Math.max(0.1, (s.endMs || 0) / 1000),
+            label: `Óptimo ${idx + 1}`,
+          }))
+        : [];
+
+      const removedSegments = Array.isArray(rawRes?.removedSegments)
+        ? rawRes.removedSegments.map((s, idx) => ({
+            id: `smart_rem_${idx}_${Math.round(s.startMs || 0)}`,
+            start: Math.max(0, (s.startMs || 0) / 1000),
+            end: Math.max(0.1, (s.endMs || 0) / 1000),
+            reason: s.reason === 'black' ? 'black' : 'static',
+            label: s.reason === 'black' ? 'Todo negro' : 'Sin movimiento',
+          }))
+        : [];
+
+      return {
+        durationSec,
+        optimizedDurationSec: (rawRes?.optimizedDurationMs || 0) / 1000,
+        savedDurationSec: (rawRes?.savedDurationMs || 0) / 1000,
+        blackRemovedSec: (rawRes?.blackRemovedMs || 0) / 1000,
+        staticRemovedSec: (rawRes?.staticRemovedMs || 0) / 1000,
+        keepSegments,
+        removedSegments,
+      };
+    } finally {
+      if (sub) sub.remove();
     }
   },
 

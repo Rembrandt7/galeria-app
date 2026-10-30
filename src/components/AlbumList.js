@@ -489,6 +489,7 @@ export default function AlbumList({
                   style={styles.favStackImg}
                   contentFit="cover"
                   allowDownscaling={true}
+                  decodeFormat="rgb"
                   transition={0}
                   cachePolicy="memory-disk"
                 />
@@ -525,6 +526,7 @@ export default function AlbumList({
               style={[styles.coverImage, { opacity: 0.78 }]}
               contentFit="cover"
               allowDownscaling={true}
+              decodeFormat="rgb"
               transition={0}
               cachePolicy="memory-disk"
             />
@@ -610,6 +612,7 @@ export default function AlbumList({
             style={[styles.coverImage, isHidden && { opacity: 0.42 }]}
             contentFit="cover"
             allowDownscaling={true}
+            decodeFormat="rgb"
             transition={0}
             cachePolicy="memory-disk"
           />

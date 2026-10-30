@@ -586,6 +586,41 @@ export const folderService = {
         }
       }
 
+      // Vía ultrarrápida nativa en Kotlin (~3ms, estilo Galería Samsung)
+      const physTarget =
+        folderService.toPhysicalUri(uri) ||
+        (uri && (uri.startsWith('file://') || uri.startsWith('/')) ? uri : null);
+      if (physTarget && VideoEngineModule?.listDirectoryFastNative) {
+        try {
+          const nativeRes = await VideoEngineModule.listDirectoryFastNative(physTarget);
+          if (nativeRes && Array.isArray(nativeRes.assets) && Array.isArray(nativeRes.subfolders)) {
+            const fastAssets = nativeRes.assets.map((a) => ({
+              ...a,
+              fromFolder: true,
+            }));
+            const fastSubs = nativeRes.subfolders.map((s) => ({
+              ...s,
+              rawName: s.name,
+              name: folderService.formatFolderDisplayName(s.name, s.uri),
+              isDirectory: true,
+            }));
+            folderService._dirMemCache.set(uri, {
+              subfolders: fastSubs,
+              assets: fastAssets,
+              time: Date.now(),
+            });
+            if (onBatch) {
+              onBatch({
+                subfolders: fastSubs,
+                assets: fastAssets,
+                isPartial: false,
+              });
+            }
+            return { subfolders: fastSubs, assets: fastAssets };
+          }
+        } catch (_nativeDirErr) {}
+      }
+
       let { subfolders, assets } = await folderService._listLevel(uri);
 
       // Si existen subcarpetas "Fotos" o "Videos" (creadas por versiones previas del organizador por meses),

@@ -13,6 +13,7 @@ import {
   useWindowDimensions,
   ActivityIndicator,
   Modal,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -56,9 +57,15 @@ export default function FullScreenViewer({
 }) {
   const { width: screenWidth } = useWindowDimensions();
   const [internalIndex, setInternalIndex] = useState(initialIndex);
-  const [playerAsset, setPlayerAsset] = useState(null);
+  const [playerAsset, setPlayerAsset] = useState(() => {
+    const first = assets?.[initialIndex];
+    return visible && first && first.mediaType === 'video' ? first : null;
+  });
   const [playerInitialMode, setPlayerInitialMode] = useState('play');
-  const [openedDirectlyAsVideo, setOpenedDirectlyAsVideo] = useState(false);
+  const [openedDirectlyAsVideo, setOpenedDirectlyAsVideo] = useState(() => {
+    const first = assets?.[initialIndex];
+    return Boolean(visible && first && first.mediaType === 'video');
+  });
   const [cropAsset, setCropAsset] = useState(null);
   const [cloneAsset, setCloneAsset] = useState(null);
   const [showInfo, setShowInfo] = useState(false);
@@ -540,14 +547,22 @@ export default function FullScreenViewer({
     ? Boolean(favorites[currentAsset.id])
     : Boolean(isFavorite);
 
-  // Cuando se abre el reproductor de video, el recortador o el tapón de clonar, renderizarlo en su propio Modal exclusivo a pantalla completa desde arriba (0,0) sin hermanos debajo
-  if (playerAsset) {
+  // Cuando se abre el reproductor de video, el recortador o el tapón de clonar, renderizarlo dentro de un único Modal nativo estable
+  if (playerAsset || cropAsset || cloneAsset) {
     return (
       <Modal
-        visible={true}
+        visible={visible}
         animationType="fade"
         transparent={false}
         onRequestClose={() => {
+          if (cloneAsset) {
+            setCloneAsset(null);
+            return;
+          }
+          if (cropAsset) {
+            setCropAsset(null);
+            return;
+          }
           setPlayerAsset(null);
           if (openedDirectlyAsVideo && onClose) {
             setOpenedDirectlyAsVideo(false);
@@ -555,82 +570,62 @@ export default function FullScreenViewer({
           }
         }}
       >
-        <VideoPlayerScreen
-          asset={playerAsset}
-          initialMode={playerInitialMode}
-          onClose={() => {
-            setPlayerAsset(null);
-            if (openedDirectlyAsVideo && onClose) {
-              setOpenedDirectlyAsVideo(false);
-              onClose();
-            }
-          }}
-          onSaved={onMediaSaved}
-          onShare={onShare ? () => onShare(playerAsset) : undefined}
-          onDelete={
-            onDelete
-              ? () => {
-                  Alert.alert(
-                    '¿Eliminar video?',
-                    'Esta acción solicitará permiso al sistema para eliminar este video de tu teléfono.',
-                    [
-                      { text: 'Cancelar', style: 'cancel' },
-                      {
-                        text: 'Eliminar',
-                        style: 'destructive',
-                        onPress: () => {
-                          setPlayerAsset(null);
-                          onDelete(playerAsset);
+        {playerAsset ? (
+          <VideoPlayerScreen
+            asset={playerAsset}
+            initialMode={playerInitialMode}
+            onClose={() => {
+              setPlayerAsset(null);
+              if (openedDirectlyAsVideo && onClose) {
+                setOpenedDirectlyAsVideo(false);
+                onClose();
+              }
+            }}
+            onSaved={onMediaSaved}
+            onShare={onShare ? () => onShare(playerAsset) : undefined}
+            onDelete={
+              onDelete
+                ? () => {
+                    Alert.alert(
+                      '¿Eliminar video?',
+                      'Esta acción solicitará permiso al sistema para eliminar este video de tu teléfono.',
+                      [
+                        { text: 'Cancelar', style: 'cancel' },
+                        {
+                          text: 'Eliminar',
+                          style: 'destructive',
+                          onPress: () => {
+                            setPlayerAsset(null);
+                            onDelete(playerAsset);
+                          },
                         },
-                      },
-                    ]
-                  );
-                }
-              : undefined
-          }
-        />
-      </Modal>
-    );
-  }
-
-  if (cropAsset) {
-    return (
-      <Modal
-        visible={true}
-        animationType="fade"
-        transparent={false}
-        onRequestClose={() => setCropAsset(null)}
-      >
-        <ImageCropper
-          asset={cropAsset}
-          onClose={() => setCropAsset(null)}
-          onSaved={() => {
-            setImageRev((r) => r + 1);
-            if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
-            if (onMediaSaved) onMediaSaved();
-          }}
-        />
-      </Modal>
-    );
-  }
-
-  if (cloneAsset) {
-    return (
-      <Modal
-        visible={true}
-        animationType="fade"
-        transparent={false}
-        onRequestClose={() => setCloneAsset(null)}
-      >
-        <CloneStampEditor
-          asset={cloneAsset}
-          onClose={() => setCloneAsset(null)}
-          onSaved={() => {
-            setImageRev((r) => r + 1);
-            if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
-            if (onMediaSaved) onMediaSaved();
-          }}
-        />
+                      ]
+                    );
+                  }
+                : undefined
+            }
+          />
+        ) : cropAsset ? (
+          <ImageCropper
+            asset={cropAsset}
+            onClose={() => setCropAsset(null)}
+            onSaved={() => {
+              setImageRev((r) => r + 1);
+              if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
+              if (onMediaSaved) onMediaSaved();
+            }}
+          />
+        ) : (
+          <CloneStampEditor
+            asset={cloneAsset}
+            onClose={() => setCloneAsset(null)}
+            onSaved={() => {
+              setImageRev((r) => r + 1);
+              if (currentAsset?.fileSize) setAssetSize(currentAsset.fileSize);
+              if (onMediaSaved) onMediaSaved();
+            }}
+          />
+        )}
       </Modal>
     );
   }
@@ -1195,7 +1190,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: theme.spacing.lg,
-    paddingTop: theme.spacing.md,
+    paddingTop: Platform.OS === 'android' ? Math.max(StatusBar.currentHeight || 0, 28) + 10 : theme.spacing.md,
     paddingBottom: theme.spacing.md,
     backgroundColor: 'rgba(0, 0, 0, 0.75)',
     zIndex: 20,
@@ -1401,7 +1396,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-around',
     alignItems: 'center',
-    paddingVertical: theme.spacing.md,
+    paddingTop: theme.spacing.md,
+    paddingBottom: Platform.OS === 'android' ? 42 : theme.spacing.md,
     backgroundColor: 'rgba(0, 0, 0, 0.85)',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.1)',

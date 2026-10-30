@@ -13,6 +13,7 @@ import {
   BackHandler,
   Vibration,
   Animated,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -97,13 +98,20 @@ export default function VideoPlayerScreen({
   const jogStartFrameTimeRef = useRef(0);
 
   // Estado de Recorte
-  // 'keep' = Dejar solo esta parte | 'cut_middle' = Borrar parte de en medio | 'multi' = Unir varios tramos
+  // 'keep' = Dejar solo esta parte | 'cut_middle' = Borrar parte de en medio | 'multi' = Unir varios tramos | 'smart' = Recorte Inteligente
   const [trimMode, setTrimMode] = useState('keep');
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
   const [savedClips, setSavedClips] = useState([]);
   const [activeHandle, setActiveHandle] = useState('start');
   const [previewingCut, setPreviewingCut] = useState(false);
+
+  // Estado de Recorte Inteligente (Detección de todo negro y/o sin movimiento + Comparación para Visto Bueno)
+  const [smartDetectBlack, setSmartDetectBlack] = useState(true);
+  const [smartDetectStatic, setSmartDetectStatic] = useState(true);
+  const [smartResult, setSmartResult] = useState(null);
+  const [smartCompareMode, setSmartCompareMode] = useState('optimal'); // 'optimal' | 'original' | 'removed'
+  const fallbackAttemptedRef = useRef(false);
 
   // Estado de Compresión
   const [selectedPresetId, setSelectedPresetId] = useState('balanced');
@@ -212,12 +220,12 @@ export default function VideoPlayerScreen({
       return parts;
     }
 
-    if (trimMode === 'multi' && savedClips.length > 0) {
+    if ((trimMode === 'multi' || trimMode === 'smart') && savedClips.length > 0) {
       return savedClips.map((c, idx) => ({
         start: clamp(c.start, 0, dur),
         end: clamp(c.end, 0, dur),
         id: c.id,
-        label: `Tramo ${idx + 1}`,
+        label: c.label || `Tramo ${idx + 1}`,
       }));
     }
 
@@ -231,8 +239,14 @@ export default function VideoPlayerScreen({
   effectiveSegmentsRef.current = effectiveSegments;
   const previewingCutRef = useRef(false);
   previewingCutRef.current = previewingCut;
+  const smartCompareModeRef = useRef('optimal');
+  smartCompareModeRef.current = smartCompareMode;
+  const smartResultRef = useRef(null);
+  smartResultRef.current = smartResult;
+  const trimModeRef = useRef('keep');
+  trimModeRef.current = trimMode;
 
-  // Suscripción segura únicamente a los 3 eventos nativos soportados por expo-video
+  // Suscripción segura a los eventos nativos de expo-video + recuperación automática si falla un URI
   useEffect(() => {
     if (!player) return;
     const subs = [];
@@ -252,23 +266,31 @@ export default function VideoPlayerScreen({
             }
           }
 
-          // Si está en modo "Ver cómo queda el recorte", saltar partes recortadas automáticamente
-          if (previewingCutRef.current && effectiveSegmentsRef.current.length > 0) {
-            const segs = effectiveSegmentsRef.current;
-            const insideAny = segs.some(
-              (seg) => currentTime >= seg.start - 0.1 && currentTime <= seg.end + 0.06
-            );
-            if (!insideAny) {
-              const nextSeg = segs.find((seg) => seg.start > currentTime + 0.03);
-              try {
-                if (nextSeg) {
-                  player.currentTime = nextSeg.start;
-                  setTime(nextSeg.start);
-                } else {
-                  player.currentTime = segs[0].start;
-                  setTime(segs[0].start);
-                }
-              } catch (_e) {}
+          // Si está en modo "Ver cómo queda el recorte" o comparando el Recorte Inteligente
+          if (previewingCutRef.current) {
+            const activeSegs =
+              trimModeRef.current === 'smart' &&
+              smartCompareModeRef.current === 'removed' &&
+              smartResultRef.current?.removedSegments?.length > 0
+                ? smartResultRef.current.removedSegments
+                : effectiveSegmentsRef.current;
+
+            if (activeSegs && activeSegs.length > 0) {
+              const insideAny = activeSegs.some(
+                (seg) => currentTime >= seg.start - 0.1 && currentTime <= seg.end + 0.06
+              );
+              if (!insideAny) {
+                const nextSeg = activeSegs.find((seg) => seg.start > currentTime + 0.03);
+                try {
+                  if (nextSeg) {
+                    player.currentTime = nextSeg.start;
+                    setTime(nextSeg.start);
+                  } else {
+                    player.currentTime = activeSegs[0].start;
+                    setTime(activeSegs[0].start);
+                  }
+                } catch (_e) {}
+              }
             }
           }
         })
@@ -292,6 +314,34 @@ export default function VideoPlayerScreen({
               setTrimEnd(d);
             }
           }
+          if (initialMode !== 'frame') {
+            try {
+              player.play();
+            } catch (_e) {}
+          }
+        })
+      );
+    } catch (_e) {}
+
+    try {
+      subs.push(
+        player.addListener('statusChange', async ({ status }) => {
+          if (status === 'readyToPlay' && initialMode !== 'frame') {
+            try {
+              player.play();
+            } catch (_e) {}
+          } else if (status === 'error' && !fallbackAttemptedRef.current) {
+            fallbackAttemptedRef.current = true;
+            try {
+              const fbUri = await videoEngineService.preparePlayableFallbackUri(asset);
+              if (fbUri) {
+                player.replace({ uri: fbUri });
+                if (initialMode !== 'frame') {
+                  player.play();
+                }
+              }
+            } catch (_e) {}
+          }
         })
       );
     } catch (_e) {}
@@ -303,7 +353,7 @@ export default function VideoPlayerScreen({
         } catch (_e) {}
       });
     };
-  }, [player]);
+  }, [player, asset, initialMode]);
 
   useEffect(() => {
     const onBackPress = () => {
@@ -738,6 +788,144 @@ export default function VideoPlayerScreen({
     setTrimStart(0);
     setTrimEnd(duration || 0);
     setSavedClips([]);
+    setSmartResult(null);
+    setSmartCompareMode('optimal');
+  };
+
+  // Analizar video inteligentemente para detectar partes todo negro y/o sin movimiento
+  const handleRunSmartTrim = async (
+    customBlack = smartDetectBlack,
+    customStatic = smartDetectStatic
+  ) => {
+    if (!customBlack && !customStatic) {
+      Alert.alert(
+        'Recorte Inteligente',
+        'Activa al menos una opción: "Todo negro" o "Sin movimiento".'
+      );
+      return;
+    }
+
+    try {
+      player.pause();
+    } catch (_e) {}
+    setPreviewingCut(false);
+    setBusy(true);
+    setProgressInfo({
+      percent: 0.1,
+      stage: 'Buscando partes en negro y tramos sin movimiento...',
+    });
+
+    try {
+      const res = await videoEngineService.analyzeSmartTrim({
+        asset,
+        detectBlack: customBlack,
+        detectStatic: customStatic,
+        sensitivity: 1.0,
+        onProgress: (prog) => setProgressInfo(prog),
+      });
+
+      setStudioMode('trim');
+      setTrimMode('smart');
+      setSmartResult(res);
+
+      if (!res.removedSegments || res.removedSegments.length === 0) {
+        setSavedClips(res.keepSegments || []);
+        setSmartCompareMode('optimal');
+        Alert.alert(
+          '✨ ¡Tu video ya está limpio!',
+          'No se detectaron partes completamente negras ni tramos congelados sin movimiento.'
+        );
+        return;
+      }
+
+      if (!res.keepSegments || res.keepSegments.length === 0) {
+        Alert.alert(
+          'Aviso del Analizador',
+          'Todo el video parece oscuro o sin movimiento. Puedes ajustar el recorte manualmente.'
+        );
+        return;
+      }
+
+      setSavedClips(res.keepSegments);
+      setSmartCompareMode('optimal');
+      setPreviewingCut(true);
+      seekTo(res.keepSegments[0].start);
+      try {
+        player.play();
+      } catch (_e) {}
+    } catch (e) {
+      Alert.alert('Error en Recorte Inteligente', String(e?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Cambiar modo de comparación para darle el Visto Bueno (Óptimo vs Original vs Eliminado)
+  const handleSwitchSmartCompare = (mode) => {
+    setSmartCompareMode(mode);
+    if (mode === 'original') {
+      setPreviewingCut(false);
+      seekTo(0);
+      try {
+        player.play();
+      } catch (_e) {}
+    } else if (mode === 'removed') {
+      if (smartResult?.removedSegments?.length > 0) {
+        setPreviewingCut(true);
+        seekTo(smartResult.removedSegments[0].start);
+        try {
+          player.play();
+        } catch (_e) {}
+      }
+    } else {
+      // 'optimal'
+      if (savedClips.length > 0) {
+        setPreviewingCut(true);
+        seekTo(savedClips[0].start);
+        try {
+          player.play();
+        } catch (_e) {}
+      }
+    }
+  };
+
+  // Si el usuario desea conservar uno de los pedazos que el recorte inteligente iba a eliminar
+  const handleRestoreRemovedSegment = (remSeg) => {
+    if (!smartResult) return;
+    const nextRemoved = (smartResult.removedSegments || []).filter((r) => r.id !== remSeg.id);
+    const rawKeep = [
+      ...savedClips,
+      {
+        id: `restored_${Date.now()}`,
+        start: remSeg.start,
+        end: remSeg.end,
+        label: 'Restaurado',
+      },
+    ].sort((a, b) => a.start - b.start);
+
+    // Unir tramos contiguos
+    const mergedKeep = [];
+    for (const seg of rawKeep) {
+      if (mergedKeep.length > 0 && seg.start - mergedKeep[mergedKeep.length - 1].end <= 0.25) {
+        mergedKeep[mergedKeep.length - 1].end = Math.max(
+          mergedKeep[mergedKeep.length - 1].end,
+          seg.end
+        );
+      } else {
+        mergedKeep.push({ ...seg });
+      }
+    }
+
+    const nextOptSec = mergedKeep.reduce((acc, s) => acc + Math.max(0, s.end - s.start), 0);
+    const durSec = duration || smartResult.durationSec || nextOptSec;
+    setSavedClips(mergedKeep);
+    setSmartResult({
+      ...smartResult,
+      removedSegments: nextRemoved,
+      keepSegments: mergedKeep,
+      optimizedDurationSec: nextOptSec,
+      savedDurationSec: Math.max(0, durSec - nextOptSec),
+    });
   };
 
   // Capturar foto del momento / fotograma actual con efecto flash y miniatura
@@ -1015,6 +1203,7 @@ export default function VideoPlayerScreen({
             player={player}
             style={styles.video}
             contentFit="contain"
+            surfaceType="textureView"
             nativeControls={useNativeControls}
           />
 
@@ -1040,7 +1229,6 @@ export default function VideoPlayerScreen({
               <View style={styles.centerPlayCircle}>
                 <Ionicons name="play" size={42} color="#ffffff" style={{ marginLeft: 4 }} />
               </View>
-              <Text style={styles.centerPlayHint}>Toca para reproducir</Text>
             </View>
           )}
 
@@ -1093,18 +1281,46 @@ export default function VideoPlayerScreen({
           )}
 
           {previewingCut && (
-            <View pointerEvents="none" style={styles.previewBanner}>
-              <Ionicons name="eye" size={15} color="#34d399" />
+            <View
+              pointerEvents="none"
+              style={[
+                styles.previewBanner,
+                trimMode === 'smart' &&
+                  smartCompareMode === 'removed' && {
+                    backgroundColor: 'rgba(127, 29, 29, 0.94)',
+                    borderColor: '#ef4444',
+                  },
+              ]}
+            >
+              <Ionicons
+                name={
+                  trimMode === 'smart' && smartCompareMode === 'removed'
+                    ? 'trash-outline'
+                    : 'sparkles'
+                }
+                size={15}
+                color={
+                  trimMode === 'smart' && smartCompareMode === 'removed'
+                    ? '#fca5a5'
+                    : '#34d399'
+                }
+              />
               <Text style={styles.previewBannerText}>
-                Viendo cómo queda tu recorte ({formatTime(totalResultDuration)})
+                {trimMode === 'smart'
+                  ? smartCompareMode === 'removed'
+                    ? `Viendo tramos que se van a borrar (${formatTime(
+                        smartResult?.savedDurationSec || 0
+                      )})`
+                    : `✨ Viendo Video Óptimo (${formatTime(totalResultDuration)})`
+                  : `Viendo cómo queda tu recorte (${formatTime(totalResultDuration)})`}
               </Text>
             </View>
           )}
         </View>
 
-        {/* 3. PANEL INFERIOR SÚPER AMIGABLE CON BOTONES GRANDES Y TEXTO CLARO */}
+        {/* 3. PANEL INFERIOR COMPACTO Y ELEVADO (SIN TRASLAPARSE CON LA BARRA DE NAVEGACIÓN) */}
         <View style={styles.bottomStudioDock}>
-          {/* Pestañas grandes y fáciles de entender */}
+          {/* Pestañas principales */}
           <View style={styles.modeSelectorBar}>
             <TouchableOpacity
               style={[
@@ -1119,7 +1335,7 @@ export default function VideoPlayerScreen({
             >
               <Ionicons
                 name={studioMode === 'play' ? 'play-circle' : 'play-circle-outline'}
-                size={20}
+                size={18}
                 color={studioMode === 'play' ? '#ffffff' : '#94a3b8'}
               />
               <Text
@@ -1142,7 +1358,7 @@ export default function VideoPlayerScreen({
             >
               <Ionicons
                 name="cut"
-                size={19}
+                size={17}
                 color={studioMode === 'trim' ? '#ffffff' : '#fbbf24'}
               />
               <Text
@@ -1166,7 +1382,7 @@ export default function VideoPlayerScreen({
             >
               <Ionicons
                 name="flash"
-                size={18}
+                size={17}
                 color={studioMode === 'compress' ? '#ffffff' : '#38bdf8'}
               />
               <Text
@@ -1180,12 +1396,17 @@ export default function VideoPlayerScreen({
             </TouchableOpacity>
           </View>
 
-          {/* ================= MODO 1: VER VIDEO (REPRODUCTOR AMIGABLE) ================= */}
+          {/* ================= MODO 1: VER VIDEO (1 SOLA BARRA DE CONTROLES DEL MISMO ALTO) ================= */}
           {studioMode === 'play' && (
             <View style={styles.playModeContainer}>
-              {/* Barra de tiempo grande y fácil de mover con el dedo (muestra centésimas al estar en pausa para precisión de cuadro) */}
+              {/* Barra de tiempo deslizable */}
               <View style={styles.scrubberRow}>
-                <Text style={[styles.scrubberTimeText, !playing && styles.scrubberTimeTextPrecision]}>
+                <Text
+                  style={[
+                    styles.scrubberTimeText,
+                    !playing && styles.scrubberTimeTextPrecision,
+                  ]}
+                >
                   {formatTime(time, false, !playing)}
                 </Text>
 
@@ -1210,7 +1431,7 @@ export default function VideoPlayerScreen({
                 <Text style={styles.scrubberTimeText}>{formatTime(duration)}</Text>
               </View>
 
-              {/* Controles de reproducción principales con Avance/Retroceso Cuadro por Cuadro (Frame by Frame) y saltos de 10s */}
+              {/* ÚNICA FILA DE REPRODUCCIÓN Y CUADRO POR CUADRO (MISMO ALTO, SOLO SÍMBOLO PLAY/PAUSA) */}
               <View style={styles.friendlyControlsMasterRow}>
                 {/* 1. Salto -10 segundos */}
                 <TouchableOpacity
@@ -1218,7 +1439,7 @@ export default function VideoPlayerScreen({
                   onPress={() => seekBy(-10)}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="play-back" size={16} color="#cbd5e1" />
+                  <Ionicons name="play-back" size={15} color="#cbd5e1" />
                   <Text style={styles.friendlySkipTextCompact}>-10s</Text>
                 </TouchableOpacity>
 
@@ -1233,7 +1454,7 @@ export default function VideoPlayerScreen({
                   <Text style={styles.frameStepBtnText}>-1 Cuadro</Text>
                 </TouchableOpacity>
 
-                {/* 3. Botón central grande: Reproducir / Pausar */}
+                {/* 3. Botón central: MISMO ALTO y SOLO el símbolo de Play o Pausa */}
                 <TouchableOpacity
                   style={styles.friendlyPlayPauseBtn}
                   onPress={togglePlay}
@@ -1241,12 +1462,10 @@ export default function VideoPlayerScreen({
                 >
                   <Ionicons
                     name={playing ? 'pause' : 'play'}
-                    size={26}
+                    size={22}
                     color="#ffffff"
+                    style={!playing ? { marginLeft: 2 } : undefined}
                   />
-                  <Text style={styles.friendlyPlayPauseText}>
-                    {playing ? 'Pausar' : 'Reproducir'}
-                  </Text>
                 </TouchableOpacity>
 
                 {/* 4. Paso fino: +1 Cuadro (Frame siguiente, soporta mantener presionado) */}
@@ -1267,97 +1486,11 @@ export default function VideoPlayerScreen({
                   activeOpacity={0.8}
                 >
                   <Text style={styles.friendlySkipTextCompact}>+10s</Text>
-                  <Ionicons name="play-forward" size={16} color="#cbd5e1" />
+                  <Ionicons name="play-forward" size={15} color="#cbd5e1" />
                 </TouchableOpacity>
               </View>
 
-              {/* PANEL DEDICADO DE AVANCE CUADRO POR CUADRO (Botones rápidos + Rueda deslizable Jog) */}
-              {showFrameByFrameBar && (
-                <View style={styles.frameByFramePanel}>
-                  <View style={styles.frameByFrameTopRow}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      <Ionicons name="film-outline" size={15} color="#38bdf8" />
-                      <Text style={styles.frameByFrameTitle}>
-                        Cuadro #{currentFrameNumber}{' '}
-                        <Text style={{ color: '#64748b', fontWeight: '600' }}>
-                          / {totalFrames} ({Math.round(fps)} fps)
-                        </Text>
-                      </Text>
-                    </View>
-                    <Text style={styles.frameByFrameHint}>
-                      Mantén presionado o desliza la rueda
-                    </Text>
-                  </View>
-
-                  <View style={styles.frameButtonsStrip}>
-                    <TouchableOpacity
-                      style={styles.frameMultiBtn}
-                      onPress={() => stepFrame(-5)}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={styles.frameMultiBtnText}>-5</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.frameSingleActionBtn}
-                      onPressIn={() => startHoldStepFrame(-1)}
-                      onPressOut={stopHoldStepFrame}
-                      activeOpacity={0.75}
-                    >
-                      <Ionicons name="chevron-back" size={16} color="#ffffff" />
-                      <Text style={styles.frameSingleActionText}>Cuadro ant.</Text>
-                    </TouchableOpacity>
-
-                    {/* Rueda táctil central para deslizar cuadro por cuadro */}
-                    <View
-                      style={styles.frameJogWheel}
-                      {...frameJogPanResponder.panHandlers}
-                    >
-                      <Ionicons name="swap-horizontal" size={14} color="#38bdf8" />
-                      <Text style={styles.frameJogWheelText}>Deslizar cuadros</Text>
-                    </View>
-
-                    <TouchableOpacity
-                      style={styles.frameSingleActionBtn}
-                      onPressIn={() => startHoldStepFrame(1)}
-                      onPressOut={stopHoldStepFrame}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={styles.frameSingleActionText}>Sig. cuadro</Text>
-                      <Ionicons name="chevron-forward" size={16} color="#ffffff" />
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.frameMultiBtn}
-                      onPress={() => stepFrame(5)}
-                      activeOpacity={0.75}
-                    >
-                      <Text style={styles.frameMultiBtnText}>+5</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              )}
-
-              {/* Botón de Captura Rápida de Fotograma Prominente y accesible */}
-              <TouchableOpacity
-                style={styles.prominentCaptureBtn}
-                onPress={handleCaptureFrame}
-                disabled={isCapturing}
-                activeOpacity={0.82}
-              >
-                {isCapturing ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
-                ) : (
-                  <>
-                    <Ionicons name="camera" size={20} color="#ffffff" />
-                    <Text style={styles.prominentCaptureBtnText}>
-                      Capturar Foto de este Cuadro ({formatTime(time, false, true)})
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-
-              {/* Fila de opciones útiles: Sonido, Velocidad */}
+              {/* Fila de opciones útiles: Sonido, Velocidad, Barra nativa y acceso directo a Recorte Inteligente */}
               <View style={styles.friendlyToolsRow}>
                 <TouchableOpacity
                   style={[
@@ -1368,7 +1501,7 @@ export default function VideoPlayerScreen({
                 >
                   <Ionicons
                     name={muted ? 'volume-mute' : 'volume-high'}
-                    size={18}
+                    size={16}
                     color={muted ? '#f87171' : '#34d399'}
                   />
                   <Text style={styles.friendlyToolChipText}>
@@ -1383,7 +1516,7 @@ export default function VideoPlayerScreen({
                   ]}
                   onPress={cycleSpeed}
                 >
-                  <Ionicons name="speedometer-outline" size={18} color="#fbbf24" />
+                  <Ionicons name="speedometer-outline" size={16} color="#fbbf24" />
                   <Text style={styles.friendlyToolChipText}>Velocidad {rate}x</Text>
                 </TouchableOpacity>
 
@@ -1394,20 +1527,58 @@ export default function VideoPlayerScreen({
                   ]}
                   onPress={() => setUseNativeControls((v) => !v)}
                 >
-                  <Ionicons name="options-outline" size={18} color="#cbd5e1" />
+                  <Ionicons name="options-outline" size={16} color="#cbd5e1" />
                   <Text style={styles.friendlyToolChipText}>
                     {useNativeControls ? 'Modo simple' : 'Barra nativa'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.friendlyToolChip, styles.friendlyToolChipSmart]}
+                  onPress={() => handleRunSmartTrim(smartDetectBlack, smartDetectStatic)}
+                  disabled={busy}
+                >
+                  <Ionicons name="sparkles" size={15} color="#a855f7" />
+                  <Text style={[styles.friendlyToolChipText, { color: '#e9d5ff' }]}>
+                    Auto-Limpiar
                   </Text>
                 </TouchableOpacity>
               </View>
             </View>
           )}
 
-          {/* ================= MODO 2: RECORTAR (GUIADO PASO A PASO) ================= */}
+          {/* ================= MODO 2: RECORTAR (MANUAL + RECORTE INTELIGENTE CON COMPARACIÓN) ================= */}
           {studioMode === 'trim' && (
             <View style={styles.trimModeContainer}>
-              {/* Paso 1: Elegir qué hacer con palabras sencillas */}
+              {/* Paso 1: Elegir modo de recorte incluyendo ✨ Inteligente */}
               <View style={styles.trimSubmodeRow}>
+                <TouchableOpacity
+                  style={[
+                    styles.trimSubmodePill,
+                    trimMode === 'smart' && styles.trimSubmodePillSmart,
+                  ]}
+                  onPress={() => {
+                    setTrimMode('smart');
+                    if (!smartResult && !busy) {
+                      handleRunSmartTrim(smartDetectBlack, smartDetectStatic);
+                    }
+                  }}
+                >
+                  <Ionicons
+                    name="sparkles"
+                    size={15}
+                    color={trimMode === 'smart' ? '#f3e8ff' : '#c084fc'}
+                  />
+                  <Text
+                    style={[
+                      styles.trimSubmodeText,
+                      trimMode === 'smart' && styles.trimSubmodeTextActive,
+                    ]}
+                  >
+                    Inteligente
+                  </Text>
+                </TouchableOpacity>
+
                 <TouchableOpacity
                   style={[
                     styles.trimSubmodePill,
@@ -1417,7 +1588,7 @@ export default function VideoPlayerScreen({
                 >
                   <Ionicons
                     name="cut-outline"
-                    size={16}
+                    size={15}
                     color={trimMode === 'keep' ? '#fef3c7' : '#94a3b8'}
                   />
                   <Text
@@ -1426,7 +1597,7 @@ export default function VideoPlayerScreen({
                       trimMode === 'keep' && styles.trimSubmodeTextActive,
                     ]}
                   >
-                    Dejar solo esta parte
+                    Dejar parte
                   </Text>
                 </TouchableOpacity>
 
@@ -1438,7 +1609,11 @@ export default function VideoPlayerScreen({
                   onPress={() => {
                     setTrimMode('cut_middle');
                     const d = duration || 0;
-                    if (d > 0.6 && trimStart <= 0.1 && (!trimEnd || Math.abs(trimEnd - d) <= 0.1)) {
+                    if (
+                      d > 0.6 &&
+                      trimStart <= 0.1 &&
+                      (!trimEnd || Math.abs(trimEnd - d) <= 0.1)
+                    ) {
                       setTrimStart(Number((d * 0.3).toFixed(1)));
                       setTrimEnd(Number((d * 0.7).toFixed(1)));
                     }
@@ -1446,7 +1621,7 @@ export default function VideoPlayerScreen({
                 >
                   <Ionicons
                     name="trash-outline"
-                    size={16}
+                    size={15}
                     color={trimMode === 'cut_middle' ? '#fee2e2' : '#94a3b8'}
                   />
                   <Text
@@ -1455,7 +1630,7 @@ export default function VideoPlayerScreen({
                       trimMode === 'cut_middle' && styles.trimSubmodeTextActive,
                     ]}
                   >
-                    Borrar parte central
+                    Borrar centro
                   </Text>
                 </TouchableOpacity>
 
@@ -1468,7 +1643,7 @@ export default function VideoPlayerScreen({
                 >
                   <Ionicons
                     name="layers-outline"
-                    size={15}
+                    size={14}
                     color={trimMode === 'multi' ? '#d1fae5' : '#94a3b8'}
                   />
                   <Text
@@ -1482,54 +1657,262 @@ export default function VideoPlayerScreen({
                 </TouchableOpacity>
               </View>
 
-              {/* Paso 2: Barra visual grande con INICIO y FIN claros + botones rápidos -1s / +1s */}
-              <View style={styles.timelineWrapper}>
-                <View style={styles.timelineInfoHeader}>
-                  <View style={styles.timeStepperGroup}>
+              {/* PANEL DE RECORTE INTELIGENTE (Detecta todo negro y/o sin movimiento y permite comparar para dar Visto Bueno) */}
+              {trimMode === 'smart' && (
+                <View style={styles.smartTrimBox}>
+                  {/* Filtros qué detectar + botón re-analizar */}
+                  <View style={styles.smartFilterRow}>
                     <TouchableOpacity
-                      style={styles.microStepBtn}
-                      onPress={() => nudgeTrimPoint('start', -1)}
+                      style={[
+                        styles.smartFilterChip,
+                        smartDetectBlack && styles.smartFilterChipActive,
+                      ]}
+                      onPress={() => {
+                        const next = !smartDetectBlack;
+                        setSmartDetectBlack(next);
+                      }}
                     >
-                      <Text style={styles.microStepBtnText}>-1s</Text>
+                      <Ionicons
+                        name={smartDetectBlack ? 'checkbox' : 'square-outline'}
+                        size={15}
+                        color={smartDetectBlack ? '#c084fc' : '#64748b'}
+                      />
+                      <Text style={styles.smartFilterChipText}>⬛ Todo negro</Text>
                     </TouchableOpacity>
-                    <Text style={styles.friendlyTimeInfo}>
-                      Inicio: <Text style={styles.friendlyTimeBold}>{formatTime(trimStart, true)}</Text>
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.microStepBtn}
-                      onPress={() => nudgeTrimPoint('start', 1)}
-                    >
-                      <Text style={styles.microStepBtnText}>+1s</Text>
-                    </TouchableOpacity>
-                  </View>
 
-                  <View style={styles.resultDurationPill}>
-                    <Text style={styles.resultDurationText}>
-                      {formatTime(totalResultDuration, true)}
-                    </Text>
-                  </View>
-
-                  <View style={styles.timeStepperGroup}>
                     <TouchableOpacity
-                      style={styles.microStepBtn}
-                      onPress={() => nudgeTrimPoint('end', -1)}
+                      style={[
+                        styles.smartFilterChip,
+                        smartDetectStatic && styles.smartFilterChipActive,
+                      ]}
+                      onPress={() => {
+                        const next = !smartDetectStatic;
+                        setSmartDetectStatic(next);
+                      }}
                     >
-                      <Text style={styles.microStepBtnText}>-1s</Text>
+                      <Ionicons
+                        name={smartDetectStatic ? 'checkbox' : 'square-outline'}
+                        size={15}
+                        color={smartDetectStatic ? '#c084fc' : '#64748b'}
+                      />
+                      <Text style={styles.smartFilterChipText}>⏸️ Sin movimiento</Text>
                     </TouchableOpacity>
-                    <Text style={styles.friendlyTimeInfo}>
-                      Fin:{' '}
-                      <Text style={styles.friendlyTimeBold}>
-                        {formatTime(trimEnd || duration, true)}
+
+                    <TouchableOpacity
+                      style={styles.smartScanActionBtn}
+                      onPress={() => handleRunSmartTrim(smartDetectBlack, smartDetectStatic)}
+                      disabled={busy}
+                    >
+                      <Ionicons name="search" size={14} color="#ffffff" />
+                      <Text style={styles.smartScanActionText}>
+                        {smartResult ? 'Re-analizar' : 'Analizar'}
                       </Text>
-                    </Text>
-                    <TouchableOpacity
-                      style={styles.microStepBtn}
-                      onPress={() => nudgeTrimPoint('end', 1)}
-                    >
-                      <Text style={styles.microStepBtnText}>+1s</Text>
                     </TouchableOpacity>
                   </View>
+
+                  {smartResult && (
+                    <>
+                      {/* Resumen Antes vs Video Óptimo */}
+                      <View style={styles.smartSummaryRow}>
+                        <Text style={styles.smartSummaryText}>
+                          Original:{' '}
+                          <Text style={{ color: '#e2e8f0', fontWeight: '800' }}>
+                            {formatTime(smartResult.durationSec || duration, true)}
+                          </Text>
+                          {'  ➔  '}Óptimo:{' '}
+                          <Text style={{ color: '#34d399', fontWeight: '900' }}>
+                            {formatTime(totalResultDuration, true)}
+                          </Text>
+                        </Text>
+
+                        <View style={styles.smartSavedBadge}>
+                          <Text style={styles.smartSavedBadgeText}>
+                            -{formatTime(smartResult.savedDurationSec || 0, true)} (
+                            {smartResult.removedSegments?.length || 0} cortes)
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* 3 Botones de Comparación en Vivo para dar el Visto Bueno */}
+                      <View style={styles.smartCompareButtonsRow}>
+                        <TouchableOpacity
+                          style={[
+                            styles.smartCompareBtn,
+                            smartCompareMode === 'optimal' &&
+                              previewingCut &&
+                              styles.smartCompareBtnOptimalActive,
+                          ]}
+                          onPress={() => handleSwitchSmartCompare('optimal')}
+                        >
+                          <Ionicons
+                            name="checkmark-done-circle"
+                            size={15}
+                            color={
+                              smartCompareMode === 'optimal' && previewingCut
+                                ? '#ffffff'
+                                : '#34d399'
+                            }
+                          />
+                          <Text
+                            style={[
+                              styles.smartCompareBtnText,
+                              smartCompareMode === 'optimal' &&
+                                previewingCut && { color: '#ffffff' },
+                            ]}
+                          >
+                            Ver Óptimo
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[
+                            styles.smartCompareBtn,
+                            smartCompareMode === 'original' &&
+                              !previewingCut &&
+                              styles.smartCompareBtnOriginalActive,
+                          ]}
+                          onPress={() => handleSwitchSmartCompare('original')}
+                        >
+                          <Ionicons
+                            name="film-outline"
+                            size={15}
+                            color={
+                              smartCompareMode === 'original' && !previewingCut
+                                ? '#ffffff'
+                                : '#38bdf8'
+                            }
+                          />
+                          <Text
+                            style={[
+                              styles.smartCompareBtnText,
+                              smartCompareMode === 'original' &&
+                                !previewingCut && { color: '#ffffff' },
+                            ]}
+                          >
+                            Ver Original
+                          </Text>
+                        </TouchableOpacity>
+
+                        {smartResult.removedSegments?.length > 0 && (
+                          <TouchableOpacity
+                            style={[
+                              styles.smartCompareBtn,
+                              smartCompareMode === 'removed' &&
+                                previewingCut &&
+                                styles.smartCompareBtnRemovedActive,
+                            ]}
+                            onPress={() => handleSwitchSmartCompare('removed')}
+                          >
+                            <Ionicons
+                              name="eye-off-outline"
+                              size={15}
+                              color={
+                                smartCompareMode === 'removed' && previewingCut
+                                  ? '#ffffff'
+                                  : '#f87171'
+                              }
+                            />
+                            <Text
+                              style={[
+                                styles.smartCompareBtnText,
+                                smartCompareMode === 'removed' &&
+                                  previewingCut && { color: '#ffffff' },
+                              ]}
+                            >
+                              Lo Eliminado
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      {/* Lista deslizable de pedazos eliminados (toca para ver o restaurar si quieres conservar alguno) */}
+                      {smartResult.removedSegments?.length > 0 && (
+                        <ScrollView
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          contentContainerStyle={styles.savedClipsScroll}
+                        >
+                          {smartResult.removedSegments.map((rem) => (
+                            <View key={rem.id} style={styles.smartRemovedChip}>
+                              <TouchableOpacity
+                                onPress={() => {
+                                  setPreviewingCut(false);
+                                  seekTo(rem.start);
+                                }}
+                              >
+                                <Text style={styles.smartRemovedChipText}>
+                                  {rem.reason === 'black' ? '⬛ Negro' : '⏸️ Sin mov.'}{' '}
+                                  {formatTime(rem.start, true)}-{formatTime(rem.end, true)}
+                                </Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity
+                                onPress={() => handleRestoreRemovedSegment(rem)}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <Text style={styles.smartRestoreBtnText}>+Dejar</Text>
+                              </TouchableOpacity>
+                            </View>
+                          ))}
+                        </ScrollView>
+                      )}
+                    </>
+                  )}
                 </View>
+              )}
+
+              {/* Paso 2: Barra visual de línea de tiempo */}
+              <View style={styles.timelineWrapper}>
+                {trimMode !== 'smart' && (
+                  <View style={styles.timelineInfoHeader}>
+                    <View style={styles.timeStepperGroup}>
+                      <TouchableOpacity
+                        style={styles.microStepBtn}
+                        onPress={() => nudgeTrimPoint('start', -1)}
+                      >
+                        <Text style={styles.microStepBtnText}>-1s</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.friendlyTimeInfo}>
+                        Inicio:{' '}
+                        <Text style={styles.friendlyTimeBold}>
+                          {formatTime(trimStart, true)}
+                        </Text>
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.microStepBtn}
+                        onPress={() => nudgeTrimPoint('start', 1)}
+                      >
+                        <Text style={styles.microStepBtnText}>+1s</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.resultDurationPill}>
+                      <Text style={styles.resultDurationText}>
+                        {formatTime(totalResultDuration, true)}
+                      </Text>
+                    </View>
+
+                    <View style={styles.timeStepperGroup}>
+                      <TouchableOpacity
+                        style={styles.microStepBtn}
+                        onPress={() => nudgeTrimPoint('end', -1)}
+                      >
+                        <Text style={styles.microStepBtnText}>-1s</Text>
+                      </TouchableOpacity>
+                      <Text style={styles.friendlyTimeInfo}>
+                        Fin:{' '}
+                        <Text style={styles.friendlyTimeBold}>
+                          {formatTime(trimEnd || duration, true)}
+                        </Text>
+                      </Text>
+                      <TouchableOpacity
+                        style={styles.microStepBtn}
+                        onPress={() => nudgeTrimPoint('end', 1)}
+                      >
+                        <Text style={styles.microStepBtnText}>+1s</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                )}
 
                 <View
                   style={styles.filmstripTrack}
@@ -1555,7 +1938,7 @@ export default function VideoPlayerScreen({
                         ))}
                   </View>
 
-                  {trimMode === 'multi' &&
+                  {(trimMode === 'multi' || trimMode === 'smart') &&
                     savedClips.map((clip) => {
                       const l = clamp((clip.start / dur) * 100, 0, 100);
                       const w = clamp(((clip.end - clip.start) / dur) * 100, 1.5, 100);
@@ -1563,81 +1946,116 @@ export default function VideoPlayerScreen({
                         <View
                           key={clip.id}
                           pointerEvents="none"
-                          style={[styles.savedClipHighlight, { left: `${l}%`, width: `${w}%` }]}
+                          style={[
+                            styles.savedClipHighlight,
+                            { left: `${l}%`, width: `${w}%` },
+                          ]}
                         />
                       );
                     })}
 
-                  {trimMode !== 'cut_middle' ? (
-                    <>
-                      <View
-                        pointerEvents="none"
-                        style={[styles.dimMaskLeft, { width: `${startPct}%` }]}
-                      />
+                  {trimMode === 'smart' &&
+                    smartResult?.removedSegments?.map((rem) => {
+                      const l = clamp((rem.start / dur) * 100, 0, 100);
+                      const w = clamp(((rem.end - rem.start) / dur) * 100, 1.5, 100);
+                      return (
+                        <View
+                          key={rem.id}
+                          pointerEvents="none"
+                          style={[
+                            styles.smartRemovedTimelineBlock,
+                            {
+                              left: `${l}%`,
+                              width: `${w}%`,
+                              backgroundColor:
+                                rem.reason === 'black'
+                                  ? 'rgba(239, 68, 68, 0.58)'
+                                  : 'rgba(245, 158, 11, 0.52)',
+                              borderColor:
+                                rem.reason === 'black' ? '#ef4444' : '#f59e0b',
+                            },
+                          ]}
+                        />
+                      );
+                    })}
+
+                  {trimMode !== 'smart' &&
+                    (trimMode !== 'cut_middle' ? (
+                      <>
+                        <View
+                          pointerEvents="none"
+                          style={[styles.dimMaskLeft, { width: `${startPct}%` }]}
+                        />
+                        <View
+                          pointerEvents="none"
+                          style={[
+                            styles.dimMaskRight,
+                            { width: `${Math.max(0, 100 - endPct)}%` },
+                          ]}
+                        />
+                        <View
+                          pointerEvents="none"
+                          style={[
+                            styles.selectionBoxKeep,
+                            { left: `${startPct}%`, width: `${selectedSpanPct}%` },
+                          ]}
+                        />
+                      </>
+                    ) : (
                       <View
                         pointerEvents="none"
                         style={[
-                          styles.dimMaskRight,
-                          { width: `${Math.max(0, 100 - endPct)}%` },
-                        ]}
-                      />
-                      <View
-                        pointerEvents="none"
-                        style={[
-                          styles.selectionBoxKeep,
+                          styles.selectionBoxDeleteCenter,
                           { left: `${startPct}%`, width: `${selectedSpanPct}%` },
                         ]}
-                      />
+                      >
+                        <Text style={styles.deleteCenterLabel}>
+                          SE BORRARÁ ESTA PARTE
+                        </Text>
+                      </View>
+                    ))}
+
+                  {trimMode !== 'smart' && (
+                    <>
+                      {/* Manija Izquierda INICIO */}
+                      <View
+                        style={[styles.handleHitBox, { left: `${startPct}%` }]}
+                        hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+                        {...startHandlePanResponder.panHandlers}
+                      >
+                        <View
+                          style={[
+                            styles.handleBarVisual,
+                            {
+                              backgroundColor:
+                                trimMode === 'cut_middle' ? '#ef4444' : '#f59e0b',
+                            },
+                          ]}
+                        >
+                          <View style={styles.handleGripInner} />
+                        </View>
+                      </View>
+
+                      {/* Manija Derecha FIN */}
+                      <View
+                        style={[styles.handleHitBox, { left: `${endPct}%` }]}
+                        hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
+                        {...endHandlePanResponder.panHandlers}
+                      >
+                        <View
+                          style={[
+                            styles.handleBarVisual,
+                            {
+                              backgroundColor:
+                                trimMode === 'cut_middle' ? '#ef4444' : '#f59e0b',
+                            },
+                          ]}
+                        >
+                          <View style={styles.handleGripInner} />
+                        </View>
+                      </View>
                     </>
-                  ) : (
-                    <View
-                      pointerEvents="none"
-                      style={[
-                        styles.selectionBoxDeleteCenter,
-                        { left: `${startPct}%`, width: `${selectedSpanPct}%` },
-                      ]}
-                    >
-                      <Text style={styles.deleteCenterLabel}>SE BORRARÁ ESTA PARTE</Text>
-                    </View>
                   )}
-
-                  {/* Manija Izquierda INICIO (Arrastrable directamente) */}
-                  <View
-                    style={[styles.handleHitBox, { left: `${startPct}%` }]}
-                    hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
-                    {...startHandlePanResponder.panHandlers}
-                  >
-                    <View
-                      style={[
-                        styles.handleBarVisual,
-                        {
-                          backgroundColor:
-                            trimMode === 'cut_middle' ? '#ef4444' : '#f59e0b',
-                        },
-                      ]}
-                    >
-                      <View style={styles.handleGripInner} />
-                    </View>
-                  </View>
-
-                  {/* Manija Derecha FIN (Arrastrable directamente) */}
-                  <View
-                    style={[styles.handleHitBox, { left: `${endPct}%` }]}
-                    hitSlop={{ top: 12, bottom: 12, left: 16, right: 16 }}
-                    {...endHandlePanResponder.panHandlers}
-                  >
-                    <View
-                      style={[
-                        styles.handleBarVisual,
-                        {
-                          backgroundColor:
-                            trimMode === 'cut_middle' ? '#ef4444' : '#f59e0b',
-                        },
-                      ]}
-                    >
-                      <View style={styles.handleGripInner} />
-                    </View>
-                  </View>
 
                   {/* Aguja blanca */}
                   <View
@@ -1649,53 +2067,59 @@ export default function VideoPlayerScreen({
                 </View>
               </View>
 
-              {/* Botones amigables para marcar inicio/fin con 1 toque mientras ves el video */}
-              <View style={styles.quickPrecisionRow}>
-                <TouchableOpacity
-                  style={styles.miniPlayToggleBtn}
-                  onPress={togglePlay}
-                >
-                  <Ionicons name={playing ? 'pause' : 'play'} size={18} color="#ffffff" />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.setPointBtn}
-                  onPress={() => setHandleToCurrentTime('start')}
-                >
-                  <Ionicons name="flag-outline" size={14} color="#fde68a" />
-                  <Text style={styles.setPointBtnText}>Empezar aquí</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.setPointBtn}
-                  onPress={() => setHandleToCurrentTime('end')}
-                >
-                  <Ionicons name="flag" size={14} color="#fde68a" />
-                  <Text style={styles.setPointBtnText}>Terminar aquí</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.previewTrimBtn,
-                    previewingCut && styles.previewTrimBtnActive,
-                  ]}
-                  onPress={handlePreviewSelection}
-                >
-                  <Ionicons
-                    name={previewingCut ? 'stop-circle' : 'eye-outline'}
-                    size={16}
-                    color={previewingCut ? '#34d399' : '#38bdf8'}
-                  />
-                  <Text
-                    style={[
-                      styles.previewTrimBtnText,
-                      previewingCut && { color: '#34d399' },
-                    ]}
+              {/* Botones amigables del mismo alto para marcar inicio/fin (en modos manuales) */}
+              {trimMode !== 'smart' && (
+                <View style={styles.quickPrecisionRow}>
+                  <TouchableOpacity
+                    style={styles.miniPlayToggleBtn}
+                    onPress={togglePlay}
                   >
-                    {previewingCut ? 'Detener' : 'Ver cómo queda'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+                    <Ionicons
+                      name={playing ? 'pause' : 'play'}
+                      size={18}
+                      color="#ffffff"
+                    />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.setPointBtn}
+                    onPress={() => setHandleToCurrentTime('start')}
+                  >
+                    <Ionicons name="flag-outline" size={14} color="#fde68a" />
+                    <Text style={styles.setPointBtnText}>Empezar aquí</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.setPointBtn}
+                    onPress={() => setHandleToCurrentTime('end')}
+                  >
+                    <Ionicons name="flag" size={14} color="#fde68a" />
+                    <Text style={styles.setPointBtnText}>Terminar aquí</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.previewTrimBtn,
+                      previewingCut && styles.previewTrimBtnActive,
+                    ]}
+                    onPress={handlePreviewSelection}
+                  >
+                    <Ionicons
+                      name={previewingCut ? 'stop-circle' : 'eye-outline'}
+                      size={16}
+                      color={previewingCut ? '#34d399' : '#38bdf8'}
+                    />
+                    <Text
+                      style={[
+                        styles.previewTrimBtnText,
+                        previewingCut && { color: '#34d399' },
+                      ]}
+                    >
+                      {previewingCut ? 'Detener' : 'Ver cómo queda'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
 
               {trimMode === 'multi' && (
                 <View style={styles.multiClipsCompactRow}>
@@ -1727,10 +2151,13 @@ export default function VideoPlayerScreen({
                             }}
                           >
                             <Text style={styles.savedClipChipText}>
-                              Parte {i + 1}: {formatTime(clip.start)} a {formatTime(clip.end)}
+                              Parte {i + 1}: {formatTime(clip.start)} a{' '}
+                              {formatTime(clip.end)}
                             </Text>
                           </TouchableOpacity>
-                          <TouchableOpacity onPress={() => handleRemoveSavedClip(clip.id)}>
+                          <TouchableOpacity
+                            onPress={() => handleRemoveSavedClip(clip.id)}
+                          >
                             <Ionicons name="close-circle" size={16} color="#f87171" />
                           </TouchableOpacity>
                         </View>
@@ -1740,7 +2167,7 @@ export default function VideoPlayerScreen({
                 </View>
               )}
 
-              {/* Paso 3: Guardar */}
+              {/* Paso 3: Dar Visto Bueno y Guardar */}
               <View style={styles.bottomActionButtonsRow}>
                 {hasActiveTrim && (
                   <TouchableOpacity
@@ -1757,17 +2184,27 @@ export default function VideoPlayerScreen({
                   onPress={() => handleExecuteTrim(false)}
                   disabled={busy}
                 >
-                  <Ionicons name="copy-outline" size={18} color="#ffffff" />
-                  <Text style={styles.saveBtnText}>Guardar copia nueva</Text>
+                  <Ionicons name="copy-outline" size={17} color="#ffffff" />
+                  <Text style={styles.saveBtnText}>
+                    {trimMode === 'smart' ? 'Visto Bueno (Copia)' : 'Guardar copia nueva'}
+                  </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={[styles.primaryTrimSaveBtn, busy && { opacity: 0.5 }]}
+                  style={[
+                    styles.primaryTrimSaveBtn,
+                    trimMode === 'smart' && { backgroundColor: '#10b981' },
+                    busy && { opacity: 0.5 },
+                  ]}
                   onPress={() => handleExecuteTrim(true)}
                   disabled={busy}
                 >
-                  <Ionicons name="checkmark-circle" size={19} color="#ffffff" />
-                  <Text style={styles.saveBtnText}>Reemplazar original</Text>
+                  <Ionicons name="checkmark-circle" size={18} color="#ffffff" />
+                  <Text style={styles.saveBtnText}>
+                    {trimMode === 'smart'
+                      ? 'Visto Bueno (Reemplazar)'
+                      : 'Reemplazar original'}
+                  </Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -1945,7 +2382,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingTop: Platform.OS === 'android' ? Math.max(StatusBar.currentHeight || 0, 28) + 10 : 12,
+    paddingBottom: 10,
     backgroundColor: '#0b0f19',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
@@ -2105,10 +2543,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#0b0f19',
     borderTopWidth: 1,
     borderTopColor: '#1e293b',
-    paddingHorizontal: 14,
-    paddingTop: 10,
-    paddingBottom: 14,
-    gap: 12,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: Platform.OS === 'android' ? 42 : 20,
+    gap: 8,
   },
   modeSelectorBar: {
     flexDirection: 'row',
@@ -2155,7 +2593,7 @@ const styles = StyleSheet.create({
 
   /* MODO 1: VER VIDEO AMIGABLE */
   playModeContainer: {
-    gap: 12,
+    gap: 8,
   },
   scrubberRow: {
     flexDirection: 'row',
@@ -2172,7 +2610,7 @@ const styles = StyleSheet.create({
   },
   scrubberTrackHitArea: {
     flex: 1,
-    height: 34,
+    height: 30,
     justifyContent: 'center',
     position: 'relative',
   },
@@ -2210,8 +2648,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     backgroundColor: '#172033',
-    paddingVertical: 13,
-    borderRadius: 14,
+    height: 38,
+    borderRadius: 12,
     borderWidth: 1,
     borderColor: '#293548',
   },
@@ -2221,14 +2659,14 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   friendlyPlayPauseBtn: {
-    flex: 1.4,
+    flex: 1,
+    height: 38,
+    minWidth: 52,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 8,
     backgroundColor: '#2563eb',
-    paddingVertical: 13,
-    borderRadius: 14,
+    borderRadius: 12,
     elevation: 4,
   },
   friendlyPlayPauseText: {
@@ -2244,12 +2682,12 @@ const styles = StyleSheet.create({
   },
   friendlyToolChip: {
     flex: 1,
+    height: 36,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
+    gap: 4,
     backgroundColor: '#131b2e',
-    paddingVertical: 9,
     paddingHorizontal: 6,
     borderRadius: 10,
     borderWidth: 1,
@@ -2263,45 +2701,53 @@ const styles = StyleSheet.create({
     borderColor: '#f87171',
     backgroundColor: 'rgba(248, 113, 113, 0.14)',
   },
+  friendlyToolChipSmart: {
+    borderColor: 'rgba(168, 85, 247, 0.5)',
+    backgroundColor: 'rgba(168, 85, 247, 0.16)',
+  },
   friendlyToolChipText: {
     color: '#e2e8f0',
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '700',
   },
 
   /* MODO 2: RECORTAR AMIGABLE */
   trimModeContainer: {
-    gap: 10,
+    gap: 8,
   },
   trimSubmodeRow: {
     flexDirection: 'row',
-    gap: 6,
+    gap: 5,
   },
   trimSubmodePill: {
-    flex: 1.3,
+    flex: 1,
+    height: 36,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
-    paddingVertical: 9,
-    paddingHorizontal: 6,
+    gap: 4,
+    paddingHorizontal: 5,
     borderRadius: 10,
     backgroundColor: '#131b2e',
     borderWidth: 1,
     borderColor: '#1e293b',
   },
   trimSubmodePillSmall: {
-    flex: 0.75,
+    flex: 0.72,
+    height: 36,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 9,
-    paddingHorizontal: 6,
+    gap: 3,
+    paddingHorizontal: 5,
     borderRadius: 10,
     backgroundColor: '#131b2e',
     borderWidth: 1,
     borderColor: '#1e293b',
+  },
+  trimSubmodePillSmart: {
+    borderColor: '#a855f7',
+    backgroundColor: 'rgba(168, 85, 247, 0.22)',
   },
   trimSubmodePillKeep: {
     borderColor: '#f59e0b',
@@ -2317,12 +2763,148 @@ const styles = StyleSheet.create({
   },
   trimSubmodeText: {
     color: '#94a3b8',
-    fontSize: 11.5,
+    fontSize: 11,
     fontWeight: '700',
   },
   trimSubmodeTextActive: {
     color: '#ffffff',
     fontWeight: '800',
+  },
+  smartTrimBox: {
+    backgroundColor: '#111827',
+    borderRadius: 12,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(168, 85, 247, 0.35)',
+    gap: 6,
+  },
+  smartFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  smartFilterChip: {
+    flex: 1,
+    height: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    borderRadius: 8,
+    backgroundColor: '#172033',
+    borderWidth: 1,
+    borderColor: '#293548',
+    paddingHorizontal: 6,
+  },
+  smartFilterChipActive: {
+    borderColor: '#a855f7',
+    backgroundColor: 'rgba(168, 85, 247, 0.15)',
+  },
+  smartFilterChipText: {
+    color: '#e2e8f0',
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  smartScanActionBtn: {
+    height: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#9333ea',
+  },
+  smartScanActionText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  smartSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+  },
+  smartSummaryText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  smartSavedBadge: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderColor: 'rgba(16, 185, 129, 0.45)',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  smartSavedBadgeText: {
+    color: '#34d399',
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  smartCompareButtonsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  smartCompareBtn: {
+    flex: 1,
+    height: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    borderRadius: 8,
+    backgroundColor: '#172033',
+    borderWidth: 1,
+    borderColor: '#293548',
+  },
+  smartCompareBtnOptimalActive: {
+    backgroundColor: '#059669',
+    borderColor: '#10b981',
+  },
+  smartCompareBtnOriginalActive: {
+    backgroundColor: '#0284c7',
+    borderColor: '#38bdf8',
+  },
+  smartCompareBtnRemovedActive: {
+    backgroundColor: '#dc2626',
+    borderColor: '#f87171',
+  },
+  smartCompareBtnText: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  smartRemovedChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(127, 29, 29, 0.32)',
+    borderColor: 'rgba(239, 68, 68, 0.45)',
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  smartRemovedChipText: {
+    color: '#fecaca',
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  smartRestoreBtnText: {
+    color: '#34d399',
+    fontSize: 10.5,
+    fontWeight: '900',
+  },
+  smartRemovedTimelineBlock: {
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    borderTopWidth: 2,
+    borderBottomWidth: 2,
   },
   timelineWrapper: {
     gap: 6,
@@ -2515,11 +3097,11 @@ const styles = StyleSheet.create({
   },
   setPointBtn: {
     flex: 1,
+    height: 38,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 5,
-    paddingVertical: 9,
     borderRadius: 10,
     backgroundColor: 'rgba(245, 158, 11, 0.16)',
     borderWidth: 1,
@@ -2531,12 +3113,12 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   previewTrimBtn: {
+    height: 38,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
     paddingHorizontal: 10,
-    paddingVertical: 9,
     borderRadius: 10,
     backgroundColor: 'rgba(56, 189, 248, 0.14)',
     borderWidth: 1,
@@ -2785,32 +3367,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 4,
-    marginVertical: 6,
+    gap: 6,
+    marginVertical: 2,
   },
   friendlySkipBtnCompact: {
+    height: 38,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 3,
     backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    paddingVertical: 8,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
   },
   friendlySkipTextCompact: {
     color: '#cbd5e1',
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
   },
   frameStepBtn: {
+    height: 38,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    justifyContent: 'center',
+    gap: 4,
     backgroundColor: 'rgba(56, 189, 248, 0.12)',
     borderColor: 'rgba(56, 189, 248, 0.35)',
     borderWidth: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     borderRadius: 12,
   },
   frameStepBtnText: {

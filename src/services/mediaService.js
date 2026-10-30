@@ -215,73 +215,84 @@ export const mediaService = {
 
     try {
       let mediaAlbums = [];
-      try {
-        const albums = await MediaLibrary.getAlbumsAsync({
-          includeSmartAlbums: false,
-        });
-        // Conservar únicamente álbumes que tengan al menos 1 archivo real
-        const activeAlbums = (albums || []).filter((a) => {
-          if (!a || !(Number(a.assetCount) > 0)) return false;
-          return true;
-        });
+      if (VideoEngineModule?.getAlbumsFastNative) {
+        try {
+          const fastNative = await VideoEngineModule.getAlbumsFastNative();
+          if (Array.isArray(fastNative) && fastNative.length > 0) {
+            mediaAlbums = fastNative.filter((a) => a && Number(a.assetCount) > 0);
+          }
+        } catch (_fastErr) {}
+      }
 
-        // Ordenar primero por cantidad de fotos para consultar portada a las carpetas de usuario
-        activeAlbums.sort((a, b) => (b.assetCount || 0) - (a.assetCount || 0));
+      if (mediaAlbums.length === 0) {
+        try {
+          const albums = await MediaLibrary.getAlbumsAsync({
+            includeSmartAlbums: false,
+          });
+          // Conservar únicamente álbumes que tengan al menos 1 archivo real
+          const activeAlbums = (albums || []).filter((a) => {
+            if (!a || !(Number(a.assetCount) > 0)) return false;
+            return true;
+          });
 
-        // Consultar portada real de imagen/video y descartar carpetas sin imágenes ni videos
-        let mainCoverBudget = 40;
-        let smallCoverBudget = 15;
-        const resolvedAlbums = await Promise.all(
-          activeAlbums.map(async (album) => {
-            const sysInfo = folderService.classifySystemFolder(album);
-            if (sysInfo.isSystemSuggested) {
-              return { ...album, uri: album.uri || null, coverUri: null };
-            }
-            const isSmall = (album.assetCount || 0) < 5;
-            if (isSmall) {
-              if (smallCoverBudget <= 0) {
+          // Ordenar primero por cantidad de fotos para consultar portada a las carpetas de usuario
+          activeAlbums.sort((a, b) => (b.assetCount || 0) - (a.assetCount || 0));
+
+          // Consultar portada real de imagen/video y descartar carpetas sin imágenes ni videos
+          let mainCoverBudget = 40;
+          let smallCoverBudget = 15;
+          const resolvedAlbums = await Promise.all(
+            activeAlbums.map(async (album) => {
+              const sysInfo = folderService.classifySystemFolder(album);
+              if (sysInfo.isSystemSuggested) {
                 return { ...album, uri: album.uri || null, coverUri: null };
               }
-              smallCoverBudget--;
-            } else {
-              if (mainCoverBudget <= 0) {
-                return { ...album, uri: album.uri || null, coverUri: null };
+              const isSmall = (album.assetCount || 0) < 5;
+              if (isSmall) {
+                if (smallCoverBudget <= 0) {
+                  return { ...album, uri: album.uri || null, coverUri: null };
+                }
+                smallCoverBudget--;
+              } else {
+                if (mainCoverBudget <= 0) {
+                  return { ...album, uri: album.uri || null, coverUri: null };
+                }
+                mainCoverBudget--;
               }
-              mainCoverBudget--;
-            }
 
-            try {
-              const preview = await MediaLibrary.getAssetsAsync({
-                first: 1,
-                album: album.id,
-                mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
-                sortBy: [MediaLibrary.SortBy.creationTime],
-              });
-              const validCount = Number(preview?.totalCount || preview?.assets?.length || 0);
-              if (validCount <= 0 || !preview.assets || preview.assets.length === 0) {
+              try {
+                const preview = await MediaLibrary.getAssetsAsync({
+                  first: 1,
+                  album: album.id,
+                  mediaType: [MediaLibrary.MediaType.photo, MediaLibrary.MediaType.video],
+                  sortBy: [MediaLibrary.SortBy.creationTime],
+                });
+                const validCount = Number(preview?.totalCount || preview?.assets?.length || 0);
+                if (validCount <= 0 || !preview.assets || preview.assets.length === 0) {
+                  return null;
+                }
+                const coverUri = preview.assets[0].uri || null;
+                let inferredDirUri = null;
+                if (coverUri && coverUri.startsWith('file://')) {
+                  const lastSlash = coverUri.lastIndexOf('/');
+                  if (lastSlash > 7) {
+                    inferredDirUri = coverUri.slice(0, lastSlash);
+                  }
+                }
+                return {
+                  ...album,
+                  assetCount: validCount,
+                  uri: album.uri || inferredDirUri || null,
+                  coverUri,
+                };
+              } catch (e) {
                 return null;
               }
-              const coverUri = preview.assets[0].uri || null;
-              let inferredDirUri = null;
-              if (coverUri && coverUri.startsWith('file://')) {
-                const lastSlash = coverUri.lastIndexOf('/');
-                if (lastSlash > 7) {
-                  inferredDirUri = coverUri.slice(0, lastSlash);
-                }
-              }
-              return {
-                ...album,
-                assetCount: validCount,
-                uri: album.uri || inferredDirUri || null,
-                coverUri,
-              };
-            } catch (e) {
-              return null;
-            }
-          })
-        );
-        mediaAlbums = resolvedAlbums.filter((a) => a && Number(a.assetCount) > 0);
-      } catch (_mErr) {}
+            })
+          );
+          mediaAlbums = resolvedAlbums.filter((a) => a && Number(a.assetCount) > 0);
+        } catch (_mErr) {}
+      }
 
       // Combinar en paralelo con las carpetas guardadas por el usuario
       const saved = await folderService.getSavedFolders();
