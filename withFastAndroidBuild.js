@@ -1549,12 +1549,12 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED,
                     android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE
                 )
-                val selection = "${android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE}=? OR ${android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE}=?"
+                val selection = android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=? OR " + android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=?"
                 val selectionArgs = arrayOf(
                     android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
                     android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString()
                 )
-                val sortOrder = "${android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
+                val sortOrder = android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED + " DESC"
 
                 data class BucketAcc(
                     val id: String,
