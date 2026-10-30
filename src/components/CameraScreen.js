@@ -14,6 +14,8 @@ import {
   Platform,
   PermissionsAndroid,
   AppState,
+  Modal,
+  Linking,
 } from 'react-native';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import * as MediaLibrary from 'expo-media-library/legacy';
@@ -40,6 +42,8 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
   const cameraRef = useRef(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const [micPermission, requestMicPermission] = useMicrophonePermissions();
+  const [hasCamPerm, setHasCamPerm] = useState(false);
+  const [hasMicPerm, setHasMicPerm] = useState(false);
 
   const [facing, setFacing] = useState('back');
   const [cameraMode, setCameraMode] = useState('video'); // 'video' | 'picture'
@@ -92,24 +96,80 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
     } catch (_e) {}
   }, []);
 
-  // Solicitar permisos al abrir si no están concedidos
+  const ensureCameraAndMicPermissions = useCallback(async (openSettingsIfBlocked = false) => {
+    if (Platform.OS === 'android') {
+      try {
+        const camAlready = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA);
+        const micAlready = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
+        if (camAlready && micAlready) {
+          setHasCamPerm(true);
+          setHasMicPerm(true);
+          return true;
+        }
+        const permsToRequest = [
+          PermissionsAndroid.PERMISSIONS.CAMERA,
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
+        ];
+        if (Platform.Version >= 33) {
+          permsToRequest.push('android.permission.POST_NOTIFICATIONS');
+        }
+        const res = await PermissionsAndroid.requestMultiple(permsToRequest);
+        const camOk =
+          res[PermissionsAndroid.PERMISSIONS.CAMERA] === PermissionsAndroid.RESULTS.GRANTED ||
+          camAlready;
+        const micOk =
+          res[PermissionsAndroid.PERMISSIONS.RECORD_AUDIO] === PermissionsAndroid.RESULTS.GRANTED ||
+          micAlready;
+        setHasCamPerm(camOk);
+        setHasMicPerm(micOk);
+        if (camOk && !cameraPermission?.granted) {
+          requestCameraPermission().catch(() => {});
+        }
+        if (micOk && !micPermission?.granted) {
+          requestMicPermission().catch(() => {});
+        }
+        if (
+          !camOk &&
+          openSettingsIfBlocked &&
+          res[PermissionsAndroid.PERMISSIONS.CAMERA] === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN
+        ) {
+          Linking.openSettings();
+        }
+        return camOk;
+      } catch (_e) {
+        return false;
+      }
+    } else {
+      const c = await requestCameraPermission();
+      const m = await requestMicPermission();
+      setHasCamPerm(Boolean(c?.granted));
+      setHasMicPerm(Boolean(m?.granted));
+      return Boolean(c?.granted);
+    }
+  }, [cameraPermission?.granted, micPermission?.granted, requestCameraPermission, requestMicPermission]);
+
+  // Solicitar permisos al abrir de forma secuencial / unificada sin colisión en Android
   useEffect(() => {
     if (visible) {
       setIsMinimized(false);
-      if (!cameraPermission?.granted) requestCameraPermission();
-      if (!micPermission?.granted) requestMicPermission();
+      ensureCameraAndMicPermissions(false);
       checkOverlayStatus();
       syncNativeRecorderState();
-      if (Platform.OS === 'android' && Platform.Version >= 33) {
-        PermissionsAndroid.request('android.permission.POST_NOTIFICATIONS').catch(() => {});
-      }
     }
-  }, [visible, cameraPermission, micPermission, checkOverlayStatus, syncNativeRecorderState]);
+  }, [visible]);
 
   // Sincronizar al volver del segundo plano (ej. tras activar permiso de superposición o desbloquear teléfono)
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
+        if (Platform.OS === 'android') {
+          PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA)
+            .then((ok) => setHasCamPerm(Boolean(ok)))
+            .catch(() => {});
+          PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO)
+            .then((ok) => setHasMicPerm(Boolean(ok)))
+            .catch(() => {});
+        }
         checkOverlayStatus();
         syncNativeRecorderState();
       }
@@ -322,7 +382,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
         setIsRecording(true);
         setIsPaused(false);
         setElapsed(0);
-        // Dar 180ms para que CameraView desmonte y libere la cámara física antes de que el Servicio la tome
+        // Dar 420ms para que CameraView desmonte y libere la cámara física antes de que el Servicio la tome
         setTimeout(async () => {
           try {
             await VideoEngineModule.startBackgroundVideoRecordNative(
@@ -336,7 +396,7 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
             setIsRecording(false);
             Alert.alert('Error', 'No se pudo iniciar la grabación en 2do plano.');
           }
-        }, 180);
+        }, 420);
         return;
       } catch (e) {
         setUsingNativeBgService(false);
@@ -499,152 +559,165 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
 
   if (!visible && !isRecording) return null;
 
-  const permissionsGranted = cameraPermission?.granted && micPermission?.granted;
+  const permissionsGranted = Boolean(hasCamPerm || cameraPermission?.granted);
+
+  // Si está minimizada en segundo plano mientras graba, mostrar únicamente la píldora flotante inferior
+  if (isMinimized || !visible) {
+    return (
+      <View style={styles.minimizedRootOverlay} pointerEvents="box-none">
+        <SafeAreaView style={styles.minimizedSafeWrap} pointerEvents="box-none">
+          <View style={styles.minimizedCameraContainer} pointerEvents="box-none">
+            {!usingNativeBgService && permissionsGranted && (
+              <CameraView
+                ref={cameraRef}
+                style={styles.hiddenTinyCamera}
+                facing={facing}
+                mode={cameraMode}
+                enableTorch={torchOn}
+                animateShutter={false}
+                mute={cameraMode === 'picture' || !hasMicPerm}
+              />
+            )}
+            <View style={styles.bgRecordingFloatingPill}>
+              <TouchableOpacity
+                style={styles.bgRecLeftInfo}
+                onPress={() => setIsMinimized(false)}
+                activeOpacity={0.8}
+              >
+                <View
+                  style={[
+                    styles.recDot,
+                    { backgroundColor: isPaused ? '#f59e0b' : '#ef4444' },
+                  ]}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.bgRecTitle} numberOfLines={1}>
+                    {isPaused ? 'En pausa' : 'Grabando 2do plano'} ({formatTimer(elapsed)})
+                  </Text>
+                  <Text style={styles.bgRecSub} numberOfLines={1}>
+                    Motor BVR 3.0.1 · Toca para abrir controles
+                  </Text>
+                </View>
+              </TouchableOpacity>
+
+              {usingNativeBgService && (
+                <TouchableOpacity
+                  style={styles.bgRecPauseBtn}
+                  onPress={handleTogglePauseResume}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons
+                    name={isPaused ? 'play' : 'pause'}
+                    size={14}
+                    color="#ffffff"
+                  />
+                </TouchableOpacity>
+              )}
+
+              <TouchableOpacity
+                style={styles.bgRecStopBtn}
+                onPress={handleStopRecording}
+                activeOpacity={0.85}
+              >
+                <Ionicons name="stop" size={14} color="#ffffff" />
+                <Text style={styles.bgRecStopText}>Detener</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      </View>
+    );
+  }
 
   return (
-    <View
-      style={isMinimized ? styles.minimizedRootOverlay : styles.fullScreenOverlay}
-      pointerEvents={isMinimized ? 'box-none' : 'auto'}
+    <Modal
+      visible={Boolean(visible && !isMinimized)}
+      animationType="slide"
+      transparent={false}
+      statusBarTranslucent={true}
+      onRequestClose={handleClose}
     >
-      {!isMinimized && (
+      <View style={styles.fullScreenOverlay}>
         <StatusBar
           barStyle="light-content"
           backgroundColor="#000000"
           hidden={stealthLocked}
         />
-      )}
-      <SafeAreaView
-        style={isMinimized ? styles.minimizedSafeWrap : styles.container}
-        pointerEvents={isMinimized ? 'box-none' : 'auto'}
-      >
-        {!permissionsGranted ? (
-          <View style={styles.permissionBox}>
-            <Ionicons name="videocam-outline" size={64} color={theme.colors.primary} />
-            <Text style={styles.permissionTitle}>Permiso de Cámara y Micrófono</Text>
-            <Text style={styles.permissionDesc}>
-              Para poder grabar video y audio en segundo plano, es necesario autorizar los permisos de cámara y micrófono.
-            </Text>
-            <TouchableOpacity
-              style={styles.permissionBtn}
-              onPress={() => {
-                requestCameraPermission();
-                requestMicPermission();
-              }}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.permissionBtnText}>Conceder permisos</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-              <Text style={styles.cancelBtnText}>Cancelar</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View
-            style={isMinimized ? styles.minimizedCameraContainer : styles.cameraWrapper}
-            pointerEvents={isMinimized ? 'box-none' : 'auto'}
-          >
-            {/* Vista nativa de Expo Camera: se desmonta automáticamente cuando el Servicio Nativo BVR 3.0.1 toma la cámara */}
-            {!usingNativeBgService ? (
-              <CameraView
-                ref={cameraRef}
-                style={isMinimized ? styles.hiddenTinyCamera : StyleSheet.absoluteFillObject}
-                facing={facing}
-                mode={cameraMode}
-                enableTorch={torchOn}
-                animateShutter={false}
-                mute={cameraMode === 'picture'}
-              />
-            ) : (
-              !isMinimized &&
-              !stealthLocked && (
-                <View style={styles.nativeBgActiveBackdrop}>
-                  <View style={styles.nativeBgPulseCircle}>
-                    <Ionicons
-                      name={isPaused ? 'pause-circle' : 'radio-button-on'}
-                      size={54}
-                      color={isPaused ? '#f59e0b' : '#ef4444'}
-                    />
-                  </View>
-                  <Text style={styles.nativeBgActiveTitle}>
-                    {isPaused
-                      ? 'Grabación en Pausa (Motor BVR 3.0.1)'
-                      : 'Motor BVR 3.0.1 Grabando en 2do Plano'}
-                  </Text>
-                  <Text style={styles.nativeBgActiveSub}>
-                    Puedes bloquear el celular con el botón físico de encendido, cambiar a otra aplicación o usar tu Galería sin que se corte el video.
-                  </Text>
-                  <View style={styles.nativeBgBadgesRow}>
-                    <View style={styles.nativeBgFeatureBadge}>
-                      <Ionicons name="lock-closed-outline" size={14} color="#38bdf8" />
-                      <Text style={styles.nativeBgFeatureText}>Pantalla apagada OK</Text>
-                    </View>
-                    <View style={styles.nativeBgFeatureBadge}>
-                      <Ionicons name="apps-outline" size={14} color="#10b981" />
-                      <Text style={styles.nativeBgFeatureText}>Fuera de la app OK</Text>
-                    </View>
-                    <View style={styles.nativeBgFeatureBadge}>
+        <SafeAreaView style={styles.container}>
+          {!permissionsGranted ? (
+            <View style={styles.permissionBox}>
+              <Ionicons name="videocam-outline" size={64} color={theme.colors.primary} />
+              <Text style={styles.permissionTitle}>Permiso de Cámara y Micrófono</Text>
+              <Text style={styles.permissionDesc}>
+                Para usar la cámara y grabar video en segundo plano, autoriza el acceso a la cámara y al micrófono.
+              </Text>
+              <TouchableOpacity
+                style={styles.permissionBtn}
+                onPress={() => {
+                  ensureCameraAndMicPermissions(true);
+                }}
+                activeOpacity={0.8}
+              >
+                <Text style={styles.permissionBtnText}>Conceder permisos</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+                <Text style={styles.cancelBtnText}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.cameraWrapper}>
+              {/* Vista nativa de Expo Camera: se desmonta automáticamente cuando el Servicio Nativo BVR 3.0.1 toma la cámara */}
+              {!usingNativeBgService ? (
+                <CameraView
+                  ref={cameraRef}
+                  style={StyleSheet.absoluteFillObject}
+                  facing={facing}
+                  mode={cameraMode}
+                  enableTorch={torchOn}
+                  animateShutter={false}
+                  mute={cameraMode === 'picture' || !hasMicPerm}
+                />
+              ) : (
+                !stealthLocked && (
+                  <View style={styles.nativeBgActiveBackdrop}>
+                    <View style={styles.nativeBgPulseCircle}>
                       <Ionicons
-                        name={showFloatingPreview ? 'eye-outline' : 'eye-off-outline'}
-                        size={14}
-                        color="#a855f7"
+                        name={isPaused ? 'pause-circle' : 'radio-button-on'}
+                        size={54}
+                        color={isPaused ? '#f59e0b' : '#ef4444'}
                       />
-                      <Text style={styles.nativeBgFeatureText}>
-                        {showFloatingPreview ? 'Preview flotante' : 'Oculto 1×1 px'}
-                      </Text>
+                    </View>
+                    <Text style={styles.nativeBgActiveTitle}>
+                      {isPaused
+                        ? 'Grabación en Pausa (Motor BVR 3.0.1)'
+                        : 'Motor BVR 3.0.1 Grabando en 2do Plano'}
+                    </Text>
+                    <Text style={styles.nativeBgActiveSub}>
+                      Puedes bloquear el celular con el botón físico de encendido, cambiar a otra aplicación o usar tu Galería sin que se corte el video.
+                    </Text>
+                    <View style={styles.nativeBgBadgesRow}>
+                      <View style={styles.nativeBgFeatureBadge}>
+                        <Ionicons name="lock-closed-outline" size={14} color="#38bdf8" />
+                        <Text style={styles.nativeBgFeatureText}>Pantalla apagada OK</Text>
+                      </View>
+                      <View style={styles.nativeBgFeatureBadge}>
+                        <Ionicons name="apps-outline" size={14} color="#10b981" />
+                        <Text style={styles.nativeBgFeatureText}>Fuera de la app OK</Text>
+                      </View>
+                      <View style={styles.nativeBgFeatureBadge}>
+                        <Ionicons
+                          name={showFloatingPreview ? 'eye-outline' : 'eye-off-outline'}
+                          size={14}
+                          color="#a855f7"
+                        />
+                        <Text style={styles.nativeBgFeatureText}>
+                          {showFloatingPreview ? 'Preview flotante' : 'Oculto 1×1 px'}
+                        </Text>
+                      </View>
                     </View>
                   </View>
-                </View>
-              )
-            )}
-
-            {/* PÍLDORA FLOTANTE CUANDO ESTÁ GRABANDO EN SEGUNDO PLANO */}
-            {isMinimized && (
-              <View style={styles.bgRecordingFloatingPill}>
-                <TouchableOpacity
-                  style={styles.bgRecLeftInfo}
-                  onPress={() => setIsMinimized(false)}
-                  activeOpacity={0.8}
-                >
-                  <View
-                    style={[
-                      styles.recDot,
-                      { backgroundColor: isPaused ? '#f59e0b' : '#ef4444' },
-                    ]}
-                  />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.bgRecTitle} numberOfLines={1}>
-                      {isPaused ? 'En pausa' : 'Grabando 2do plano'} ({formatTimer(elapsed)})
-                    </Text>
-                    <Text style={styles.bgRecSub} numberOfLines={1}>
-                      Motor BVR 3.0.1 · Toca para abrir controles
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                {usingNativeBgService && (
-                  <TouchableOpacity
-                    style={styles.bgRecPauseBtn}
-                    onPress={handleTogglePauseResume}
-                    activeOpacity={0.85}
-                  >
-                    <Ionicons
-                      name={isPaused ? 'play' : 'pause'}
-                      size={14}
-                      color="#ffffff"
-                    />
-                  </TouchableOpacity>
-                )}
-
-                <TouchableOpacity
-                  style={styles.bgRecStopBtn}
-                  onPress={handleStopRecording}
-                  activeOpacity={0.85}
-                >
-                  <Ionicons name="stop" size={14} color="#ffffff" />
-                  <Text style={styles.bgRecStopText}>Detener</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+                )
+              )}
 
             {/* PANTALLA BLOQUEADA TOTAL (100% NEGRA, SIMULA TELÉFONO APAGADO) */}
             {!isMinimized && stealthLocked && (
@@ -907,7 +980,8 @@ export default function CameraScreen({ visible, onClose, onVideoSaved }) {
           </View>
         )}
       </SafeAreaView>
-    </View>
+      </View>
+    </Modal>
   );
 }
 

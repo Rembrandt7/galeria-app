@@ -2703,9 +2703,10 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             }
             overlayLayoutParams = lp
 
-            val sv = SurfaceView(this).apply {
-                setBackgroundColor(Color.TRANSPARENT)
-            }
+            val sv = SurfaceView(this)
+            try {
+                sv.holder.setFixedSize(videoWidth, videoHeight)
+            } catch (_: Exception) {}
             sv.holder.addCallback(this)
 
             var initialX = 0
@@ -2737,6 +2738,11 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
 
             overlaySurfaceView = sv
             wm.addView(sv, lp)
+            cameraHandler?.postDelayed({
+                if (!sessionStarted && isRunning) {
+                    startCameraAndRecorderSession(previewHolderSurface)
+                }
+            }, 450L)
         } catch (e: Exception) {
             cameraHandler?.post {
                 startCameraAndRecorderSession(null)
@@ -2796,13 +2802,14 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
     }
 
     @SuppressLint("MissingPermission")
-    private fun startCameraAndRecorderSession(previewSurface: Surface?) {
-        if (sessionStarted) return
+    private fun startCameraAndRecorderSession(previewSurface: Surface?, attempt: Int = 0) {
+        if (sessionStarted && attempt == 0) return
         sessionStarted = true
 
         try {
-            val persistentSurface = createInitializedPersistentSurface()
-            persistentRecorderSurface = persistentSurface
+            val persistentSurface = persistentRecorderSurface ?: createInitializedPersistentSurface().also {
+                persistentRecorderSurface = it
+            }
 
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
             cm.openCamera(
@@ -2816,21 +2823,39 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                     override fun onDisconnected(device: CameraDevice) {
                         try { device.close() } catch (_: Exception) {}
                         cameraDevice = null
-                        mainHandler.post { stopRecordingAndSelf() }
+                        if (attempt < 6 && isRunning) {
+                            cameraHandler?.postDelayed({
+                                startCameraAndRecorderSession(previewSurface, attempt + 1)
+                            }, 280L)
+                        } else {
+                            mainHandler.post { stopRecordingAndSelf() }
+                        }
                     }
 
                     override fun onError(device: CameraDevice, error: Int) {
                         try { device.close() } catch (_: Exception) {}
                         cameraDevice = null
-                        emitErrorToJs("No se pudo abrir la cámara en 2do plano (código " + error + ").")
-                        mainHandler.post { stopRecordingAndSelf() }
+                        if (attempt < 6 && isRunning) {
+                            cameraHandler?.postDelayed({
+                                startCameraAndRecorderSession(previewSurface, attempt + 1)
+                            }, 280L)
+                        } else {
+                            emitErrorToJs("No se pudo abrir la cámara en 2do plano (código " + error + ").")
+                            mainHandler.post { stopRecordingAndSelf() }
+                        }
                     }
                 },
                 cameraHandler
             )
         } catch (e: Exception) {
-            emitErrorToJs(e.message ?: "Error al iniciar la sesión de cámara en 2do plano")
-            mainHandler.post { stopRecordingAndSelf() }
+            if (attempt < 6 && isRunning) {
+                cameraHandler?.postDelayed({
+                    startCameraAndRecorderSession(previewSurface, attempt + 1)
+                }, 280L)
+            } else {
+                emitErrorToJs(e.message ?: "Error al iniciar la sesión de cámara en 2do plano")
+                mainHandler.post { stopRecordingAndSelf() }
+            }
         }
     }
 
@@ -2842,10 +2867,21 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
     ) {
         try {
             val outputs = mutableListOf<Surface>()
-            if (previewSurface != null && previewSurface.isValid) {
-                outputs.add(previewSurface)
+            val activePreview = if (showFloatingPreview && previewSurface != null && previewSurface.isValid) {
+                previewSurface
+            } else {
+                null
+            }
+            if (activePreview != null) {
+                outputs.add(activePreview)
             }
             outputs.add(recordSurface)
+
+            val recorder = buildConfiguredMediaRecorder(recordSurface).apply {
+                setOrientationHint(computeOrientationHint())
+                prepare()
+            }
+            mediaRecorder = recorder
 
             device.createCaptureSession(
                 outputs,
@@ -2853,15 +2889,9 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
                         try {
-                            val req = buildRecordCaptureRequest(device, previewSurface, recordSurface)
+                            val req = buildRecordCaptureRequest(device, activePreview, recordSurface)
                             session.setRepeatingRequest(req, null, cameraHandler)
-
-                            val recorder = buildConfiguredMediaRecorder(recordSurface).apply {
-                                setOrientationHint(computeOrientationHint())
-                                prepare()
-                                start()
-                            }
-                            mediaRecorder = recorder
+                            mediaRecorder?.start()
 
                             mainHandler.post {
                                 mainHandler.removeCallbacks(timerRunnable)
@@ -2917,7 +2947,16 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         }
         val target = overrideFile ?: outputFile ?: createTargetOutputFile().also { outputFile = it }
 
-        recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+        val hasMicPermission = ContextCompat.checkSelfPermission(
+            this,
+            android.Manifest.permission.RECORD_AUDIO
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+        if (hasMicPermission) {
+            try {
+                recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            } catch (_: Exception) {}
+        }
         recorder.setVideoSource(MediaRecorder.VideoSource.SURFACE)
         recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
         recorder.setOutputFile(target.absolutePath)
@@ -2925,9 +2964,13 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         recorder.setVideoFrameRate(videoFps)
         recorder.setVideoSize(videoWidth, videoHeight)
         recorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-        recorder.setAudioEncodingBitRate(128_000)
-        recorder.setAudioSamplingRate(44_100)
+        if (hasMicPermission) {
+            try {
+                recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                recorder.setAudioEncodingBitRate(128_000)
+                recorder.setAudioSamplingRate(44_100)
+            } catch (_: Exception) {}
+        }
         recorder.setInputSurface(inputSurface)
 
         if (maxDurationSec > 0 && overrideFile == null) {
