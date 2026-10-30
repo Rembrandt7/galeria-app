@@ -94,7 +94,7 @@ export default function Header({
             </View>
           ) : (
             <View style={styles.topPillsRow}>
-              {/* Botón de Actualizar */}
+              {/* Botón de Actualizar compacto en el mismo renglón */}
               <TouchableOpacity
                 onPress={onOpenSettings}
                 style={[
@@ -105,7 +105,7 @@ export default function Header({
               >
                 <Ionicons
                   name={hasUpdateAvailable ? 'arrow-up-circle' : 'sync-circle-outline'}
-                  size={17}
+                  size={14}
                   color={hasUpdateAvailable ? '#10b981' : '#60a5fa'}
                 />
                 <Text
@@ -115,12 +115,12 @@ export default function Header({
                   ]}
                   numberOfLines={1}
                 >
-                  {hasUpdateAvailable ? '¡Actualizar!' : `Actualizar · ${CURRENT_VERSION}`}
+                  {hasUpdateAvailable ? '¡Actualizar!' : `Actualizar ${CURRENT_VERSION}`}
                 </Text>
                 {hasUpdateAvailable && <View style={styles.liveDot} />}
               </TouchableOpacity>
 
-              {/* Botón de Configuración / Sistema justo al lado del botón de Actualizar */}
+              {/* Botón de Configuración / Sistema en el mismo renglón al lado de Actualizar */}
               <TouchableOpacity
                 onPress={() => setSystemPanelOpen((prev) => !prev)}
                 style={[
@@ -131,7 +131,7 @@ export default function Header({
               >
                 <Ionicons
                   name={systemPanelOpen ? 'settings' : 'settings-outline'}
-                  size={16}
+                  size={14}
                   color={systemPanelOpen ? '#ffffff' : '#38bdf8'}
                 />
                 <Text
@@ -145,7 +145,7 @@ export default function Header({
                 </Text>
                 <Ionicons
                   name={systemPanelOpen ? 'chevron-up' : 'chevron-down'}
-                  size={13}
+                  size={11}
                   color={systemPanelOpen ? '#ffffff' : '#38bdf8'}
                 />
               </TouchableOpacity>
@@ -458,28 +458,28 @@ export default function Header({
 const styles = StyleSheet.create({
   headerContainer: {
     backgroundColor: '#000000',
-    paddingHorizontal: 12,
-    paddingTop: 6,
-    paddingBottom: 6,
+    paddingHorizontal: 8,
+    paddingTop: 3,
+    paddingBottom: 3,
     zIndex: 50,
   },
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    minHeight: 40,
+    minHeight: 34,
   },
   leftSection: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
-    marginRight: 6,
+    marginRight: 4,
   },
   topPillsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    flexWrap: 'wrap',
+    gap: 4,
+    flexWrap: 'nowrap',
     flex: 1,
   },
   backTitleRow: {
@@ -489,30 +489,31 @@ const styles = StyleSheet.create({
   },
   backButton: {
     marginRight: 4,
-    padding: 4,
+    padding: 3,
     borderRadius: 20,
   },
   title: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700',
     color: '#ffffff',
     letterSpacing: -0.3,
   },
   subtitle: {
-    fontSize: 11,
+    fontSize: 10.5,
     color: theme.colors.textSecondary,
     marginTop: 1,
   },
   updatePracticalBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 3,
     backgroundColor: 'rgba(59, 130, 246, 0.14)',
     borderWidth: 1,
     borderColor: 'rgba(96, 165, 250, 0.38)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 18,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 14,
+    flexShrink: 1,
   },
   updatePracticalBtnReady: {
     backgroundColor: 'rgba(16, 185, 129, 0.18)',
@@ -520,19 +521,21 @@ const styles = StyleSheet.create({
   },
   updatePracticalText: {
     color: '#93c5fd',
-    fontSize: 11.5,
+    fontSize: 10.5,
     fontWeight: '800',
+    flexShrink: 1,
   },
   systemConfigBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 3,
     backgroundColor: 'rgba(56, 189, 248, 0.12)',
     borderWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.4)',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 18,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 14,
+    flexShrink: 1,
   },
   systemConfigBtnActive: {
     backgroundColor: '#2563eb',
@@ -540,56 +543,57 @@ const styles = StyleSheet.create({
   },
   systemConfigText: {
     color: '#7dd3fc',
-    fontSize: 11.5,
+    fontSize: 10.5,
     fontWeight: '800',
+    flexShrink: 1,
   },
   liveDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: '#10b981',
   },
   updateCompactPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: 'rgba(59, 130, 246, 0.14)',
     borderWidth: 1,
     borderColor: 'rgba(96, 165, 250, 0.35)',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 14,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   updateCompactText: {
     color: '#93c5fd',
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '800',
   },
   systemCompactPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    gap: 3,
     backgroundColor: 'rgba(56, 189, 248, 0.14)',
     borderWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.4)',
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-    borderRadius: 14,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 12,
   },
   systemCompactText: {
     color: '#7dd3fc',
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '800',
   },
   actionsSection: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    gap: 1,
   },
   galaxyIconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 29,
+    height: 29,
+    borderRadius: 15,
     alignItems: 'center',
     justifyContent: 'center',
   },

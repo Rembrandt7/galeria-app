@@ -45,6 +45,7 @@ import CameraScreen from './src/components/CameraScreen';
 import VideoDownloaderModal from './src/components/VideoDownloaderModal';
 import TiendaRembModal from './src/components/TiendaRembModal';
 import ModoGuardarModal from './src/components/ModoGuardarModal';
+import { WebBrowserModal } from './src/components/WebBrowserModal';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
@@ -82,6 +83,7 @@ export default function App() {
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
   const [downloaderVisible, setDownloaderVisible] = useState(false);
+  const [browserVisible, setBrowserVisible] = useState(false);
   const [sharedIncomingUrl, setSharedIncomingUrl] = useState(null);
   const [storeVisible, setStoreVisible] = useState(false);
   const [albumSearchVisible, setAlbumSearchVisible] = useState(false);
@@ -1257,6 +1259,7 @@ export default function App() {
             onSelectTab={handleSelectTab}
             favoritesCount={Object.keys(favorites).length}
             onOpenDownloader={() => setDownloaderVisible(true)}
+            onOpenBrowser={() => setBrowserVisible(true)}
             onOpenStore={() => setStoreVisible(true)}
             onOpenSettings={() => setSettingsVisible(true)}
             onOpenCamera={() => setCameraVisible(true)}
@@ -1332,6 +1335,17 @@ export default function App() {
         <TiendaRembModal
           visible={storeVisible}
           onClose={() => setStoreVisible(false)}
+        />
+
+        {/* Navegador de Internet Integrado en Mi Galería */}
+        <WebBrowserModal
+          visible={browserVisible}
+          onClose={() => setBrowserVisible(false)}
+          onDownloadVideoUrl={(url) => {
+            setBrowserVisible(false);
+            setSharedIncomingUrl(url);
+            setDownloaderVisible(true);
+          }}
         />
 
         {/* Modal de Cámara y Grabación Discreta */}

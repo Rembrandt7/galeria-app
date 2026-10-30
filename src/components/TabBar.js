@@ -10,6 +10,7 @@ export default function TabBar({
   trashCount = 0,
   onOpenModoGuardar,
   onOpenDownloader,
+  onOpenBrowser,
   onOpenStore,
   onOpenSettings,
   onOpenCamera,
@@ -19,14 +20,14 @@ export default function TabBar({
 }) {
   const insets = useSafeAreaInsets();
   // Elevar la barra flotante por encima de los símbolos/botones de navegación de Android
-  const safeBottomOffset = Math.max((insets?.bottom || 0) + 12, Platform.OS === 'android' ? 44 : 24);
+  const safeBottomOffset = Math.max((insets?.bottom || 0) + 10, Platform.OS === 'android' ? 42 : 22);
 
   const dockItems = [
     {
       key: 'photos',
       label: 'Fotos',
-      icon: 'camera-outline',
-      iconActive: 'camera',
+      icon: 'images-outline',
+      iconActive: 'images',
       isTab: true,
     },
     {
@@ -38,7 +39,7 @@ export default function TabBar({
     },
     {
       key: 'folder',
-      label: 'Explorador',
+      label: 'Carpetas',
       icon: 'folder-open-outline',
       iconActive: 'folder-open',
       isTab: true,
@@ -46,12 +47,20 @@ export default function TabBar({
     },
     {
       key: 'modo_guardar',
-      label: trashCount > 0 ? `Modo Guardar (${trashCount})` : 'Modo Guardar',
+      label: trashCount > 0 ? `Guardar (${trashCount})` : 'Guardar',
       icon: 'swap-vertical-outline',
       iconActive: 'swap-vertical',
       onPress: onOpenModoGuardar,
       accentColor: trashCount > 0 ? '#f43f5e' : '#10b981',
       hasDot: trashCount > 0,
+    },
+    {
+      key: 'browser',
+      label: 'Navegador',
+      icon: 'globe-outline',
+      iconActive: 'globe',
+      onPress: onOpenBrowser,
+      accentColor: '#60a5fa',
     },
     {
       key: 'downloader',
@@ -98,7 +107,7 @@ export default function TabBar({
   if (favoritesCount > 0 || activeTab === 'favorites') {
     dockItems.splice(2, 0, {
       key: 'favorites',
-      label: `Favoritos (${favoritesCount})`,
+      label: `Favs (${favoritesCount})`,
       icon: 'heart-outline',
       iconActive: 'heart',
       isTab: true,
@@ -144,7 +153,7 @@ export default function TabBar({
                 <View style={styles.iconWrap}>
                   <Ionicons
                     name={isSelected ? item.iconActive : item.icon}
-                    size={21}
+                    size={18}
                     color={iconColor}
                   />
                   {item.hasDot && <View style={styles.updateDot} />}
@@ -172,39 +181,39 @@ export default function TabBar({
 const styles = StyleSheet.create({
   floatingDockWrapper: {
     position: 'absolute',
-    left: 10,
-    right: 10,
-    bottom: Platform.OS === 'android' ? 14 : 20,
+    left: 6,
+    right: 6,
+    bottom: Platform.OS === 'android' ? 12 : 18,
     alignItems: 'center',
     zIndex: 100,
   },
   galaxyCapsule: {
     maxWidth: '100%',
-    backgroundColor: 'rgba(36, 36, 40, 0.96)',
-    borderRadius: 36,
-    paddingVertical: 6,
-    paddingHorizontal: 6,
+    backgroundColor: 'rgba(30, 30, 36, 0.96)',
+    borderRadius: 30,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.12)',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.55,
-    shadowRadius: 16,
-    elevation: 18,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.5,
+    shadowRadius: 12,
+    elevation: 16,
   },
   capsuleScrollContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 2,
+    gap: 1,
   },
   dockButton: {
-    minWidth: 68,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 28,
+    minWidth: 48,
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 3,
+    gap: 1,
   },
   dockButtonActive: {
     backgroundColor: 'rgba(255, 255, 255, 0.17)',
@@ -222,19 +231,19 @@ const styles = StyleSheet.create({
   updateDot: {
     position: 'absolute',
     top: -2,
-    right: -5,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    right: -4,
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
     backgroundColor: '#10b981',
-    borderWidth: 1.5,
+    borderWidth: 1,
     borderColor: '#242428',
   },
   dockLabel: {
-    fontSize: 11,
+    fontSize: 9.5,
     fontWeight: '600',
     color: '#d4d4d8',
-    letterSpacing: -0.1,
+    letterSpacing: -0.2,
   },
   dockLabelActive: {
     color: '#ffffff',

@@ -71,9 +71,11 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.view.inputmethod.EditorInfo
 import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -593,6 +595,236 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 scheduleProbe(0)
             } catch (e: Exception) {
                 cleanupAndResolve(null, e.message ?: "Error en WebView extractor")
+            }
+        }
+    }
+
+    @ReactMethod
+    fun openInAppBrowserNative(initialUrl: String, promise: Promise) {
+        val startUrl = initialUrl.trim().ifEmpty { "https://www.google.com" }
+        val resolvedFlag = AtomicBoolean(false)
+        var dialogRef: Dialog? = null
+        var webViewRef: WebView? = null
+        var urlInputRef: EditText? = null
+        var downloadBtnRef: TextView? = null
+        var detectedMediaUrl: String? = null
+
+        fun normalizeInputUrl(raw: String): String {
+            val trimmed = raw.trim()
+            if (trimmed.isEmpty()) return "https://www.google.com"
+            if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+            if (!trimmed.contains(" ") && trimmed.contains(".")) return "https://$trimmed"
+            return "https://www.google.com/search?q=" + Uri.encode(trimmed)
+        }
+
+        fun closeBrowser(action: String, targetResultUrl: String?) {
+            if (!resolvedFlag.compareAndSet(false, true)) return
+            UiThreadUtil.runOnUiThread {
+                try {
+                    dialogRef?.dismiss()
+                } catch (_: Exception) {}
+                dialogRef = null
+                try {
+                    webViewRef?.stopLoading()
+                    webViewRef?.loadUrl("about:blank")
+                    webViewRef?.destroy()
+                } catch (_: Exception) {}
+                webViewRef = null
+                val map = Arguments.createMap().apply {
+                    putString("action", action)
+                    putString("url", targetResultUrl ?: "")
+                }
+                promise.resolve(map)
+            }
+        }
+
+        UiThreadUtil.runOnUiThread {
+            try {
+                val act = currentActivity
+                if (act == null || act.isFinishing) {
+                    closeBrowser("closed", "")
+                    return@runOnUiThread
+                }
+
+                val wv = WebView(act)
+                webViewRef = wv
+
+                CookieManager.getInstance().setAcceptCookie(true)
+                CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+
+                wv.settings.apply {
+                    javaScriptEnabled = true
+                    domStorageEnabled = true
+                    mediaPlaybackRequiresUserGesture = false
+                    loadsImagesAutomatically = true
+                    mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    useWideViewPort = true
+                    loadWithOverviewMode = true
+                    builtInZoomControls = true
+                    displayZoomControls = false
+                    userAgentString = "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                }
+
+                wv.webChromeClient = WebChromeClient()
+                wv.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val u = request?.url?.toString() ?: return false
+                        if (u.startsWith("http://") || u.startsWith("https://")) {
+                            urlInputRef?.setText(u)
+                            return false
+                        }
+                        return true
+                    }
+
+                    override fun onPageFinished(view: WebView?, url: String?) {
+                        super.onPageFinished(view, url)
+                        if (!url.isNullOrBlank() && url != "about:blank") {
+                            urlInputRef?.setText(url)
+                        }
+                    }
+
+                    override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                        val reqUrl = request?.url?.toString() ?: ""
+                        val lower = reqUrl.lowercase()
+                        if ((lower.contains(".mp4") || lower.contains(".m3u8") || lower.contains("videoplayback") || lower.contains("mime=video")) &&
+                            !lower.contains(".jpg") && !lower.contains(".png") && !lower.contains(".js")
+                        ) {
+                            detectedMediaUrl = reqUrl
+                            UiThreadUtil.runOnUiThread {
+                                downloadBtnRef?.text = "⬇ Video Listo"
+                                downloadBtnRef?.background = GradientDrawable().apply {
+                                    cornerRadius = 18f
+                                    setColor(Color.parseColor("#10B981"))
+                                }
+                            }
+                        }
+                        return super.shouldInterceptRequest(view, request)
+                    }
+                }
+
+                val dlg = Dialog(act, android.R.style.Theme_Black_NoTitleBar_Fullscreen)
+                dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+                dlg.setCancelable(true)
+                dialogRef = dlg
+
+                val root = LinearLayout(act).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setBackgroundColor(Color.parseColor("#0B0B14"))
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                }
+
+                val navBar = LinearLayout(act).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setBackgroundColor(Color.parseColor("#151525"))
+                    setPadding(12, 14, 12, 14)
+                }
+
+                fun makeNavBtn(label: String, bgHex: String, onClick: () -> Unit): TextView {
+                    return TextView(act).apply {
+                        text = label
+                        setTextColor(Color.WHITE)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                        typeface = Typeface.DEFAULT_BOLD
+                        gravity = Gravity.CENTER
+                        setPadding(18, 12, 18, 12)
+                        background = GradientDrawable().apply {
+                            cornerRadius = 18f
+                            setColor(Color.parseColor(bgHex))
+                        }
+                        val lp = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT
+                        )
+                        lp.setMargins(4, 0, 4, 0)
+                        layoutParams = lp
+                        setOnClickListener { onClick() }
+                    }
+                }
+
+                val backBtn = makeNavBtn("◀", "#252538") {
+                    if (wv.canGoBack()) wv.goBack()
+                }
+                val fwdBtn = makeNavBtn("▶", "#252538") {
+                    if (wv.canGoForward()) wv.goForward()
+                }
+                val reloadBtn = makeNavBtn("↻", "#252538") {
+                    wv.reload()
+                }
+
+                val urlInput = EditText(act).apply {
+                    setText(normalizeInputUrl(startUrl))
+                    hint = "Buscar en Google o escribir URL..."
+                    setHintTextColor(Color.parseColor("#71717A"))
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setSingleLine(true)
+                    imeOptions = EditorInfo.IME_ACTION_GO
+                    setPadding(22, 12, 22, 12)
+                    background = GradientDrawable().apply {
+                        cornerRadius = 18f
+                        setColor(Color.parseColor("#090910"))
+                        setStroke(2, Color.parseColor("#2E2E42"))
+                    }
+                    val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                    lp.setMargins(6, 0, 6, 0)
+                    layoutParams = lp
+                    setOnEditorActionListener { v, actionId, _ ->
+                        if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_SEARCH) {
+                            val target = normalizeInputUrl(v.text?.toString() ?: "")
+                            wv.loadUrl(target)
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }
+                urlInputRef = urlInput
+
+                val goBtn = makeNavBtn("Ir", "#3B82F6") {
+                    val target = normalizeInputUrl(urlInput.text?.toString() ?: "")
+                    wv.loadUrl(target)
+                }
+
+                val dlBtn = makeNavBtn("⬇ Video", "#6D28D9") {
+                    val currentPageUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
+                    val bestUrl = if (!detectedMediaUrl.isNullOrBlank()) currentPageUrl else currentPageUrl
+                    closeBrowser("download", bestUrl)
+                }
+                downloadBtnRef = dlBtn
+
+                val closeBtn = makeNavBtn("✕", "#EF4444") {
+                    closeBrowser("closed", wv.url ?: "")
+                }
+
+                navBar.addView(backBtn)
+                navBar.addView(fwdBtn)
+                navBar.addView(reloadBtn)
+                navBar.addView(urlInput)
+                navBar.addView(goBtn)
+                navBar.addView(dlBtn)
+                navBar.addView(closeBtn)
+
+                val webParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                )
+                root.addView(navBar)
+                root.addView(wv, webParams)
+
+                dlg.setContentView(root)
+                dlg.setOnCancelListener {
+                    closeBrowser("closed", wv.url ?: "")
+                }
+                dlg.show()
+
+                wv.loadUrl(normalizeInputUrl(startUrl))
+            } catch (e: Exception) {
+                closeBrowser("closed", "")
             }
         }
     }
