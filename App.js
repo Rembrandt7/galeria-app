@@ -383,6 +383,7 @@ export default function App() {
       });
 
       if (uri) {
+        await folderService.setFolderNoMedia(uri, seg === 'files').catch(() => {});
         await folderService.addSavedFolder(uri, title);
         const updated = await folderService.getSavedFolders();
         setSavedFolders(updated);
@@ -392,6 +393,38 @@ export default function App() {
     },
     []
   );
+
+  // Sincronizar automáticamente la privacidad (.nomedia) de todas las carpetas en la sección "Archivos"
+  // para que nada de lo que esté en "Archivos" sea visible para otras aplicaciones del teléfono
+  useEffect(() => {
+    if ((!albums || albums.length === 0) && (!savedFolders || savedFolders.length === 0)) return;
+    const timer = setTimeout(() => {
+      try {
+        const hiddenSet = new Set([
+          'file:///storage/emulated/0/Movies/Boveda Privada',
+          'file:///storage/emulated/0/Movies/2do plano',
+          'file:///storage/emulated/0/Movies/Videos Descargados',
+          'file:///storage/emulated/0/Download',
+          'file:///storage/emulated/0/Telegram',
+        ]);
+        const visibleSet = new Set();
+        const allItems = [...(albums || []), ...(savedFolders || [])];
+        for (const item of allItems) {
+          if (!item?.uri || item.isFavoritesCard || item.isVariosCard) continue;
+          const seg = getResolvedFolderSegment(item);
+          if (seg === 'files') {
+            hiddenSet.add(item.uri);
+          } else if (seg === 'photos') {
+            visibleSet.add(item.uri);
+          }
+        }
+        folderService
+          .syncArchivosPrivacy(Array.from(hiddenSet), Array.from(visibleSet))
+          .catch(() => {});
+      } catch (_e) {}
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [albums, savedFolders, folderSegments, getResolvedFolderSegment]);
 
   // Abrir cualquier carpeta directamente en el Explorador
   const handleOpenInExplorer = useCallback((folderItem) => {

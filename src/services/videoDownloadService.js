@@ -1794,7 +1794,7 @@ export const videoDownloadService = {
       folderUri = await folderService.ensureDownloadedVideosFolder();
     } catch (_fErr) {}
 
-    // 2. Mover/guardar directamente en la carpeta física "Videos Descargados" (e indexar en MediaStore sin duplicar)
+    // 2. Mover/guardar directamente en la carpeta física "Videos Descargados" (oculta para otras apps mediante .nomedia)
     try {
       if (NativeModules?.VideoEngineModule?.moveFileToSubfolderNative) {
         const destUri = await NativeModules.VideoEngineModule.moveFileToSubfolderNative(
@@ -1826,28 +1826,24 @@ export const videoDownloadService = {
           creationTime: Date.now(),
         };
       }
+      await folderService.setFolderNoMedia(folderUri, true).catch(() => {});
     } catch (_physErr) {
-      savedPhysically = false;
-    }
-
-    // 3. Respaldo en MediaLibrary (Álbum "Videos Descargados") si el guardado físico directo no estuvo disponible
-    if (!savedPhysically) {
       try {
-        try {
-          await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
-        } catch (_permE) {
-          await MediaLibrary.requestPermissionsAsync().catch(() => {});
-        }
-        const asset = await MediaLibrary.createAssetAsync(result.uri);
-        if (asset) savedAsset = { ...asset, mediaType: finalMediaType };
-        let album = await MediaLibrary.getAlbumAsync(DOWNLOAD_ALBUM_NAME);
-        if (!album) {
-          await MediaLibrary.createAlbumAsync(DOWNLOAD_ALBUM_NAME, asset, false);
-        } else {
-          await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-        }
-      } catch (albumErr) {
-        await MediaLibrary.saveToLibraryAsync(result.uri);
+        await FileSystem.makeDirectoryAsync(folderUri, { intermediates: true }).catch(() => {});
+        const destFileUri = `${folderUri}/${filename}`;
+        await FileSystem.copyAsync({ from: result.uri, to: destFileUri });
+        await folderService.setFolderNoMedia(folderUri, true).catch(() => {});
+        savedPhysically = true;
+        savedAsset = {
+          id: destFileUri,
+          uri: destFileUri,
+          filename,
+          mediaType: finalMediaType,
+          fileSize: fileInfo.size || 0,
+          creationTime: Date.now(),
+        };
+      } catch (_eCopy) {
+        savedPhysically = false;
       }
     }
 

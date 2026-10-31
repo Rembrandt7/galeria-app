@@ -2409,6 +2409,244 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    private fun getHiddenDirsRegistryFile(): File = File(reactContext.filesDir, "archivos_hidden_dirs.txt")
+
+    private fun getDefaultArchivosPaths(): List<String> = listOf(
+        "/storage/emulated/0/Movies/Boveda Privada",
+        "/storage/emulated/0/Movies/2do plano",
+        "/storage/emulated/0/2do plano",
+        "/storage/emulated/0/Pictures/2do plano",
+        "/storage/emulated/0/DCIM/2do plano",
+        "/storage/emulated/0/DCIM/Grabaciones",
+        "/storage/emulated/0/Movies/Videos Descargados",
+        "/storage/emulated/0/Download",
+        "/storage/emulated/0/Telegram",
+        "/storage/emulated/0/Android/media/org.telegram.messenger/Telegram",
+        "/storage/emulated/0/Pictures/Telegram",
+        "/storage/emulated/0/Movies/Telegram"
+    )
+
+    private fun loadHiddenArchivosDirs(): MutableSet<String> {
+        val out = LinkedHashSet<String>()
+        for (p in getDefaultArchivosPaths()) {
+            out.add(p.trimEnd('/'))
+        }
+        try {
+            val regFile = getHiddenDirsRegistryFile()
+            if (regFile.exists()) {
+                val lines = regFile.readLines()
+                for (ln in lines) {
+                    val trimmed = ln.trim().trimEnd('/')
+                    if (trimmed.startsWith("/")) {
+                        out.add(trimmed)
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return out
+    }
+
+    private fun saveHiddenArchivosDirs(dirs: Set<String>) {
+        try {
+            val regFile = getHiddenDirsRegistryFile()
+            regFile.writeText(dirs.map { it.trim().trimEnd('/') }.filter { it.startsWith("/") }.distinct().joinToString("\n"))
+        } catch (_: Exception) {}
+    }
+
+    private fun isArchivosHiddenDir(dir: File): Boolean {
+        try {
+            if (File(dir, ".nomedia").exists()) return true
+            val p = dir.parentFile
+            if (p != null && File(p, ".nomedia").exists()) return true
+            val abs = dir.absolutePath.trimEnd('/')
+            val hiddenSet = loadHiddenArchivosDirs()
+            for (h in hiddenSet) {
+                if (abs.equals(h, ignoreCase = true) || abs.startsWith("$h/", ignoreCase = true)) {
+                    return true
+                }
+            }
+        } catch (_: Exception) {}
+        return false
+    }
+
+    private fun enforceNoMediaOnDir(dir: File, maxDepth: Int = 2) {
+        try {
+            if (!dir.exists() || !dir.isDirectory) return
+            val nmPaths = ArrayList<String>()
+            fun walkCreateNoMedia(d: File, depth: Int) {
+                if (!d.exists() || !d.isDirectory) return
+                try {
+                    val nm = File(d, ".nomedia")
+                    if (!nm.exists()) {
+                        nm.createNewFile()
+                    }
+                    if (nm.exists()) {
+                        nmPaths.add(nm.absolutePath)
+                    }
+                } catch (_: Exception) {}
+                if (depth < maxDepth) {
+                    val children = d.listFiles() ?: return
+                    for (c in children) {
+                        if (c.isDirectory && !c.name.startsWith(".")) {
+                            walkCreateNoMedia(c, depth + 1)
+                        }
+                    }
+                }
+            }
+            walkCreateNoMedia(dir, 0)
+
+            // Convertir entradas existentes en MediaStore.Files de esa carpeta a MEDIA_TYPE_NONE (0) para ocultarlas de inmediato a otras apps sin borrar ningún archivo físico
+            try {
+                val filesUri = android.provider.MediaStore.Files.getContentUri("external")
+                val cv = android.content.ContentValues().apply {
+                    put(
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE,
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_NONE
+                    )
+                }
+                val cleanPrefix = dir.absolutePath.trimEnd('/')
+                val where = "(" +
+                    android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=? OR " +
+                    android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=?" +
+                    ") AND " + android.provider.MediaStore.Files.FileColumns.DATA + " LIKE ?"
+                val args = arrayOf(
+                    android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+                    android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString(),
+                    "$cleanPrefix/%"
+                )
+                reactContext.contentResolver.update(filesUri, cv, where, args)
+            } catch (_: Exception) {}
+
+            if (nmPaths.isNotEmpty()) {
+                try {
+                    MediaScannerConnection.scanFile(
+                        reactContext,
+                        nmPaths.toTypedArray(),
+                        null,
+                        null
+                    )
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun removeNoMediaFromDir(dir: File, maxDepth: Int = 2) {
+        try {
+            if (!dir.exists() || !dir.isDirectory) return
+            val filesToRescan = ArrayList<String>()
+            fun walkRemoveNoMedia(d: File, depth: Int) {
+                if (!d.exists() || !d.isDirectory) return
+                try {
+                    val nm = File(d, ".nomedia")
+                    if (nm.exists()) {
+                        nm.delete()
+                        filesToRescan.add(nm.absolutePath)
+                    }
+                } catch (_: Exception) {}
+                val children = d.listFiles() ?: return
+                for (c in children) {
+                    if (c.name.startsWith(".")) continue
+                    if (c.isFile && filesToRescan.size < 250) {
+                        filesToRescan.add(c.absolutePath)
+                    } else if (c.isDirectory && depth < maxDepth) {
+                        walkRemoveNoMedia(c, depth + 1)
+                    }
+                }
+            }
+            walkRemoveNoMedia(dir, 0)
+            if (filesToRescan.isNotEmpty()) {
+                try {
+                    MediaScannerConnection.scanFile(
+                        reactContext,
+                        filesToRescan.toTypedArray(),
+                        null,
+                        null
+                    )
+                } catch (_: Exception) {}
+            }
+        } catch (_: Exception) {}
+    }
+
+    @ReactMethod
+    fun setFolderNoMediaNative(dirPath: String, hideFromOtherApps: Boolean, promise: Promise) {
+        executor.execute {
+            try {
+                val clean = cleanFilePath(dirPath).trimEnd('/')
+                val dir = File(clean)
+                if (!dir.exists()) {
+                    dir.mkdirs()
+                }
+                val reg = loadHiddenArchivosDirs()
+                if (hideFromOtherApps) {
+                    reg.add(dir.absolutePath.trimEnd('/'))
+                    saveHiddenArchivosDirs(reg)
+                    enforceNoMediaOnDir(dir, 2)
+                } else {
+                    reg.removeAll { it.equals(dir.absolutePath.trimEnd('/'), ignoreCase = true) }
+                    saveHiddenArchivosDirs(reg)
+                    removeNoMediaFromDir(dir, 2)
+                }
+                promise.resolve(hideFromOtherApps)
+            } catch (e: Exception) {
+                promise.resolve(false)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun getFolderNoMediaStatusNative(dirPath: String, promise: Promise) {
+        executor.execute {
+            try {
+                val dir = File(cleanFilePath(dirPath))
+                promise.resolve(File(dir, ".nomedia").exists())
+            } catch (_: Exception) {
+                promise.resolve(false)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun syncArchivosPrivacyNative(hiddenPaths: ReadableArray, visiblePaths: ReadableArray, promise: Promise) {
+        executor.execute {
+            try {
+                val reg = loadHiddenArchivosDirs()
+                for (i in 0 until visiblePaths.size()) {
+                    val raw = visiblePaths.getString(i) ?: continue
+                    val clean = cleanFilePath(raw).trimEnd('/')
+                    if (clean.isBlank()) continue
+                    val isDefaultFixed = getDefaultArchivosPaths().any { it.equals(clean, ignoreCase = true) }
+                    if (!isDefaultFixed) {
+                        reg.removeAll { it.equals(clean, ignoreCase = true) }
+                        val vDir = File(clean)
+                        if (vDir.exists() && File(vDir, ".nomedia").exists()) {
+                            removeNoMediaFromDir(vDir, 2)
+                        }
+                    }
+                }
+                for (i in 0 until hiddenPaths.size()) {
+                    val raw = hiddenPaths.getString(i) ?: continue
+                    val clean = cleanFilePath(raw).trimEnd('/')
+                    if (clean.isBlank()) continue
+                    reg.add(clean)
+                    val hDir = File(clean)
+                    if (hDir.exists() && hDir.isDirectory) {
+                        enforceNoMediaOnDir(hDir, 2)
+                    }
+                }
+                for (defPath in getDefaultArchivosPaths()) {
+                    val d = File(defPath)
+                    if (d.exists() && d.isDirectory) {
+                        enforceNoMediaOnDir(d, 2)
+                    }
+                }
+                saveHiddenArchivosDirs(reg)
+                promise.resolve(true)
+            } catch (_: Exception) {
+                promise.resolve(false)
+            }
+        }
+    }
+
     @ReactMethod
     fun ensureSubfolderNative(baseDirPath: String, relativeSubdir: String, promise: Promise) {
         executor.execute {
@@ -2420,6 +2658,9 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 if (!targetDir.exists() || !targetDir.isDirectory) {
                     throw IllegalStateException("No se pudo crear la carpeta: " + targetDir.absolutePath)
+                }
+                if (isArchivosHiddenDir(baseDir) || isArchivosHiddenDir(targetDir)) {
+                    enforceNoMediaOnDir(targetDir, 1)
                 }
                 promise.resolve("file://" + targetDir.absolutePath)
             } catch (e: Exception) {
@@ -2439,6 +2680,14 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 if (!targetDir.exists() || !targetDir.isDirectory) {
                     throw IllegalStateException("No se pudo crear la carpeta destino: " + targetDir.absolutePath)
+                }
+
+                val targetIsHidden = isArchivosHiddenDir(baseDir) || isArchivosHiddenDir(targetDir)
+                if (targetIsHidden) {
+                    try {
+                        val nm = File(targetDir, ".nomedia")
+                        if (!nm.exists()) nm.createNewFile()
+                    } catch (_: Exception) {}
                 }
 
                 val safeName = fileName.ifBlank { "media_" + System.currentTimeMillis() }
@@ -2478,12 +2727,22 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         throw IllegalStateException("No se pudo mover el archivo a " + destFile.absolutePath)
                     }
                     try {
-                        MediaScannerConnection.scanFile(
-                            reactContext,
-                            arrayOf(srcFile.absolutePath, destFile.absolutePath),
-                            null,
-                            null
-                        )
+                        if (targetIsHidden) {
+                            enforceNoMediaOnDir(targetDir, 1)
+                            MediaScannerConnection.scanFile(
+                                reactContext,
+                                arrayOf(srcFile.absolutePath, File(targetDir, ".nomedia").absolutePath),
+                                null,
+                                null
+                            )
+                        } else {
+                            MediaScannerConnection.scanFile(
+                                reactContext,
+                                arrayOf(srcFile.absolutePath, destFile.absolutePath),
+                                null,
+                                null
+                            )
+                        }
                     } catch (_: Exception) {}
                     promise.resolve("file://" + destFile.absolutePath)
                 } else {
@@ -2505,12 +2764,16 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         reactContext.contentResolver.delete(uri, null, null)
                     } catch (_: Exception) {}
                     try {
-                        MediaScannerConnection.scanFile(
-                            reactContext,
-                            arrayOf(destFile.absolutePath),
-                            null,
-                            null
-                        )
+                        if (targetIsHidden) {
+                            enforceNoMediaOnDir(targetDir, 1)
+                        } else {
+                            MediaScannerConnection.scanFile(
+                                reactContext,
+                                arrayOf(destFile.absolutePath),
+                                null,
+                                null
+                            )
+                        }
                     } catch (_: Exception) {}
                     promise.resolve("file://" + destFile.absolutePath)
                 }
@@ -3016,21 +3279,26 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }
                 }
 
-                // Asegurar que las carpetas fijadas de Archivos ("Bóveda Privada", "2do plano", "Descargas", "Telegram" raíz) siempre existan y sumen sus subcarpetas
+                // Asegurar que las carpetas fijadas de Archivos ("Bóveda Privada", "2do plano", "Videos Descargados", "Descargas", "Telegram" raíz) siempre existan, tengan .nomedia (invisibles para otras apps) y sumen sus subcarpetas
                 val bovedaPrivadaDir = File("/storage/emulated/0/Movies/Boveda Privada")
-                try {
-                    if (!bovedaPrivadaDir.exists()) bovedaPrivadaDir.mkdirs()
-                    val nmBoveda = File(bovedaPrivadaDir, ".nomedia")
-                    if (!nmBoveda.exists()) nmBoveda.createNewFile()
-                } catch (_: Exception) {}
+                val videosDescargadosDir = File("/storage/emulated/0/Movies/Videos Descargados")
                 val telegramRootDir = File("/storage/emulated/0/Telegram")
-                try {
-                    if (!telegramRootDir.exists()) telegramRootDir.mkdirs()
-                } catch (_: Exception) {}
                 val telegramAltDir = File("/storage/emulated/0/Android/media/org.telegram.messenger/Telegram")
                 val downloadRootDir = File("/storage/emulated/0/Download")
+                try {
+                    if (!bovedaPrivadaDir.exists()) bovedaPrivadaDir.mkdirs()
+                    if (!segundoPlanoDir.exists()) segundoPlanoDir.mkdirs()
+                    if (!videosDescargadosDir.exists()) videosDescargadosDir.mkdirs()
+                    if (!telegramRootDir.exists()) telegramRootDir.mkdirs()
+                    enforceNoMediaOnDir(bovedaPrivadaDir, 2)
+                    enforceNoMediaOnDir(segundoPlanoDir, 2)
+                    enforceNoMediaOnDir(videosDescargadosDir, 2)
+                    enforceNoMediaOnDir(downloadRootDir, 2)
+                    enforceNoMediaOnDir(telegramRootDir, 2)
+                    if (telegramAltDir.exists()) enforceNoMediaOnDir(telegramAltDir, 2)
+                } catch (_: Exception) {}
 
-                // Remover subcarpetas sueltas o duplicadas de Telegram, 2do plano, Bóveda Privada y Download de mergedByDir para consolidarlas en su carpeta raíz única
+                // Remover subcarpetas sueltas o duplicadas de Telegram, 2do plano, Bóveda Privada, Videos Descargados y Download de mergedByDir para consolidarlas en su carpeta raíz única
                 val keysToRemove = mutableListOf<String>()
                 for ((k, item) in mergedByDir) {
                     val tLow = item.title.trim().lowercase()
@@ -3042,6 +3310,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         k.endsWith("/2do plano") || k.endsWith("/grabaciones") ||
                         tLow == "2do plano" || tLow == "segundo plano" ||
                         k.endsWith("/boveda privada") || tLow == "boveda privada" || tLow == "bóveda privada" ||
+                        k.endsWith("/videos descargados") || tLow == "videos descargados" ||
                         k == "/storage/emulated/0/download" || tLow == "download" || tLow == "descargas"
                     ) {
                         keysToRemove.add(k)
@@ -3085,6 +3354,16 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     count = spCount
                 )
 
+                val (vdCount, vdCover) = scanDirCountAndCover(listOf(videosDescargadosDir), 2)
+                val vdKey = videosDescargadosDir.absolutePath.lowercase()
+                mergedByDir[vdKey] = BucketAcc(
+                    id = "pinned_videos_descargados",
+                    title = "Videos Descargados",
+                    dirPath = videosDescargadosDir.absolutePath,
+                    coverPath = vdCover,
+                    count = vdCount
+                )
+
                 val (dlCount, dlCover) = scanDirCountAndCover(listOf(downloadRootDir), 2)
                 val dlKey = downloadRootDir.absolutePath.lowercase()
                 val existingDl = mergedByDir[dlKey]
@@ -3114,13 +3393,71 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     count = tgCount
                 )
 
+                // Escanear en disco todas las demás carpetas de Archivos que tienen .nomedia (para que Mi Galería siempre las vea aunque estén ocultas a las demás apps)
+                val candidateHiddenDirs = LinkedHashSet<File>()
+                for (hp in loadHiddenArchivosDirs()) {
+                    candidateHiddenDirs.add(File(hp))
+                }
+                val standardRoots = listOf(
+                    File("/storage/emulated/0/Movies"),
+                    File("/storage/emulated/0/Pictures"),
+                    File("/storage/emulated/0/DCIM"),
+                    File("/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media"),
+                    File("/storage/emulated/0/WhatsApp/Media")
+                )
+                for (sr in standardRoots) {
+                    if (sr.exists() && sr.isDirectory) {
+                        val subs = sr.listFiles() ?: emptyArray()
+                        for (sub in subs) {
+                            if (sub.isDirectory && !sub.name.startsWith(".")) {
+                                candidateHiddenDirs.add(sub)
+                            }
+                        }
+                    }
+                }
+
+                val pinnedKeysSet = hashSetOf(bpKey, spKey, vdKey, dlKey, tgKey)
+                for (candDir in candidateHiddenDirs) {
+                    if (!candDir.exists() || !candDir.isDirectory) continue
+                    val cNameLow = candDir.name.trim().lowercase()
+                    if (cNameLow.startsWith(".") || cNameLow == "fotos" || cNameLow == "videos") continue
+                    val cKey = candDir.absolutePath.trimEnd('/').lowercase()
+                    if (pinnedKeysSet.contains(cKey)) continue
+                    if (cKey.startsWith("/storage/emulated/0/telegram") ||
+                        cKey.startsWith("/storage/emulated/0/android/media/org.telegram.messenger/telegram") ||
+                        cKey.startsWith("/storage/emulated/0/pictures/telegram") ||
+                        cKey.startsWith("/storage/emulated/0/movies/telegram") ||
+                        cKey.endsWith("/2do plano") || cKey.endsWith("/grabaciones") ||
+                        cKey.endsWith("/boveda privada") || cKey.endsWith("/videos descargados") ||
+                        cKey == "/storage/emulated/0/download"
+                    ) {
+                        continue
+                    }
+
+                    val existingAcc = mergedByDir[cKey]
+                    val hasNoMedia = File(candDir, ".nomedia").exists() || isArchivosHiddenDir(candDir)
+                    if (existingAcc == null || hasNoMedia) {
+                        val (cCount, cCover) = scanDirCountAndCover(listOf(candDir), 2)
+                        if (cCount > 0) {
+                            mergedByDir[cKey] = BucketAcc(
+                                id = existingAcc?.id ?: cKey.hashCode().toString(),
+                                title = existingAcc?.title ?: candDir.name,
+                                dirPath = candDir.absolutePath,
+                                coverPath = if (cCover.isNotEmpty()) cCover else (existingAcc?.coverPath ?: ""),
+                                count = maxOf(cCount, existingAcc?.count ?: 0)
+                            )
+                        }
+                    }
+                }
+
                 val out = Arguments.createArray()
                 for ((k, item) in mergedByDir) {
                     val pinnedOrder = when (k) {
                         bpKey -> 1
                         spKey -> 2
-                        dlKey -> 3
-                        tgKey -> 4
+                        vdKey -> 3
+                        dlKey -> 4
+                        tgKey -> 5
                         else -> 0
                     }
                     val map = Arguments.createMap().apply {
@@ -3452,6 +3789,17 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                 }
                             } else {
                                 subCount++
+                                val nestedFiles = entry.listFiles() ?: emptyArray()
+                                for (nf in nestedFiles) {
+                                    if (nf.isFile && !nf.name.startsWith(".") && getMediaType(nf.name) != null) {
+                                        mediaCount++
+                                        val lm = nf.lastModified()
+                                        if (lm >= newestMod) {
+                                            newestMod = lm
+                                            coverFile = nf
+                                        }
+                                    }
+                                }
                             }
                         } else if (entry.isFile && getMediaType(en) != null) {
                             mediaCount++
@@ -5869,12 +6217,15 @@ class BackgroundVideoRecordService : Service() {
             if (!publicMoviesDir.exists()) {
                 publicMoviesDir.mkdirs()
             }
+            val nmFile = File(publicMoviesDir, ".nomedia")
+            if (!nmFile.exists()) {
+                nmFile.createNewFile()
+            }
         } catch (_: Exception) {}
 
         val expectedPublicFile = File(publicMoviesDir, rawFile.name)
 
         if (!rawFile.absolutePath.equals(expectedPublicFile.absolutePath, ignoreCase = true)) {
-            var copiedToPublic = false
             try {
                 if (publicMoviesDir.exists() && publicMoviesDir.canWrite()) {
                     FileInputStream(rawFile).use { fis ->
@@ -5885,43 +6236,9 @@ class BackgroundVideoRecordService : Service() {
                     }
                     if (expectedPublicFile.exists() && expectedPublicFile.length() > 512L) {
                         finalFile = expectedPublicFile
-                        copiedToPublic = true
                     }
                 }
             } catch (_: Exception) {}
-
-            if (!copiedToPublic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                try {
-                    val resolver = applicationContext.contentResolver
-                    val collection = if (isVideo) {
-                        MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                    } else {
-                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                    }
-                    val values = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, rawFile.name)
-                        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/2do plano")
-                        put(MediaStore.MediaColumns.IS_PENDING, 1)
-                    }
-                    val itemUri = resolver.insert(collection, values)
-                    if (itemUri != null) {
-                        resolver.openOutputStream(itemUri)?.use { outStream ->
-                            FileInputStream(rawFile).use { inStream ->
-                                inStream.copyTo(outStream)
-                                outStream.flush()
-                            }
-                        }
-                        val doneValues = ContentValues().apply {
-                            put(MediaStore.MediaColumns.IS_PENDING, 0)
-                        }
-                        resolver.update(itemUri, doneValues, null, null)
-                        if (expectedPublicFile.exists() && expectedPublicFile.length() > 512L) {
-                            finalFile = expectedPublicFile
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
         }
 
         val payload = Arguments.createMap().apply {
@@ -5934,15 +6251,12 @@ class BackgroundVideoRecordService : Service() {
         VideoEngineModule.emitBgRecordEvent("BackgroundRecordingSaved", payload)
 
         try {
-            val pathsToScan = if (finalFile.absolutePath != rawFile.absolutePath) {
-                arrayOf(finalFile.absolutePath, rawFile.absolutePath)
-            } else {
-                arrayOf(finalFile.absolutePath)
-            }
+            val nmFile = File(publicMoviesDir, ".nomedia")
+            if (!nmFile.exists()) nmFile.createNewFile()
             MediaScannerConnection.scanFile(
                 applicationContext,
-                pathsToScan,
-                Array(pathsToScan.size) { mimeType },
+                arrayOf(nmFile.absolutePath),
+                null,
                 null
             )
         } catch (_: Exception) {}

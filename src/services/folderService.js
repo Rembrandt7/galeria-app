@@ -1052,6 +1052,12 @@ export const folderService = {
       await folderService.ensureBovedaPrivadaFolder();
     } catch (_eBp) {}
     try {
+      await folderService.setFolderNoMedia(finalUri, true);
+      await folderService.setFolderNoMedia(SEGUNDO_PLANO_FOLDER_URI, true);
+      await folderService.setFolderNoMedia(DOWNLOAD_ROOT_FOLDER_URI, true);
+      await folderService.setFolderNoMedia(TELEGRAM_ROOT_FOLDER_URI, true);
+    } catch (_eNmAll) {}
+    try {
       await folderService.addSavedFolder(finalUri, DOWNLOADED_VIDEOS_FOLDER_NAME);
       await folderService.addSavedFolder(SEGUNDO_PLANO_FOLDER_URI, SEGUNDO_PLANO_FOLDER_NAME);
       await folderService.addSavedFolder(BOVEDA_PRIVADA_FOLDER_URI, BOVEDA_PRIVADA_FOLDER_NAME);
@@ -1082,7 +1088,11 @@ export const folderService = {
     const phys = folderService.toPhysicalUri(uri);
     if (NativeModules?.VideoEngineModule?.getFolderNoMediaStatusNative) {
       try {
-        return await NativeModules.VideoEngineModule.getFolderNoMediaStatusNative(phys);
+        const res = await NativeModules.VideoEngineModule.getFolderNoMediaStatusNative(phys);
+        if (typeof res === 'boolean') {
+          return { hasNoMedia: res, path: phys };
+        }
+        if (res && typeof res === 'object') return res;
       } catch (_e) {}
     }
     try {
@@ -1103,7 +1113,10 @@ export const folderService = {
           Boolean(hideFromOtherApps)
         );
         folderService.invalidateCache(uri);
-        return res;
+        if (typeof res === 'boolean') {
+          return { hasNoMedia: res, path: phys };
+        }
+        return res || { hasNoMedia: Boolean(hideFromOtherApps), path: phys };
       } catch (_e) {}
     }
     try {
@@ -1118,6 +1131,29 @@ export const folderService = {
       return { hasNoMedia: Boolean(hideFromOtherApps), path: phys };
     } catch (_e2) {
       return { hasNoMedia: false, path: phys };
+    }
+  },
+
+  async syncArchivosPrivacy(hiddenUris = [], visibleUris = []) {
+    try {
+      const cleanHidden = (hiddenUris || [])
+        .map((u) => folderService.toPhysicalUri(u) || u)
+        .filter(Boolean);
+      const cleanVisible = (visibleUris || [])
+        .map((u) => folderService.toPhysicalUri(u) || u)
+        .filter(Boolean);
+      if (NativeModules?.VideoEngineModule?.syncArchivosPrivacyNative) {
+        return await NativeModules.VideoEngineModule.syncArchivosPrivacyNative(
+          cleanHidden,
+          cleanVisible
+        );
+      }
+      for (const hu of cleanHidden) {
+        await folderService.setFolderNoMedia(hu, true);
+      }
+      return true;
+    } catch (_e) {
+      return false;
     }
   },
 
