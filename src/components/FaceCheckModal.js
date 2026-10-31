@@ -16,7 +16,6 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library/legacy';
 
 const FACE_INDEX_STORAGE_KEY = '@galeria_checkremb_face_index_v1';
@@ -82,6 +81,11 @@ export default function FaceCheckModal({
   const [comparing, setComparing] = useState(false);
   const [compareResult, setCompareResult] = useState(null);
 
+  // Selector interno de fotos de Mi Galería (sin depender de paquetes externos)
+  const [pickerTarget, setPickerTarget] = useState(null); // null | 'query' | 'A' | 'B'
+  const [pickerPhotos, setPickerPhotos] = useState([]);
+  const [loadingPickerPhotos, setLoadingPickerPhotos] = useState(false);
+
   useEffect(() => {
     if (visible) {
       loadFaceIndex();
@@ -137,35 +141,87 @@ export default function FaceCheckModal({
     };
   };
 
-  const pickPhotoFromDevice = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.9,
-    });
-    if (res.canceled || !res.assets?.[0]?.uri) return null;
-    return res.assets[0].uri;
+  const openGalleryPicker = async (targetSlot) => {
+    setPickerTarget(targetSlot);
+    if (pickerPhotos.length === 0) {
+      setLoadingPickerPhotos(true);
+      try {
+        const media = await MediaLibrary.getAssetsAsync({
+          first: 120,
+          mediaType: ['photo'],
+          sortBy: [[MediaLibrary.SortBy.creationTime, false]],
+        });
+        setPickerPhotos(media?.assets || []);
+      } catch (_e) {
+      } finally {
+        setLoadingPickerPhotos(false);
+      }
+    }
+  };
+
+  const handlePhotoChosenFromPicker = async (pickedUri) => {
+    const target = pickerTarget;
+    setPickerTarget(null);
+    if (!pickedUri || !target) return;
+
+    if (target === 'query') {
+      try {
+        setSearchingFace(true);
+        setSearchResults([]);
+        const faceData = await extractFaceDataFromUri(pickedUri, true);
+        if (!faceData) {
+          setSearchingFace(false);
+          Alert.alert('Sin rostro detectado', 'No se detectó un rostro claro en la imagen seleccionada.');
+          return;
+        }
+        setQueryPhoto(faceData);
+        await runBiometricSearch(faceData, pickedUri);
+      } catch (e) {
+        Alert.alert('Aviso', e?.message || 'Error al analizar el rostro.');
+      } finally {
+        setSearchingFace(false);
+      }
+    } else if (target === 'A' || target === 'B') {
+      try {
+        setComparing(true);
+        setCompareResult(null);
+        const faceData = await extractFaceDataFromUri(pickedUri, true);
+        if (!faceData) {
+          Alert.alert('Sin rostro', 'No se pudo detectar un rostro en esa imagen.');
+          setComparing(false);
+          return;
+        }
+        if (target === 'A') {
+          setCompareFaceA(faceData);
+          if (compareFaceB) {
+            const sim = computeCosineSimilarity(faceData.embedding, compareFaceB.embedding);
+            setCompareResult({
+              similarity: sim,
+              isMatch: sim >= 0.75,
+              isPossible: sim >= 0.62 && sim < 0.75,
+            });
+          }
+        } else {
+          setCompareFaceB(faceData);
+          if (compareFaceA) {
+            const sim = computeCosineSimilarity(compareFaceA.embedding, faceData.embedding);
+            setCompareResult({
+              similarity: sim,
+              isMatch: sim >= 0.75,
+              isPossible: sim >= 0.62 && sim < 0.75,
+            });
+          }
+        }
+      } catch (_e) {
+      } finally {
+        setComparing(false);
+      }
+    }
   };
 
   // --- TAB 1: BUSCAR ROSTRO ---
-  const handleSelectQueryPhoto = async () => {
-    try {
-      const pickedUri = await pickPhotoFromDevice();
-      if (!pickedUri) return;
-      setSearchingFace(true);
-      setSearchResults([]);
-      const faceData = await extractFaceDataFromUri(pickedUri, true);
-      if (!faceData) {
-        setSearchingFace(false);
-        Alert.alert('Sin rostro detectado', 'No se detectó un rostro claro en la imagen seleccionada.');
-        return;
-      }
-      setQueryPhoto(faceData);
-      await runBiometricSearch(faceData, pickedUri);
-    } catch (e) {
-      Alert.alert('Aviso', e?.message || 'Error al analizar el rostro.');
-    } finally {
-      setSearchingFace(false);
-    }
+  const handleSelectQueryPhoto = () => {
+    openGalleryPicker('query');
   };
 
   const runBiometricSearch = async (faceData, originalUri) => {
@@ -402,43 +458,8 @@ export default function FaceCheckModal({
   };
 
   // --- TAB 3: VERIFICAR 1:1 ---
-  const handleSelectComparePhoto = async (slot) => {
-    try {
-      const pickedUri = await pickPhotoFromDevice();
-      if (!pickedUri) return;
-      setComparing(true);
-      setCompareResult(null);
-      const faceData = await extractFaceDataFromUri(pickedUri, true);
-      if (!faceData) {
-        Alert.alert('Sin rostro', 'No se pudo detectar un rostro en esa imagen.');
-        setComparing(false);
-        return;
-      }
-      if (slot === 'A') {
-        setCompareFaceA(faceData);
-        if (compareFaceB) {
-          const sim = computeCosineSimilarity(faceData.embedding, compareFaceB.embedding);
-          setCompareResult({
-            similarity: sim,
-            isMatch: sim >= 0.75,
-            isPossible: sim >= 0.62 && sim < 0.75,
-          });
-        }
-      } else {
-        setCompareFaceB(faceData);
-        if (compareFaceA) {
-          const sim = computeCosineSimilarity(compareFaceA.embedding, faceData.embedding);
-          setCompareResult({
-            similarity: sim,
-            isMatch: sim >= 0.75,
-            isPossible: sim >= 0.62 && sim < 0.75,
-          });
-        }
-      }
-    } catch (_e) {
-    } finally {
-      setComparing(false);
-    }
+  const handleSelectComparePhoto = (slot) => {
+    openGalleryPicker(slot);
   };
 
   const handleClearIndex = () => {
@@ -994,6 +1015,83 @@ export default function FaceCheckModal({
             </View>
           )}
         </ScrollView>
+
+        {/* Selector Visual Rápido de Fotos de Mi Galería */}
+        {Boolean(pickerTarget) && (
+          <View
+            style={{
+              position: 'absolute',
+              left: 0,
+              right: 0,
+              top: 0,
+              bottom: 0,
+              backgroundColor: 'rgba(7, 11, 20, 0.96)',
+              paddingTop:
+                Platform.OS === 'android'
+                  ? Math.max((StatusBar.currentHeight || 36) + 14, 52)
+                  : 52,
+              paddingBottom: Platform.OS === 'android' ? 50 : 32,
+              paddingHorizontal: 14,
+            }}
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingBottom: 12,
+                borderBottomWidth: 1,
+                borderBottomColor: '#1E293B',
+              }}
+            >
+              <Text style={{ color: '#F8FAFC', fontSize: 15, fontWeight: '900' }}>
+                📸 Elige una foto de tu Galería
+              </Text>
+              <TouchableOpacity
+                style={styles.closeBtn}
+                onPress={() => setPickerTarget(null)}
+              >
+                <Ionicons name="close" size={20} color="#F8FAFC" />
+              </TouchableOpacity>
+            </View>
+
+            {loadingPickerPhotos ? (
+              <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                <ActivityIndicator size="large" color="#34D399" />
+              </View>
+            ) : (
+              <ScrollView
+                contentContainerStyle={{
+                  flexDirection: 'row',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  paddingVertical: 12,
+                }}
+              >
+                {pickerPhotos.map((p) => (
+                  <TouchableOpacity
+                    key={p.id}
+                    style={{
+                      width: '31%',
+                      aspectRatio: 1,
+                      borderRadius: 10,
+                      overflow: 'hidden',
+                      backgroundColor: '#111827',
+                      borderWidth: 1,
+                      borderColor: '#1E293B',
+                    }}
+                    onPress={() => handlePhotoChosenFromPicker(p.uri)}
+                  >
+                    <Image
+                      source={{ uri: p.uri }}
+                      style={{ width: '100%', height: '100%' }}
+                    />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            )}
+          </View>
+        )}
       </View>
     </Modal>
   );
