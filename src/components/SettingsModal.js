@@ -28,6 +28,9 @@ export default function SettingsModal({ visible, onClose, onOpenStore }) {
   const [savedApks, setSavedApks] = useState({ current: null, previous: null });
   const [savedPin, setSavedPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
+  const [savedDecoyPin, setSavedDecoyPin] = useState('0000');
+  const [decoyPinInput, setDecoyPinInput] = useState('');
+  const [stripGpsOnShare, setStripGpsOnShare] = useState(true);
 
   const refreshSavedApks = async () => {
     const apks = await updateService.getSavedApks();
@@ -42,6 +45,13 @@ export default function SettingsModal({ visible, onClose, onOpenStore }) {
         setSavedPin(p);
         setPinInput('');
       });
+      storageService.getDecoyPin().then((dp) => {
+        setSavedDecoyPin(dp || '0000');
+        setDecoyPinInput('');
+      });
+      storageService.getStripGpsOnShare().then((sg) => {
+        setStripGpsOnShare(Boolean(sg));
+      });
     }
   }, [visible]);
 
@@ -54,7 +64,32 @@ export default function SettingsModal({ visible, onClose, onOpenStore }) {
     await storageService.setPin(clean);
     setSavedPin(clean);
     setPinInput('');
-    Alert.alert('PIN guardado', 'Ahora se pedirá este PIN de 4 dígitos para mostrar tus carpetas ocultas.');
+    Alert.alert('PIN guardado', 'Ahora se pedirá este PIN de 4 dígitos (o tu Huella Digital) para mostrar tus carpetas privadas.');
+  };
+
+  const handleSaveDecoyPin = async () => {
+    const clean = (decoyPinInput || '').trim();
+    if (clean.length < 4) {
+      Alert.alert('PIN Señuelo', 'Ingresa al menos 4 dígitos o caracteres para tu PIN Señuelo (Modo Pánico).');
+      return;
+    }
+    if (savedPin && clean === savedPin) {
+      Alert.alert('PIN Señuelo', 'El PIN Señuelo debe ser distinto a tu PIN real.');
+      return;
+    }
+    await storageService.setDecoyPin(clean);
+    setSavedDecoyPin(clean);
+    setDecoyPinInput('');
+    Alert.alert(
+      '🕵️ PIN Señuelo Guardado',
+      `Si ingresas "${clean}" al entrar a Archivos, se abrirá el Modo Señuelo ocultando por completo la Bóveda Privada y la carpeta 2do plano.`
+    );
+  };
+
+  const handleToggleStripGps = async () => {
+    const nextVal = !stripGpsOnShare;
+    setStripGpsOnShare(nextVal);
+    await storageService.setStripGpsOnShare(nextVal);
   };
 
   const handleRemovePin = async () => {
@@ -475,6 +510,81 @@ export default function SettingsModal({ visible, onClose, onOpenStore }) {
                 </Text>
               </TouchableOpacity>
             )}
+
+            {/* Configuración de PIN Señuelo (Modo Pánico) */}
+            <View
+              style={{
+                marginTop: 14,
+                paddingTop: 12,
+                borderTopWidth: 1,
+                borderTopColor: theme.colors.surfaceBorder,
+                gap: 8,
+              }}
+            >
+              <Text style={{ color: '#fcd34d', fontSize: 13, fontWeight: '800' }}>
+                🕵️ PIN Señuelo / Modo Pánico (Actual: {savedDecoyPin || '0000'})
+              </Text>
+              <Text style={{ color: theme.colors.textSecondary, fontSize: 11.5, lineHeight: 16 }}>
+                Si alguien te pide desbloquear "Archivos", ingresa este PIN falso: abrirá una vista limpia ocultando por completo tu Bóveda Privada y 2do plano.
+              </Text>
+              <View style={styles.pinRow}>
+                <TextInput
+                  style={styles.pinInput}
+                  value={decoyPinInput}
+                  onChangeText={setDecoyPinInput}
+                  placeholder="Nuevo PIN Señuelo (ej. 0000)"
+                  placeholderTextColor={theme.colors.textMuted}
+                  maxLength={12}
+                  secureTextEntry
+                />
+                <TouchableOpacity
+                  style={[styles.pinSaveBtn, { backgroundColor: '#d97706' }]}
+                  onPress={handleSaveDecoyPin}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="eye-off-outline" size={16} color="#fff" />
+                  <Text style={styles.pinSaveBtnText}>Guardar Señuelo</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Limpiador de Metadatos GPS al Compartir */}
+            <View
+              style={{
+                marginTop: 14,
+                paddingTop: 12,
+                borderTopWidth: 1,
+                borderTopColor: theme.colors.surfaceBorder,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 10,
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: '#34d399', fontSize: 13, fontWeight: '800' }}>
+                  🛡️ Limpiar ubicación GPS al compartir fotos
+                </Text>
+                <Text style={{ color: theme.colors.textSecondary, fontSize: 11.5, marginTop: 2 }}>
+                  Elimina coordenadas GPS (EXIF) automáticamente antes de enviar fotos por WhatsApp o redes.
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleToggleStripGps}
+                style={{
+                  backgroundColor: stripGpsOnShare ? '#059669' : '#3f3f46',
+                  paddingHorizontal: 14,
+                  paddingVertical: 8,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: stripGpsOnShare ? '#34d399' : '#52525b',
+                }}
+              >
+                <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '800' }}>
+                  {stripGpsOnShare ? 'ACTIVO' : 'APAGADO'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Tarjeta de Permisos del Sistema */}

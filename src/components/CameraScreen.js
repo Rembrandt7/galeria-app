@@ -310,7 +310,6 @@ export default function CameraScreen({
       setIsRecording(false);
       setIsPaused(false);
       setUsingNativeBgService(false);
-      setStealthLocked(false);
 
       const savedPath = evt?.path || evt?.uri || '';
       const fileName = savedPath.split('/').pop() || 'Video guardado';
@@ -340,7 +339,6 @@ export default function CameraScreen({
       setIsRecording(false);
       setIsPaused(false);
       setUsingNativeBgService(false);
-      setStealthLocked(false);
       if (!stealthLockedRef.current && evt?.message) {
         Alert.alert('Aviso de Cámara 2do Plano', evt.message);
       }
@@ -595,17 +593,44 @@ export default function CameraScreen({
     }
   };
 
-  // Doble toque para salir de la pantalla 100% negra
+  const singleTapTimerRef = useRef(null);
+  const [stealthActionDot, setStealthActionDot] = useState(null);
+
+  // Modo Sigilo (Pantalla Negra Falsa):
+  // - 1 toque: Toma foto silenciosa
+  // - 2 toques rápidos: Inicia / Detiene grabación de video
+  // - Dejar presionado: Salir de Pantalla Negra
   const handleStealthScreenTap = () => {
     const now = Date.now();
-    if (now - lastTapRef.current < 400) {
-      setStealthLocked(false);
-      setStealthHintVisible(false);
-    } else {
-      setStealthHintVisible(true);
-      setTimeout(() => setStealthHintVisible(false), 2500);
+    if (now - lastTapRef.current < 360) {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      lastTapRef.current = 0;
+      if (isRecording) {
+        setStealthActionDot('stop');
+        handleStopRecording();
+      } else {
+        setStealthActionDot('rec');
+        handleStartRecording();
+      }
+      setTimeout(() => setStealthActionDot(null), 900);
+      return;
     }
     lastTapRef.current = now;
+    if (singleTapTimerRef.current) clearTimeout(singleTapTimerRef.current);
+    singleTapTimerRef.current = setTimeout(() => {
+      singleTapTimerRef.current = null;
+      if (!isRecording && !saving) {
+        setStealthActionDot('photo');
+        handleTakePhoto();
+        setTimeout(() => setStealthActionDot(null), 800);
+      } else {
+        setStealthHintVisible(true);
+        setTimeout(() => setStealthHintVisible(false), 1800);
+      }
+    }, 365);
   };
 
   const handleFloatingIconPress = () => {
@@ -696,15 +721,46 @@ export default function CameraScreen({
               style={styles.fullBlackScreen}
               activeOpacity={1}
               onPress={handleStealthScreenTap}
+              onLongPress={() => {
+                setStealthLocked(false);
+                setStealthHintVisible(false);
+              }}
+              delayLongPress={650}
             >
+              {/* Reloj tenue tipo Always-On Display para parecer pantalla bloqueada */}
+              <View style={{ alignItems: 'center', gap: 4 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={{ color: '#1c1c21', fontSize: 38, fontWeight: '300', letterSpacing: 2 }}>
+                    {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </Text>
+                  <View
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: 2.5,
+                      backgroundColor:
+                        stealthActionDot === 'photo'
+                          ? '#064e3b'
+                          : isRecording
+                          ? '#3f1515'
+                          : '#18181b',
+                    }}
+                  />
+                </View>
+                {isRecording && (
+                  <Text style={{ color: '#18181c', fontSize: 10 }}>
+                    {formatTimer(elapsed)}
+                  </Text>
+                )}
+              </View>
+
               {stealthHintVisible && (
-                <View style={styles.stealthHintBox}>
-                  <Ionicons name="lock-closed" size={22} color="#666666" />
+                <View style={[styles.stealthHintBox, { marginTop: 24 }]}>
                   <Text style={styles.stealthHintText}>
-                    Grabando en "2do plano" ({formatTimer(elapsed)})
+                    1 toque: Foto · 2 toques: {isRecording ? 'Detener video' : 'Grabar video'}
                   </Text>
                   <Text style={styles.stealthHintSub}>
-                    Toca 2 veces rápido para mostrar el icono
+                    Mantén presionado para salir de Pantalla Negra
                   </Text>
                 </View>
               )}

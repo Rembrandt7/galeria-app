@@ -1,9 +1,11 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
 import * as Sharing from 'expo-sharing';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { File, Paths } from 'expo-file-system';
 import * as LegacyFS from 'expo-file-system/legacy';
 import { Alert, NativeModules } from 'react-native';
 import { folderService } from './folderService';
+import { storageService } from './storageService';
 
 const { VideoEngineModule } = NativeModules;
 
@@ -595,11 +597,30 @@ export const mediaService = {
         }
       }
 
-      const targetUriToShare = copiedToCache ? tempShareFile.uri : physUri || rawUri;
+      let targetUriToShare = copiedToCache ? tempShareFile.uri : physUri || rawUri;
+
+      // Si es fotografía y está activa la opción de limpiar GPS/EXIF al compartir, re-renderizar sin metadatos de ubicación
+      const isPhotoMime = mimeType.startsWith('image/') && mimeType !== 'image/gif';
+      if (isPhotoMime) {
+        try {
+          const stripGps = await storageService.getStripGpsOnShare();
+          if (stripGps) {
+            const ctx = ImageManipulator.manipulate(targetUriToShare);
+            const ref = await ctx.renderAsync();
+            const savedClean = await ref.saveAsync({
+              compress: 0.94,
+              format: ext === '.png' ? SaveFormat.PNG : SaveFormat.JPEG,
+            });
+            if (savedClean?.uri) {
+              targetUriToShare = savedClean.uri;
+            }
+          }
+        } catch (_exifErr) {}
+      }
 
       await Sharing.shareAsync(targetUriToShare, {
         mimeType,
-        dialogTitle: 'Compartir archivo',
+        dialogTitle: 'Compartir archivo (Sin rastro GPS)',
       });
       return true;
     } catch (error) {

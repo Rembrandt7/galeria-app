@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const HISTORY_STORAGE_KEY = '@galeria_browser_history_v1';
 const BASE_EMAIL_STORAGE_KEY = '@galeria_browser_base_email_v1';
+const TEMP_MAIL_SESSION_KEY = '@galeria_temp_mail_session_v1';
 
 const QUICK_SITES = [
   { id: 'google', name: 'Google', url: 'https://www.google.com', icon: 'search', color: '#3B82F6' },
@@ -38,6 +39,10 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
   const [cleaningData, setCleaningData] = useState(false);
   const [baseEmail, setBaseEmail] = useState('');
   const [generatedAlias, setGeneratedAlias] = useState('');
+  const [tempMailSession, setTempMailSession] = useState(null); // { address, token, provider, login, domain }
+  const [tempMailMessages, setTempMailMessages] = useState([]);
+  const [loadingTempMail, setLoadingTempMail] = useState(false);
+  const [checkingInbox, setCheckingInbox] = useState(false);
 
   useEffect(() => {
     if (visible) {
@@ -47,8 +52,143 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
           if (saved) setBaseEmail(saved);
         })
         .catch(() => {});
+      AsyncStorage.getItem(TEMP_MAIL_SESSION_KEY)
+        .then((raw) => {
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (parsed?.address) setTempMailSession(parsed);
+          }
+        })
+        .catch(() => {});
     }
   }, [visible]);
+
+  const handleCreateDisposableEmail = async () => {
+    setLoadingTempMail(true);
+    setTempMailMessages([]);
+    try {
+      // Intento 1: API oficial mail.tm
+      const domRes = await fetch('https://api.mail.tm/domains');
+      const domJson = await domRes.json();
+      const domainItem = domJson?.['hydra:member']?.[0]?.domain;
+      if (domainItem) {
+        const randUser = `remb${Date.now().toString(36).slice(-5)}${Math.floor(100 + Math.random() * 899)}`;
+        const password = `Pwd_${randUser}!9`;
+        const address = `${randUser}@${domainItem}`;
+        await fetch('https://api.mail.tm/accounts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address, password }),
+        });
+        const tokRes = await fetch('https://api.mail.tm/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ address, password }),
+        });
+        const tokJson = await tokRes.json();
+        if (tokJson?.token) {
+          const session = { address, token: tokJson.token, provider: 'mailtm' };
+          setTempMailSession(session);
+          await AsyncStorage.setItem(TEMP_MAIL_SESSION_KEY, JSON.stringify(session));
+          setLoadingTempMail(false);
+          return;
+        }
+      }
+    } catch (_e1) {}
+
+    try {
+      // Respaldo automático: 1secmail
+      const randUser = `remb${Date.now().toString(36).slice(-5)}${Math.floor(10 + Math.random() * 89)}`;
+      const domain = '1secmail.com';
+      const address = `${randUser}@${domain}`;
+      const session = { address, provider: '1secmail', login: randUser, domain };
+      setTempMailSession(session);
+      await AsyncStorage.setItem(TEMP_MAIL_SESSION_KEY, JSON.stringify(session));
+    } catch (_e2) {
+      Alert.alert('Aviso', 'No se pudo generar el correo temporal. Verifica tu conexión.');
+    }
+    setLoadingTempMail(false);
+  };
+
+  const handleCheckDisposableInbox = async () => {
+    if (!tempMailSession?.address) return;
+    setCheckingInbox(true);
+    try {
+      if (tempMailSession.provider === 'mailtm' && tempMailSession.token) {
+        const res = await fetch('https://api.mail.tm/messages', {
+          headers: { Authorization: `Bearer ${tempMailSession.token}` },
+        });
+        const json = await res.json();
+        const list = json?.['hydra:member'] || [];
+        const detailed = await Promise.all(
+          list.slice(0, 5).map(async (m) => {
+            try {
+              const dRes = await fetch(`https://api.mail.tm/messages/${m.id}`, {
+                headers: { Authorization: `Bearer ${tempMailSession.token}` },
+              });
+              const dJson = await dRes.json();
+              return {
+                id: m.id,
+                from: m.from?.address || 'Remitente',
+                subject: m.subject || '(Sin asunto)',
+                intro: dJson?.text || m.intro || '',
+              };
+            } catch (_e) {
+              return {
+                id: m.id,
+                from: m.from?.address || 'Remitente',
+                subject: m.subject || '(Sin asunto)',
+                intro: m.intro || '',
+              };
+            }
+          })
+        );
+        setTempMailMessages(detailed);
+        if (detailed.length === 0) {
+          Alert.alert('Buzón vacío aún', 'Aún no llega ningún correo. Si acabas de registrarte, espera 5 segundos y vuelve a tocar "Revisar Buzón".');
+        }
+      } else if (tempMailSession.provider === '1secmail') {
+        const url = `https://www.1secmail.com/api/v1/?action=getMessages&login=${encodeURIComponent(
+          tempMailSession.login
+        )}&domain=${encodeURIComponent(tempMailSession.domain)}`;
+        const res = await fetch(url);
+        const list = await res.json();
+        if (Array.isArray(list) && list.length > 0) {
+          const detailed = await Promise.all(
+            list.slice(0, 5).map(async (m) => {
+              try {
+                const r2 = await fetch(
+                  `https://www.1secmail.com/api/v1/?action=readMessage&login=${encodeURIComponent(
+                    tempMailSession.login
+                  )}&domain=${encodeURIComponent(tempMailSession.domain)}&id=${m.id}`
+                );
+                const d = await r2.json();
+                return {
+                  id: String(m.id),
+                  from: m.from || 'Remitente',
+                  subject: m.subject || '(Sin asunto)',
+                  intro: d?.textBody || d?.body || '',
+                };
+              } catch (_e) {
+                return {
+                  id: String(m.id),
+                  from: m.from || 'Remitente',
+                  subject: m.subject || '(Sin asunto)',
+                  intro: '',
+                };
+              }
+            })
+          );
+          setTempMailMessages(detailed);
+        } else {
+          Alert.alert('Buzón vacío aún', 'Aún no llega ningún correo. Espera unos segundos y vuelve a tocar "Revisar Buzón".');
+        }
+      }
+    } catch (_e) {
+      Alert.alert('Aviso', 'No se pudo consultar el buzón temporal en este momento.');
+    }
+    setCheckingInbox(false);
+  };
 
   const handleClearFirstTimeData = async (alsoLaunch = false) => {
     setCleaningData(true);
@@ -375,6 +515,128 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
                         padding: 0,
                       }}
                     />
+                  </View>
+                )}
+              </View>
+
+              {/* Buzón de Correo Temporal Desechable Real (Recibe códigos de verificación aquí mismo) */}
+              <View
+                style={{
+                  borderTopWidth: 1,
+                  borderTopColor: 'rgba(16, 185, 129, 0.25)',
+                  paddingTop: 10,
+                  gap: 8,
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                  <Text style={{ color: '#A7F3D0', fontSize: 11.5, fontWeight: '800', flex: 1 }}>
+                    📩 Correo Temporal Real (Recibe códigos de verificación aquí mismo):
+                  </Text>
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: '#7C3AED',
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 8,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                    onPress={handleCreateDisposableEmail}
+                    disabled={loadingTempMail}
+                  >
+                    {loadingTempMail ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : (
+                      <Ionicons name="mail-unread-outline" size={13} color="#FFF" />
+                    )}
+                    <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>
+                      {tempMailSession?.address ? 'Nuevo Correo' : 'Crear Correo 1-Clic'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                {tempMailSession?.address && (
+                  <View
+                    style={{
+                      backgroundColor: '#0F172A',
+                      borderRadius: 10,
+                      padding: 9,
+                      borderWidth: 1,
+                      borderColor: '#8B5CF6',
+                      gap: 6,
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: '#94A3B8', fontSize: 10 }}>
+                          Tu correo desechable activo (mantén presionado para copiar):
+                        </Text>
+                        <TextInput
+                          value={tempMailSession.address}
+                          editable={true}
+                          selectTextOnFocus={true}
+                          style={{
+                            color: '#C4B5FD',
+                            fontSize: 13,
+                            fontWeight: '800',
+                            padding: 0,
+                          }}
+                        />
+                      </View>
+                      <TouchableOpacity
+                        style={{
+                          backgroundColor: '#059669',
+                          paddingHorizontal: 10,
+                          paddingVertical: 7,
+                          borderRadius: 8,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 4,
+                        }}
+                        onPress={handleCheckDisposableInbox}
+                        disabled={checkingInbox}
+                      >
+                        {checkingInbox ? (
+                          <ActivityIndicator size="small" color="#FFF" />
+                        ) : (
+                          <Ionicons name="refresh" size={13} color="#FFF" />
+                        )}
+                        <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>
+                          Revisar Buzón
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {tempMailMessages.length > 0 && (
+                      <View style={{ gap: 6, marginTop: 4 }}>
+                        {tempMailMessages.map((msg) => (
+                          <View
+                            key={msg.id}
+                            style={{
+                              backgroundColor: '#1E1B4B',
+                              borderRadius: 8,
+                              padding: 8,
+                              borderWidth: 1,
+                              borderColor: 'rgba(139, 92, 246, 0.4)',
+                            }}
+                          >
+                            <Text style={{ color: '#DDD6FE', fontSize: 11.5, fontWeight: '800' }}>
+                              📩 {msg.subject}
+                            </Text>
+                            <Text style={{ color: '#94A3B8', fontSize: 10 }}>De: {msg.from}</Text>
+                            {Boolean(msg.intro) && (
+                              <Text
+                                selectable
+                                style={{ color: '#F8FAFC', fontSize: 11.5, marginTop: 4, lineHeight: 16 }}
+                              >
+                                {String(msg.intro).slice(0, 280)}
+                              </Text>
+                            )}
+                          </View>
+                        ))}
+                      </View>
+                    )}
                   </View>
                 )}
               </View>

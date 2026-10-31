@@ -332,6 +332,97 @@ export default function FolderBrowser({
   const currentFolder = history[history.length - 1] || null;
   const [hasNoMediaShield, setHasNoMediaShield] = useState(false);
   const [isAutoClassifying, setIsAutoClassifying] = useState(false);
+  const [showTopHeavyModal, setShowTopHeavyModal] = useState(false);
+  const [topHeavyAssets, setTopHeavyAssets] = useState([]);
+  const [scanningTopHeavy, setScanningTopHeavy] = useState(false);
+  const [scanningGlobalOptimize, setScanningGlobalOptimize] = useState(false);
+
+  const handleOpenTopHeavyModal = async () => {
+    setShowTopHeavyModal(true);
+    setScanningTopHeavy(true);
+    try {
+      const fastRes = await mediaService.getAssets({ first: 6000, mediaType: ['photo', 'video'] });
+      const pool = [...(fastRes?.assets || []), ...(rawFolderList || [])];
+      const seen = new Set();
+      const unique = [];
+      for (const a of pool) {
+        if (!a?.uri) continue;
+        const k = String(a.uri).toLowerCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const sz = Number(a.fileSize) || 0;
+        if (sz > 0) unique.push(a);
+      }
+      unique.sort((a, b) => (Number(b.fileSize) || 0) - (Number(a.fileSize) || 0));
+      setTopHeavyAssets(unique.slice(0, 25));
+    } catch (_e) {
+      setTopHeavyAssets(
+        [...(rawFolderList || [])]
+          .sort((a, b) => (Number(b.fileSize) || 0) - (Number(a.fileSize) || 0))
+          .slice(0, 25)
+      );
+    }
+    setScanningTopHeavy(false);
+  };
+
+  const handleOptimizeWholeDevice = async () => {
+    setScanningGlobalOptimize(true);
+    try {
+      const fastRes = await mediaService.getAssets({ first: 6000, mediaType: ['photo', 'video'] });
+      const pool = [...(fastRes?.assets || []), ...(rawFolderList || [])];
+      const seen = new Set();
+      const compPhotos = [];
+      const compVideos = [];
+      let totalEstSaved = 0;
+
+      for (const a of pool) {
+        if (!a?.uri) continue;
+        const k = String(a.uri).toLowerCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        const sz = Number(a.fileSize) || 0;
+        if (sz <= 0) continue;
+        const isVid =
+          a.mediaType === 'video' || /\.(mp4|mov|m4v|mkv|webm|3gp|avi)$/i.test(a.filename || a.uri || '');
+        const info = compressionService.getSizeLevel(sz, isVid ? 'video' : 'photo', Number(a.duration) || 0);
+        if (info.canCompress && info.level !== 'light') {
+          totalEstSaved += Number(info.estimatedSavedBytes) || 0;
+          if (isVid) compVideos.push(a);
+          else compPhotos.push(a);
+        }
+      }
+
+      setScanningGlobalOptimize(false);
+      if (compPhotos.length === 0 && compVideos.length === 0) {
+        Alert.alert(
+          '✨ ¡Todo en Verde!',
+          'Todas las fotografías y videos de tu galería ya están en peso óptimo (Verde).'
+        );
+        return;
+      }
+
+      Alert.alert(
+        '⚡ Optimizar Todo el Celular',
+        `Se detectaron:\n• ${compPhotos.length} foto(s) en Amarillo/Rojo\n• ${compVideos.length} video(s) en Amarillo/Rojo\n\nAhorro estimado: ~${compressionService.formatBytes(totalEstSaved)}\n\n¿Deseas comprimirlos todos en 2do plano manteniendo el 100% de su resolución?`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'Optimizar Todo',
+            onPress: () => {
+              compressionService.startBackgroundCompressionJob({
+                photos: compPhotos,
+                videos: compVideos,
+                label: 'Toda la Galería',
+              });
+            },
+          },
+        ]
+      );
+    } catch (_e) {
+      setScanningGlobalOptimize(false);
+      Alert.alert('Aviso', 'No se pudo escanear toda la galería en este momento.');
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -2041,6 +2132,57 @@ export default function FolderBrowser({
             </TouchableOpacity>
           )}
 
+          {/* Opción 3.3: Top 25 Archivos Más Pesados de Todo el Celular */}
+          <TouchableOpacity
+            style={[
+              styles.optionSquareCard,
+              {
+                backgroundColor: 'rgba(244, 63, 94, 0.16)',
+                borderColor: '#f43f5e',
+              },
+            ]}
+            onPress={handleOpenTopHeavyModal}
+            activeOpacity={0.8}
+          >
+            <View style={styles.actionToolHeader}>
+              <Ionicons name="flame-outline" size={15} color="#fb7185" />
+              <Text style={[styles.actionToolTitle, { color: '#fecdd3' }]} numberOfLines={1}>
+                🐘 Top 25 Más Pesados
+              </Text>
+            </View>
+            <Text style={[styles.actionToolSub, { color: '#fb7185' }]} numberOfLines={1}>
+              Ranking de archivos gigantes
+            </Text>
+          </TouchableOpacity>
+
+          {/* Opción 3.4: Optimizar Todo el Celular en 1 Toque */}
+          <TouchableOpacity
+            style={[
+              styles.optionSquareCard,
+              {
+                backgroundColor: 'rgba(139, 92, 246, 0.18)',
+                borderColor: '#8b5cf6',
+              },
+            ]}
+            onPress={handleOptimizeWholeDevice}
+            disabled={scanningGlobalOptimize || isCompressingFolder}
+            activeOpacity={0.8}
+          >
+            <View style={styles.actionToolHeader}>
+              {scanningGlobalOptimize ? (
+                <ActivityIndicator size="small" color="#c4b5fd" />
+              ) : (
+                <Ionicons name="flash" size={15} color="#c4b5fd" />
+              )}
+              <Text style={[styles.actionToolTitle, { color: '#ede9fe' }]} numberOfLines={1}>
+                {scanningGlobalOptimize ? 'Analizando...' : '⚡ Optimizar Todo el Cel'}
+              </Text>
+            </View>
+            <Text style={[styles.actionToolSub, { color: '#a78bfa' }]} numberOfLines={1}>
+              Comprimir Rojo/Amarillo global
+            </Text>
+          </TouchableOpacity>
+
           {/* Opción 4: Borrar carpetas vacías (SOLO si existen carpetas vacías en la carpeta actual) */}
           {emptyFoldersFound.length > 0 && (
             <TouchableOpacity
@@ -2833,6 +2975,133 @@ export default function FolderBrowser({
                     Agregar carpetas seleccionadas ({Object.keys(selectedSuggestedUris).length})
                   </Text>
                 </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Modal Ranking Top 25 Archivos Más Pesados de Todo el Celular */}
+      <Modal
+        visible={showTopHeavyModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowTopHeavyModal(false)}
+        statusBarTranslucent
+      >
+        <View style={styles.progressModalBackdrop}>
+          <View style={[styles.progressModalCard, { maxWidth: 380, maxHeight: '82%' }]}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+              <Text style={[styles.progressModalTitle, { marginTop: 0, fontSize: 16 }]}>
+                🐘 Top 25 Archivos Más Pesados
+              </Text>
+              <TouchableOpacity onPress={() => setShowTopHeavyModal(false)}>
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+            </View>
+            <Text style={[styles.progressModalSubtitle, { marginBottom: 8 }]}>
+              Los videos y fotos que más espacio ocupan en tu teléfono:
+            </Text>
+
+            {scanningTopHeavy ? (
+              <View style={{ paddingVertical: 30, alignItems: 'center', gap: 10 }}>
+                <ActivityIndicator size="large" color="#fb7185" />
+                <Text style={{ color: '#cbd5e1', fontSize: 12 }}>Buscando los archivos más pesados…</Text>
+              </View>
+            ) : (
+              <>
+                <ScrollView style={{ width: '100%', maxHeight: 360 }} contentContainerStyle={{ gap: 7 }}>
+                  {topHeavyAssets.map((item, idx) => {
+                    const isVid =
+                      item.mediaType === 'video' ||
+                      /\.(mp4|mov|m4v|mkv|webm|3gp|avi)$/i.test(item.filename || item.uri || '');
+                    const info = compressionService.getSizeLevel(
+                      Number(item.fileSize) || 0,
+                      isVid ? 'video' : 'photo',
+                      Number(item.duration) || 0
+                    );
+                    return (
+                      <TouchableOpacity
+                        key={`${item.uri}_${idx}`}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 9,
+                          backgroundColor: '#141722',
+                          padding: 8,
+                          borderRadius: 10,
+                          borderWidth: 1,
+                          borderColor: info.color || '#2e2e36',
+                        }}
+                        onPress={() => {
+                          setShowTopHeavyModal(false);
+                          if (onSelectPhoto) onSelectPhoto(item, topHeavyAssets);
+                        }}
+                      >
+                        <Text style={{ color: '#fb7185', fontSize: 12, fontWeight: '800', width: 22 }}>
+                          #{idx + 1}
+                        </Text>
+                        <Image
+                          source={{ uri: item.uri }}
+                          style={{ width: 42, height: 42, borderRadius: 7, backgroundColor: '#09090b' }}
+                          contentFit="cover"
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }} numberOfLines={1}>
+                            {item.filename || 'Archivo'}
+                          </Text>
+                          <Text style={{ color: info.color, fontSize: 11, fontWeight: '800' }}>
+                            {compressionService.formatBytes(Number(item.fileSize) || 0)} · {info.tagText}
+                          </Text>
+                        </View>
+                        <Ionicons name="open-outline" size={16} color="#94a3b8" />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                {topHeavyAssets.some((a) => {
+                  const isVid =
+                    a.mediaType === 'video' ||
+                    /\.(mp4|mov|m4v|mkv|webm|3gp|avi)$/i.test(a.filename || a.uri || '');
+                  const inf = compressionService.getSizeLevel(
+                    Number(a.fileSize) || 0,
+                    isVid ? 'video' : 'photo',
+                    Number(a.duration) || 0
+                  );
+                  return inf.canCompress && inf.level !== 'light';
+                }) && (
+                  <TouchableOpacity
+                    style={[styles.confirmOrganizeBtn, { backgroundColor: '#e11d48', marginTop: 12, width: '100%' }]}
+                    onPress={() => {
+                      const compP = [];
+                      const compV = [];
+                      for (const a of topHeavyAssets) {
+                        const isVid =
+                          a.mediaType === 'video' ||
+                          /\.(mp4|mov|m4v|mkv|webm|3gp|avi)$/i.test(a.filename || a.uri || '');
+                        const inf = compressionService.getSizeLevel(
+                          Number(a.fileSize) || 0,
+                          isVid ? 'video' : 'photo',
+                          Number(a.duration) || 0
+                        );
+                        if (inf.canCompress && inf.level !== 'light') {
+                          if (isVid) compV.push(a);
+                          else compP.push(a);
+                        }
+                      }
+                      setShowTopHeavyModal(false);
+                      compressionService.startBackgroundCompressionJob({
+                        photos: compP,
+                        videos: compV,
+                        label: 'Top 25 Más Pesados',
+                      });
+                    }}
+                  >
+                    <Ionicons name="sparkles" size={16} color="#fff" />
+                    <Text style={styles.confirmOrganizeBtnText}>Comprimir los Más Pesados en 2do Plano</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
           </View>

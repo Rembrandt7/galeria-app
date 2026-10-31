@@ -435,4 +435,118 @@ export const duplicateService = {
     groups.sort((a, b) => (b.items[0]?.size || 0) - (a.items[0]?.size || 0));
     return groups;
   },
+
+  /**
+   * Detecta fotos tomadas en ráfaga o tomas muy parecidas (tomadas con <= 6 segundos de diferencia
+   * en la misma carpeta y con la misma orientación/resolución).
+   * Selecciona automáticamente la foto con mayor detalle (mayor peso en bytes) como la Mejor Toma.
+   */
+  async findBurstAndSimilarPhotos(assetsInput, onProgress, control) {
+    if (!Array.isArray(assetsInput) || assetsInput.length < 2) return [];
+
+    const extractTimestampMs = (item) => {
+      const ct = Number(item.creationTime || item.modificationTime || 0);
+      if (ct > 100000000000) return ct;
+      if (ct > 100000000) return ct * 1000;
+      const fn = String(item.filename || item.uri || '');
+      const m = fn.match(/(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])[_-]?([01]\d|2[0-3])([0-5]\d)([0-5]\d)/);
+      if (m) {
+        return new Date(
+          Number(m[1]),
+          Number(m[2]) - 1,
+          Number(m[3]),
+          Number(m[4]),
+          Number(m[5]),
+          Number(m[6])
+        ).getTime();
+      }
+      return 0;
+    };
+
+    const photos = [];
+    const seenPhys = new Set();
+
+    for (let idx = 0; idx < assetsInput.length; idx++) {
+      if (control?.waitIfPaused) await control.waitIfPaused();
+      if (control?.isCancelled) return [];
+      const item = assetsInput[idx];
+      if (!item || !item.uri) continue;
+      const isVid =
+        item.mediaType === 'video' ||
+        /\.(mp4|mov|m4v|mkv|webm|3gp|avi)$/i.test(item.filename || item.uri || '');
+      if (isVid) continue;
+
+      const physKey = normalizePhysPath(item.uri) || String(item.id || item.uri);
+      if (seenPhys.has(physKey)) continue;
+      seenPhys.add(physKey);
+
+      let size = Number(item.fileSize || item.size || 0);
+      if (!size || size <= 0) {
+        const physUri = toPhysicalFileUri(item.uri) || item.uri;
+        try {
+          size = new File(physUri).size || 0;
+        } catch (_e) {
+          size = 0;
+        }
+      }
+
+      const ts = extractTimestampMs(item);
+      if (ts <= 0) continue;
+
+      photos.push({
+        ...item,
+        mediaType: 'photo',
+        size,
+        fileSize: size,
+        timestampMs: ts,
+        folderLabel: extractFolderLabel(item.uri),
+      });
+
+      if (idx % 60 === 0 && onProgress) {
+        onProgress({ phase: 'sizes', done: idx, total: assetsInput.length });
+        await tick();
+      }
+    }
+
+    photos.sort((a, b) => a.timestampMs - b.timestampMs);
+
+    const groups = [];
+    let i = 0;
+    while (i < photos.length) {
+      const base = photos[i];
+      const cluster = [base];
+      let j = i + 1;
+      while (j < photos.length) {
+        const next = photos[j];
+        const diffMs = Math.abs(next.timestampMs - cluster[cluster.length - 1].timestampMs);
+        if (diffMs > 6000) break;
+        const sameFolder = (base.folderLabel || '') === (next.folderLabel || '');
+        const sameOrientation =
+          !base.width ||
+          !next.width ||
+          Boolean(base.width >= base.height) === Boolean(next.width >= next.height);
+        if (sameFolder && sameOrientation) {
+          cluster.push(next);
+          j++;
+        } else {
+          break;
+        }
+      }
+
+      if (cluster.length >= 2) {
+        // Ordenar primero la foto con más detalle/nitidez (mayor peso en bytes)
+        cluster.sort((a, b) => (b.size || 0) - (a.size || 0));
+        groups.push({
+          key: `burst-${base.timestampMs}-${i}`,
+          items: cluster,
+          matchType: 'burst',
+        });
+        i = j;
+      } else {
+        i++;
+      }
+    }
+
+    return groups;
+  },
 };

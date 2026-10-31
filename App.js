@@ -109,6 +109,39 @@ export default function App() {
   const [pinModalMode, setPinModalMode] = useState('files'); // 'files' | 'hidden'
   const [pinAttempt, setPinAttempt] = useState('');
   const [storedPin, setStoredPin] = useState(null);
+  const [decoyPin, setDecoyPin] = useState('0000');
+  const [isDecoyMode, setIsDecoyMode] = useState(false);
+
+  // Escudo FLAG_SECURE en Android cuando el usuario está dentro de Archivos/Bóveda/Cámara 2do plano
+  useEffect(() => {
+    const isPrivateActive =
+      activeSegment === 'files' || Boolean(showAllFolders) || Boolean(cameraVisible);
+    if (NativeModules?.VideoEngineModule?.setPrivacyScreenSecureNative) {
+      NativeModules.VideoEngineModule.setPrivacyScreenSecureNative(isPrivateActive).catch(
+        () => {}
+      );
+    }
+  }, [activeSegment, showAllFolders, cameraVisible]);
+
+  // Auto-bloqueo automático de Archivos y Bóveda al minimizar la app o apagar pantalla
+  useEffect(() => {
+    const subLock = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'background') {
+        setActiveSegment((prev) => {
+          if (prev === 'files') {
+            setActiveTab('albums');
+            setSelectedAlbum(null);
+            return 'photos';
+          }
+          return prev;
+        });
+        setShowAllFolders(false);
+        setIsDecoyMode(false);
+        storageService.setShowAllFolders(false).catch(() => {});
+      }
+    });
+    return () => subLock.remove();
+  }, []);
 
   // Portadas personalizadas de carpetas y configuración de columnas (Fold / Sistema)
   const [customCovers, setCustomCovers] = useState({});
@@ -736,6 +769,7 @@ export default function App() {
         if (res && res.success) {
           setPinModalVisible(false);
           setPinAttempt('');
+          setIsDecoyMode(false);
           if (mode === 'files') {
             setSelectedAlbum(null);
             if (activeTab === 'folder') {
@@ -761,7 +795,9 @@ export default function App() {
           return;
         }
         const pin = await storageService.getPin();
+        const dPin = await storageService.getDecoyPin();
         setStoredPin(pin || null);
+        setDecoyPin(dPin || '0000');
         setPinAttempt('');
         setPinModalMode('files');
         setPinModalVisible(true);
@@ -984,6 +1020,17 @@ export default function App() {
       if (cleanInput === storedPin) {
         setPinModalVisible(false);
         setPinAttempt('');
+        setIsDecoyMode(false);
+        setSelectedAlbum(null);
+        if (activeTab === 'folder') {
+          setActiveTab('albums');
+        }
+        setActiveSegment('files');
+      } else if (decoyPin && cleanInput === decoyPin) {
+        // Modo Señuelo / Modo Pánico: entra a Archivos pero oculta Bóveda Privada y 2do plano
+        setPinModalVisible(false);
+        setPinAttempt('');
+        setIsDecoyMode(true);
         setSelectedAlbum(null);
         if (activeTab === 'folder') {
           setActiveTab('albums');
@@ -999,8 +1046,14 @@ export default function App() {
     if (cleanInput === storedPin) {
       setPinModalVisible(false);
       setPinAttempt('');
+      setIsDecoyMode(false);
       setShowAllFolders(true);
       await storageService.setShowAllFolders(true);
+    } else if (decoyPin && cleanInput === decoyPin) {
+      setPinModalVisible(false);
+      setPinAttempt('');
+      setIsDecoyMode(true);
+      setShowAllFolders(false);
     } else {
       Alert.alert('Contraseña incorrecta', 'La contraseña ingresada no coincide.');
       setPinAttempt('');
@@ -1416,7 +1469,11 @@ export default function App() {
           {activeTab === 'folder' ? (
             <FolderBrowser
               rootUri={folderUri}
-              savedFolders={savedFolders}
+              savedFolders={
+                isDecoyMode
+                  ? savedFolders.filter((f) => !/2do\s*plano|b[oó]veda/i.test(`${f?.name || ''} ${f?.uri || ''}`))
+                  : savedFolders
+              }
               onSelectSavedFolder={async (uri) => {
                 const updated = await folderService.getSavedFolders();
                 setSavedFolders(updated);
@@ -1487,6 +1544,7 @@ export default function App() {
               visibilityModalVisible={visibilityModalVisible}
               onCloseVisibilityModal={() => setVisibilityModalVisible(false)}
               onOpenVisibilityModal={() => setVisibilityModalVisible(true)}
+              isDecoyMode={isDecoyMode}
             />
           ) : (
             <PhotoGrid

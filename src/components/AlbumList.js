@@ -68,6 +68,7 @@ export default function AlbumList({
   visibilityModalVisible = false,
   onCloseVisibilityModal,
   onOpenVisibilityModal,
+  isDecoyMode = false,
 }) {
   const { width: screenWidth } = useWindowDimensions();
   const isFoldExpanded = screenWidth >= 580;
@@ -161,9 +162,14 @@ export default function AlbumList({
   // conservando SIEMPRE las 3 carpetas fijadas de Archivos ("2do plano", "Descargas", "Telegram")
   // y eliminando cualquier carpeta duplicada por ruta física o por nombre visual.
   const nonEmptyAlbums = useMemo(() => {
-    const rawBase = (albums || []).filter(
-      (item) => item && (Number(item.assetCount) > 0 || getPinnedFilesOrder(item) > 0)
-    );
+    const rawBase = (albums || []).filter((item) => {
+      if (!item) return false;
+      if (isDecoyMode) {
+        const pinOrd = getPinnedFilesOrder(item);
+        if (pinOrd === 1 || pinOrd === 4) return false;
+      }
+      return Number(item.assetCount) > 0 || getPinnedFilesOrder(item) > 0;
+    });
     // Priorizar carpetas fijadas y con mayor cantidad de archivos antes de deduplicar
     rawBase.sort((a, b) => {
       const pA = getPinnedFilesOrder(a) > 0 ? 1 : 0;
@@ -228,7 +234,7 @@ export default function AlbumList({
     const hasPin2 = seenPinnedRanks.has(2);
     const hasPin3 = seenPinnedRanks.has(3);
     const extraPins = [];
-    if (!hasPin1) {
+    if (!hasPin1 && !isDecoyMode) {
       extraPins.push({
         id: 'pinned_2do_plano',
         title: '2do plano',
@@ -262,7 +268,7 @@ export default function AlbumList({
       });
     }
     return extraPins.length > 0 ? [...extraPins, ...base] : base;
-  }, [albums]);
+  }, [albums, isDecoyMode]);
 
   const favList = useMemo(() => Object.values(favorites || {}), [favorites]);
   const favCount = favList.length;

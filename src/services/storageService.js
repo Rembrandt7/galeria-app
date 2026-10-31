@@ -9,6 +9,8 @@ const MANUALLY_ENABLED_SYSTEM_KEY = '@galeria_sistema_activadas_manual_v1';
 const AUTO_HIDE_SYSTEM_KEY = '@galeria_auto_desactivar_sistema_v1';
 const CUSTOM_FOLDER_COVERS_KEY = '@galeria_portadas_personalizadas_v1';
 const GRID_COLUMNS_CONFIG_KEY = '@galeria_columnas_config_v1';
+const DECOY_PIN_STORAGE_KEY = '@galeria_decoy_pin_v1';
+const STRIP_GPS_ON_SHARE_KEY = '@galeria_strip_gps_share_v1';
 
 export const storageService = {
   async getFavorites() {
@@ -192,6 +194,47 @@ export const storageService = {
     } catch (e) {
       console.error('Error al guardar PIN:', e);
       return null;
+    }
+  },
+
+  async getDecoyPin() {
+    try {
+      const pin = await AsyncStorage.getItem(DECOY_PIN_STORAGE_KEY);
+      return pin || '0000';
+    } catch (_e) {
+      return '0000';
+    }
+  },
+
+  async setDecoyPin(pin) {
+    try {
+      if (!pin) {
+        await AsyncStorage.removeItem(DECOY_PIN_STORAGE_KEY);
+        return '0000';
+      }
+      await AsyncStorage.setItem(DECOY_PIN_STORAGE_KEY, String(pin));
+      return String(pin);
+    } catch (_e) {
+      return '0000';
+    }
+  },
+
+  async getStripGpsOnShare() {
+    try {
+      const val = await AsyncStorage.getItem(STRIP_GPS_ON_SHARE_KEY);
+      if (val === null || val === undefined) return true; // Por defecto activo para proteger privacidad GPS
+      return val === 'true';
+    } catch (_e) {
+      return true;
+    }
+  },
+
+  async setStripGpsOnShare(enabled) {
+    try {
+      await AsyncStorage.setItem(STRIP_GPS_ON_SHARE_KEY, enabled ? 'true' : 'false');
+      return Boolean(enabled);
+    } catch (_e) {
+      return Boolean(enabled);
     }
   },
 

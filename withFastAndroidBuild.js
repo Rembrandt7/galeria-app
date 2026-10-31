@@ -1092,9 +1092,11 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         var urlInputRef: EditText? = null
         var downloadBtnRef: TextView? = null
         var uaBtnRef: TextView? = null
+        var blockAppsBtnRef: TextView? = null
         var statusBannerRef: TextView? = null
         var detectedMediaUrl: String? = null
         var currentUaIndex = 0
+        var blockExternalApps = true
 
         val userAgents = listOf(
             Pair("📱 S24", "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36"),
@@ -1166,8 +1168,28 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val u = request?.url?.toString() ?: return false
                         if (u.startsWith("http://") || u.startsWith("https://")) {
+                            val lowerU = u.lowercase()
+                            if (blockExternalApps && (lowerU.contains("play.google.com/store/apps") || lowerU.contains("apps.apple.com"))) {
+                                UiThreadUtil.runOnUiThread {
+                                    statusBannerRef?.text = "🚫 Bloqueado desvío a tienda de apps (Modo 1ª Vez)"
+                                    statusBannerRef?.visibility = android.view.View.VISIBLE
+                                }
+                                return true
+                            }
                             urlInputRef?.setText(u)
                             return false
+                        }
+                        if (!blockExternalApps) {
+                            try {
+                                val extIntent = Intent(Intent.ACTION_VIEW, Uri.parse(u))
+                                extIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                act.startActivity(extIntent)
+                            } catch (_: Exception) {}
+                        } else {
+                            UiThreadUtil.runOnUiThread {
+                                statusBannerRef?.text = "🚫 Bloqueado intento de abrir App instalada (Modo 1ª Vez)"
+                                statusBannerRef?.visibility = android.view.View.VISIBLE
+                            }
                         }
                         return true
                     }
@@ -1177,6 +1199,12 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         if (!url.isNullOrBlank() && url != "about:blank") {
                             urlInputRef?.setText(url)
                         }
+                        try {
+                            view?.evaluateJavascript(
+                                "try{Object.defineProperty(navigator,'webdriver',{get:()=>false});}catch(e){}",
+                                null
+                            )
+                        } catch (_: Exception) {}
                     }
 
                     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
@@ -1360,7 +1388,23 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 uaBtnRef = uaSwitchBtn
 
-                val dlBtn = makeNavBtn("⬇ Bajar Video", "#6D28D9") {
+                val blockAppsBtn = makeNavBtn("🚫 No Apps: ON", "#0D9488") {
+                    blockExternalApps = !blockExternalApps
+                    blockAppsBtnRef?.text = if (blockExternalApps) "🚫 No Apps: ON" else "📲 Apps: Permitir"
+                    blockAppsBtnRef?.background = GradientDrawable().apply {
+                        cornerRadius = 18f
+                        setColor(Color.parseColor(if (blockExternalApps) "#0D9488" else "#475569"))
+                    }
+                    showTempBanner(
+                        if (blockExternalApps)
+                            "🚫 Bloqueo de apps externas ACTIVO (evita perder promo 1ª vez)"
+                        else
+                            "📲 Apertura de apps externas permitida"
+                    )
+                }
+                blockAppsBtnRef = blockAppsBtn
+
+                val dlBtn = makeNavBtn("⬇ Video", "#6D28D9") {
                     val currentPageUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
                     val bestUrl = if (!detectedMediaUrl.isNullOrBlank()) detectedMediaUrl!! else currentPageUrl
                     closeBrowser("download", bestUrl)
@@ -1369,6 +1413,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 toolsBar.addView(cleanFirstTimeBtn)
                 toolsBar.addView(uaSwitchBtn)
+                toolsBar.addView(blockAppsBtn)
                 toolsBar.addView(dlBtn)
 
                 val webParams = LinearLayout.LayoutParams(
@@ -1401,6 +1446,25 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 wv.loadUrl(normalizeInputUrl(startUrl))
             } catch (e: Exception) {
                 closeBrowser("closed", "")
+            }
+        }
+    }
+
+    @ReactMethod
+    fun setPrivacyScreenSecureNative(enabled: Boolean, promise: Promise) {
+        UiThreadUtil.runOnUiThread {
+            try {
+                val act = reactContext.currentActivity
+                if (act != null && !act.isFinishing) {
+                    if (enabled) {
+                        act.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    } else {
+                        act.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                    }
+                }
+                promise.resolve(enabled)
+            } catch (_: Exception) {
+                promise.resolve(false)
             }
         }
     }

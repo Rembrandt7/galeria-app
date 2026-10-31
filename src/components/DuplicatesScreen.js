@@ -72,6 +72,7 @@ export default function DuplicatesScreen({
 }) {
   const hasFolderContext = Boolean(folderUri || (sourceAssets && sourceAssets.length > 0));
   const [scanScope, setScanScope] = useState(hasFolderContext ? 'folder' : 'all'); // 'folder' | 'all'
+  const [scanMode, setScanMode] = useState('duplicates'); // 'duplicates' | 'bursts'
   const [scanning, setScanning] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [progress, setProgress] = useState('');
@@ -84,8 +85,9 @@ export default function DuplicatesScreen({
   const scanControlRef = useRef(null);
 
   const runScan = useCallback(
-    async (overrideScope) => {
+    async (overrideScope, overrideMode) => {
       const effectiveScope = overrideScope || scanScope;
+      const effectiveMode = overrideMode || scanMode;
       if (scanControlRef.current?.cancel) {
         scanControlRef.current.cancel();
       }
@@ -164,17 +166,26 @@ export default function DuplicatesScreen({
 
         setTotalAnalyzed(mediaList.length);
 
-        const found = await duplicateService.findDuplicates(
-          mediaList,
-          ({ phase, done, total }) => {
-            if (phase === 'sizes') {
-              setProgress(`Analizando pesos… ${done} de ${total}`);
-            } else {
-              setProgress(`Comparando contenido… ${done} de ${total}`);
-            }
-          },
-          ctrl
-        );
+        const found =
+          effectiveMode === 'bursts'
+            ? await duplicateService.findBurstAndSimilarPhotos(
+                mediaList,
+                ({ done, total }) => {
+                  setProgress(`Buscando ráfagas y tomas parecidas… ${done} de ${total}`);
+                },
+                ctrl
+              )
+            : await duplicateService.findDuplicates(
+                mediaList,
+                ({ phase, done, total }) => {
+                  if (phase === 'sizes') {
+                    setProgress(`Analizando pesos… ${done} de ${total}`);
+                  } else {
+                    setProgress(`Comparando contenido… ${done} de ${total}`);
+                  }
+                },
+                ctrl
+              );
 
         if (ctrl.isCancelled) {
           setScanning(false);
@@ -197,8 +208,14 @@ export default function DuplicatesScreen({
       setIsPaused(false);
       setScanned(true);
     },
-    [scanScope, hasFolderContext, folderUri, sourceAssets]
+    [scanScope, scanMode, hasFolderContext, folderUri, sourceAssets]
   );
+
+  const handleSelectMode = (nextMode) => {
+    if (nextMode === scanMode && !scanned) return;
+    setScanMode(nextMode);
+    runScan(scanScope, nextMode);
+  };
 
   useEffect(() => {
     if (visible) {
@@ -310,7 +327,11 @@ export default function DuplicatesScreen({
           ]}
         >
           <Text style={styles.matchBadgeText}>
-            {group.matchType === 'copy_name' ? 'Copia por nombre/resolución' : 'Idénticos 100%'}
+            {group.matchType === 'burst'
+              ? '📸 Ráfaga / Toma Parecida'
+              : group.matchType === 'copy_name'
+              ? 'Copia por nombre/resolución'
+              : 'Idénticos 100%'}
           </Text>
         </View>
       </View>
@@ -385,6 +406,56 @@ export default function DuplicatesScreen({
           </View>
           <TouchableOpacity onPress={() => runScan(scanScope)} style={styles.iconBtn} disabled={scanning}>
             <Ionicons name="refresh" size={22} color="#fff" />
+          </TouchableOpacity>
+        </View>
+
+        {/* Selector de Modo: Duplicados Exactos vs Ráfagas / Tomas Parecidas */}
+        <View style={[styles.scopeBar, { paddingBottom: 4 }]}>
+          <TouchableOpacity
+            style={[
+              styles.scopeBtn,
+              scanMode === 'duplicates' && { backgroundColor: '#2563eb', borderColor: '#60a5fa' },
+            ]}
+            onPress={() => handleSelectMode('duplicates')}
+            disabled={scanning}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name="copy-outline"
+              size={15}
+              color={scanMode === 'duplicates' ? '#fff' : theme.colors.textSecondary}
+            />
+            <Text
+              style={[
+                styles.scopeBtnText,
+                scanMode === 'duplicates' && styles.scopeBtnTextActive,
+              ]}
+              numberOfLines={1}
+            >
+              Duplicados Exactos
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.scopeBtn,
+              scanMode === 'bursts' && { backgroundColor: '#7c3aed', borderColor: '#a78bfa' },
+            ]}
+            onPress={() => handleSelectMode('bursts')}
+            disabled={scanning}
+            activeOpacity={0.8}
+          >
+            <Ionicons
+              name="camera-outline"
+              size={15}
+              color={scanMode === 'bursts' ? '#fff' : theme.colors.textSecondary}
+            />
+            <Text
+              style={[styles.scopeBtnText, scanMode === 'bursts' && styles.scopeBtnTextActive]}
+              numberOfLines={1}
+            >
+              📸 Ráfagas / Parecidas
+            </Text>
           </TouchableOpacity>
         </View>
 

@@ -220,44 +220,62 @@ export default function VideoDownloaderModal({
   };
 
   const enqueueAndStartUrl = (rawText, interactive = false) => {
-    const cleanUrl = extractUrlFromText(rawText);
-    if (!cleanUrl || !/^https?:\/\//i.test(cleanUrl)) {
+    const allMatches = String(rawText || '').match(/https?:\/\/[^\s"'<>]+/gi) || [];
+    const uniqueUrls = Array.from(new Set(allMatches.map((u) => u.trim()).filter(Boolean)));
+    const firstFallback = extractUrlFromText(rawText);
+    const urlsToProcess =
+      uniqueUrls.length > 0
+        ? uniqueUrls
+        : firstFallback && /^https?:\/\//i.test(firstFallback)
+        ? [firstFallback]
+        : [];
+
+    if (urlsToProcess.length === 0) {
       Alert.alert(
         'Enlace inválido',
-        'Por favor pega o comparte un enlace válido de video (que empiece con http:// o https://).'
+        'Por favor pega o comparte uno o varios enlaces válidos de video (que empiecen con http:// o https://).'
       );
       return;
     }
 
     Keyboard.dismiss();
-    const platformInfo = detectPlatform(cleanUrl);
-    const newId = `dl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-    const shortUrlTitle = cleanUrl.replace(/^https?:\/\/(www\.)?/i, '').slice(0, 42);
+    const createdItems = [];
 
-    const newItem = {
-      id: newId,
-      url: cleanUrl,
-      title: `${platformInfo.name}: ${shortUrlTitle}`,
-      filename: null,
-      platform: platformInfo,
-      status: 'downloading',
-      statusText: interactive ? 'Abriendo captura con sesión…' : 'Iniciando descarga…',
-      percent: 0.04,
-      writtenBytes: 0,
-      totalBytes: 0,
-      sizeBytes: 0,
-      albumName: DOWNLOAD_ALBUM_NAME,
-      folderUri: DOWNLOAD_FOLDER_URI,
-      asset: null,
-      errorMessage: null,
-      date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-    };
+    urlsToProcess.forEach((cleanUrl, idx) => {
+      const platformInfo = detectPlatform(cleanUrl);
+      const newId = `dl_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
+      const shortUrlTitle = cleanUrl.replace(/^https?:\/\/(www\.)?/i, '').slice(0, 42);
 
-    setDownloadItems((prev) => [newItem, ...prev]);
+      const newItem = {
+        id: newId,
+        url: cleanUrl,
+        title: `${platformInfo.name}: ${shortUrlTitle}`,
+        filename: null,
+        platform: platformInfo,
+        status: 'downloading',
+        statusText: interactive ? 'Abriendo captura con sesión…' : 'En cola / Iniciando descarga…',
+        percent: 0.04,
+        writtenBytes: 0,
+        totalBytes: 0,
+        sizeBytes: 0,
+        albumName: saveToVault ? BOVEDA_PRIVADA_FOLDER_NAME : DOWNLOAD_ALBUM_NAME,
+        folderUri: saveToVault ? BOVEDA_PRIVADA_FOLDER_URI : DOWNLOAD_FOLDER_URI,
+        asset: null,
+        errorMessage: null,
+        date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      createdItems.push({ newItem, platformInfo });
+    });
+
+    setDownloadItems((prev) => [...createdItems.map((c) => c.newItem), ...prev]);
     setUrlInput('');
     setFilterStatus('all');
 
-    startDownloadForItem(newId, cleanUrl, platformInfo, interactive);
+    createdItems.forEach(({ newItem, platformInfo }, idx) => {
+      setTimeout(() => {
+        startDownloadForItem(newItem.id, newItem.url, platformInfo, interactive && idx === 0);
+      }, idx * 450);
+    });
   };
 
   // Si el usuario compartió un enlace desde otra app (Facebook, Instagram, TikTok, X, YouTube, etc.),
