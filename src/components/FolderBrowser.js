@@ -20,7 +20,11 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 import { theme } from '../constants/theme';
-import { folderService, COMMON_SYSTEM_FOLDERS } from '../services/folderService';
+import {
+  folderService,
+  COMMON_SYSTEM_FOLDERS,
+  BOVEDA_PRIVADA_FOLDER_URI,
+} from '../services/folderService';
 import { compressionService } from '../services/compressionService';
 import { videoEngineService } from '../services/videoEngineService';
 import { cameraOrganizerService } from '../services/cameraOrganizerService';
@@ -326,6 +330,112 @@ export default function FolderBrowser({
   isSelectingRef.current = isSelecting;
 
   const currentFolder = history[history.length - 1] || null;
+  const [hasNoMediaShield, setHasNoMediaShield] = useState(false);
+  const [isAutoClassifying, setIsAutoClassifying] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const targetUri = currentFolder?.uri || rootUri;
+    if (!targetUri) {
+      setHasNoMediaShield(false);
+      return;
+    }
+    folderService
+      .getFolderNoMediaStatus(targetUri)
+      .then((res) => {
+        if (active) setHasNoMediaShield(Boolean(res?.hasNoMedia));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [currentFolder?.uri, rootUri]);
+
+  const handleToggleNoMediaShield = async () => {
+    const targetUri = currentFolder?.uri || rootUri;
+    if (!targetUri) return;
+    const nextState = !hasNoMediaShield;
+    try {
+      const res = await folderService.setFolderNoMedia(targetUri, nextState);
+      setHasNoMediaShield(Boolean(res?.hasNoMedia));
+      Alert.alert(
+        nextState ? '🔒 Escudo .nomedia Activado' : '🔓 Visible en Otras Apps',
+        nextState
+          ? 'Esta carpeta ahora tiene un archivo .nomedia activo.\n\nSus fotos y videos YA NO aparecerán en Google Fotos, Galería de Samsung ni al adjuntar en WhatsApp, pero seguirán visibles aquí en Mi Galería.'
+          : 'Se quitó el escudo .nomedia. Las fotos y videos volverán a verse en las demás aplicaciones del celular.'
+      );
+    } catch (_e) {
+      Alert.alert('Aviso', 'No se pudo cambiar el estado .nomedia de esta carpeta.');
+    }
+  };
+
+  const handleAutoClassifyFolder = () => {
+    const targetUri = currentFolder?.uri || rootUri;
+    if (!targetUri || currentFolderAssets.length === 0) return;
+    Alert.alert(
+      '🧹 Auto-Clasificar Carpeta',
+      `Se separarán automáticamente los ${currentFolderAssets.length} archivos sueltos de esta carpeta en subcarpetas limpias:\n\n• Capturas (Screenshots)\n• Fotos\n• Videos\n\n¿Deseas organizarlos ahora?`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Sí, Auto-Clasificar',
+          onPress: async () => {
+            setIsAutoClassifying(true);
+            try {
+              const res = await folderService.autoClassifyFolderContents(
+                targetUri,
+                currentFolderAssets
+              );
+              setIsAutoClassifying(false);
+              await loadCurrentLevel(targetUri, true);
+              Alert.alert(
+                '✨ Carpeta Auto-Clasificada',
+                `Se organizaron ${res.movedTotal} archivos:\n• Capturas: ${res.capturas}\n• Fotos: ${res.fotos}\n• Videos: ${res.videos}`
+              );
+            } catch (_e) {
+              setIsAutoClassifying(false);
+              Alert.alert('Error', 'No se pudo completar la auto-clasificación.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleMoveSelectedToBoveda = async () => {
+    if (!selectedAssets || selectedAssets.length === 0) return;
+    Alert.alert(
+      '🔒 Mover a Bóveda Privada',
+      `¿Mover ${selectedAssets.length} ${selectedAssets.length === 1 ? 'archivo' : 'archivos'} a tu Bóveda Privada?\n\nQuedarán protegidos con Huella/Contraseña en "Archivos" e invisibles para Google Fotos y WhatsApp.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Mover a Bóveda',
+          onPress: async () => {
+            try {
+              const vaultUri = await folderService.ensureBovedaPrivadaFolder();
+              const res = await folderService.moveAssetsToFolder(
+                selectedAssets,
+                vaultUri || BOVEDA_PRIVADA_FOLDER_URI,
+                ''
+              );
+              clearSelection();
+              const targetUri = currentFolder?.uri || rootUri;
+              folderService.invalidateCache(targetUri);
+              folderService.invalidateCache(vaultUri || BOVEDA_PRIVADA_FOLDER_URI);
+              await loadCurrentLevel(targetUri, true);
+              Alert.alert(
+                '🔒 Guardado en Bóveda Privada',
+                `Se movieron ${res.moved} de ${res.total} archivos a "Bóveda Privada" (en la sección Archivos con Huella/Contraseña).`
+              );
+            } catch (_e) {
+              Alert.alert('Error', 'No se pudieron mover los archivos a la Bóveda Privada.');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   // Cargar nivel actual con emisión parcial temprana
   const loadCurrentLevel = useCallback(async (uri, forceRefresh = false) => {
@@ -1854,6 +1964,84 @@ export default function FolderBrowser({
             </TouchableOpacity>
           )}
 
+          {/* Opción 3.1: Auto-Clasificar Inteligente (Capturas / Fotos / Videos) */}
+          {currentFolderAssets.length > 0 && (
+            <TouchableOpacity
+              style={[
+                styles.optionSquareCard,
+                {
+                  backgroundColor: 'rgba(20, 184, 166, 0.16)',
+                  borderColor: '#14b8a6',
+                },
+              ]}
+              onPress={handleAutoClassifyFolder}
+              disabled={isAutoClassifying}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionToolHeader}>
+                {isAutoClassifying ? (
+                  <ActivityIndicator size="small" color="#2dd4bf" />
+                ) : (
+                  <Ionicons name="layers-outline" size={15} color="#2dd4bf" />
+                )}
+                <Text style={[styles.actionToolTitle, { color: '#99f6e4' }]} numberOfLines={1}>
+                  {isAutoClassifying ? 'Clasificando...' : 'Auto-Clasificar'}
+                </Text>
+              </View>
+              <Text style={[styles.actionToolSub, { color: '#2dd4bf' }]} numberOfLines={1}>
+                Separar Capturas, Fotos y Videos
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Opción 3.2: Escudo .nomedia (Ocultar de Google Fotos / WhatsApp / Galería) */}
+          {(currentFolder?.uri || rootUri) && (
+            <TouchableOpacity
+              style={[
+                styles.optionSquareCard,
+                hasNoMediaShield
+                  ? {
+                      backgroundColor: 'rgba(16, 185, 129, 0.22)',
+                      borderColor: '#10b981',
+                    }
+                  : {
+                      backgroundColor: 'rgba(236, 72, 153, 0.14)',
+                      borderColor: 'rgba(236, 72, 153, 0.5)',
+                    },
+              ]}
+              onPress={handleToggleNoMediaShield}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionToolHeader}>
+                <Ionicons
+                  name={hasNoMediaShield ? 'shield-checkmark' : 'eye-off-outline'}
+                  size={15}
+                  color={hasNoMediaShield ? '#34d399' : '#f472b6'}
+                />
+                <Text
+                  style={[
+                    styles.actionToolTitle,
+                    { color: hasNoMediaShield ? '#a7f3d0' : '#fbcfe8' },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {hasNoMediaShield ? 'Escudo .nomedia ACTIVO' : 'Ocultar de otras apps'}
+                </Text>
+              </View>
+              <Text
+                style={[
+                  styles.actionToolSub,
+                  { color: hasNoMediaShield ? '#34d399' : '#f472b6' },
+                ]}
+                numberOfLines={1}
+              >
+                {hasNoMediaShield
+                  ? 'Invisible en WhatsApp y Google Fotos'
+                  : 'Activar escudo .nomedia aquí'}
+              </Text>
+            </TouchableOpacity>
+          )}
+
           {/* Opción 4: Borrar carpetas vacías */}
           {(subfolders.length > 0 || currentFolder?.uri) && (
             <TouchableOpacity
@@ -2132,6 +2320,19 @@ export default function FolderBrowser({
                   </Text>
                 </TouchableOpacity>
               )}
+              <TouchableOpacity
+                style={[
+                  styles.selActionBtn,
+                  {
+                    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+                    borderColor: '#10b981',
+                  },
+                ]}
+                onPress={handleMoveSelectedToBoveda}
+              >
+                <Ionicons name="lock-closed" size={15} color="#34d399" />
+                <Text style={[styles.selActionText, { color: '#a7f3d0' }]}>A Bóveda</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.selActionBtn}
                 onPress={() => setShowMoveModal(true)}

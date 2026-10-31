@@ -11,11 +11,13 @@ import {
   Linking,
   ActivityIndicator,
   Platform,
+  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const HISTORY_STORAGE_KEY = '@galeria_browser_history_v1';
+const BASE_EMAIL_STORAGE_KEY = '@galeria_browser_base_email_v1';
 
 const QUICK_SITES = [
   { id: 'google', name: 'Google', url: 'https://www.google.com', icon: 'search', color: '#3B82F6' },
@@ -33,12 +35,60 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
   const [queryOrUrl, setQueryOrUrl] = useState('');
   const [history, setHistory] = useState([]);
   const [opening, setOpening] = useState(false);
+  const [cleaningData, setCleaningData] = useState(false);
+  const [baseEmail, setBaseEmail] = useState('');
+  const [generatedAlias, setGeneratedAlias] = useState('');
 
   useEffect(() => {
     if (visible) {
       loadHistory();
+      AsyncStorage.getItem(BASE_EMAIL_STORAGE_KEY)
+        .then((saved) => {
+          if (saved) setBaseEmail(saved);
+        })
+        .catch(() => {});
     }
   }, [visible]);
+
+  const handleClearFirstTimeData = async (alsoLaunch = false) => {
+    setCleaningData(true);
+    try {
+      if (NativeModules.VideoEngineModule?.clearWebBrowserDataNative) {
+        await NativeModules.VideoEngineModule.clearWebBrowserDataNative();
+      }
+      setCleaningData(false);
+      if (alsoLaunch) {
+        launchBrowser(queryOrUrl || 'https://www.google.com');
+      } else {
+        Alert.alert(
+          '✨ Identidad Web Limpia (Modo 1ª Vez)',
+          'Se borraron todas las Cookies, LocalStorage, Caché y Sesiones.\n\nLas páginas web ahora te detectarán como un visitante nuevo para usar pruebas o beneficios gratuitos.'
+        );
+      }
+    } catch (_e) {
+      setCleaningData(false);
+    }
+  };
+
+  const handleGeneratePromoAlias = async () => {
+    const clean = (baseEmail || '').trim();
+    if (!clean || !clean.includes('@')) {
+      Alert.alert(
+        'Ingresa tu correo base',
+        'Escribe tu correo normal (ej. tucorreo@gmail.com) para generar un alias +promo único que llega a tu misma bandeja.'
+      );
+      return;
+    }
+    try {
+      await AsyncStorage.setItem(BASE_EMAIL_STORAGE_KEY, clean);
+    } catch (_e) {}
+    const [userPart, domainPart] = clean.split('@');
+    const cleanUser = userPart.split('+')[0];
+    const rand = Math.floor(100 + Math.random() * 900);
+    const dayTag = new Date().getDate();
+    const alias = `${cleanUser}+promo${dayTag}${rand}@${domainPart}`;
+    setGeneratedAlias(alias);
+  };
 
   const loadHistory = async () => {
     try {
@@ -175,12 +225,160 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.heroLaunchTitle}>Abrir Ventana de Navegador</Text>
                   <Text style={styles.heroLaunchSub}>
-                    Incluye controles ◀ ▶ ↻, barra de direcciones y botón ⬇ Video
+                    Incluye controles ◀ ▶ ↻, barra "🧹 Limpiar 1ª Vez", cambio de dispositivo y botón ⬇ Video
                   </Text>
                 </View>
               </View>
               <Ionicons name="open-outline" size={20} color="#38BDF8" />
             </TouchableOpacity>
+
+            {/* Modo Primera Vez: Limpiador Total de Cookies / Storage + Entrar Limpio */}
+            <View
+              style={{
+                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                borderRadius: 16,
+                padding: 12,
+                borderWidth: 1,
+                borderColor: 'rgba(16, 185, 129, 0.35)',
+                marginBottom: 14,
+                gap: 10,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="sparkles" size={18} color="#34D399" />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: '#ECFDF5', fontSize: 13.5, fontWeight: '800' }}>
+                    Modo "Primera Vez" (Beneficios y Pruebas Gratis)
+                  </Text>
+                  <Text style={{ color: '#A7F3D0', fontSize: 11, marginTop: 1 }}>
+                    Borra cookies, caché, almacenamiento local y rastro del sitio con 1 toque
+                  </Text>
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 8 }}>
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    backgroundColor: '#065F46',
+                    paddingVertical: 10,
+                    paddingHorizontal: 10,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: '#10B981',
+                  }}
+                  onPress={() => handleClearFirstTimeData(false)}
+                  disabled={cleaningData}
+                >
+                  <Ionicons name="trash-bin-outline" size={15} color="#A7F3D0" />
+                  <Text style={{ color: '#ECFDF5', fontSize: 12, fontWeight: '800' }}>
+                    {cleaningData ? 'Limpiando...' : '🧹 Limpiar Datos Ahora'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    backgroundColor: '#047857',
+                    paddingVertical: 10,
+                    paddingHorizontal: 10,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor: '#34D399',
+                  }}
+                  onPress={() => handleClearFirstTimeData(true)}
+                  disabled={cleaningData}
+                >
+                  <Ionicons name="flash-outline" size={15} color="#FFFFFF" />
+                  <Text style={{ color: '#FFFFFF', fontSize: 12, fontWeight: '800' }}>
+                    Limpiar y Abrir Web
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Generador de Alias +promo */}
+              <View
+                style={{
+                  borderTopWidth: 1,
+                  borderTopColor: 'rgba(16, 185, 129, 0.25)',
+                  paddingTop: 8,
+                  gap: 6,
+                }}
+              >
+                <Text style={{ color: '#D1FAE5', fontSize: 11.5, fontWeight: '700' }}>
+                  📧 Generador de Correo +Alias (Llega a tu mismo Gmail/Outlook pero cuenta como nuevo):
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                  <TextInput
+                    style={{
+                      flex: 1,
+                      backgroundColor: '#0F172A',
+                      color: '#FFFFFF',
+                      fontSize: 12.5,
+                      paddingHorizontal: 10,
+                      paddingVertical: 7,
+                      borderRadius: 9,
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.15)',
+                    }}
+                    placeholder="tucorreo@gmail.com"
+                    placeholderTextColor="#64748B"
+                    value={baseEmail}
+                    onChangeText={setBaseEmail}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                  />
+                  <TouchableOpacity
+                    style={{
+                      backgroundColor: '#0284C7',
+                      paddingHorizontal: 11,
+                      paddingVertical: 8,
+                      borderRadius: 9,
+                    }}
+                    onPress={handleGeneratePromoAlias}
+                  >
+                    <Text style={{ color: '#FFF', fontSize: 11.5, fontWeight: '800' }}>
+                      Generar +Alias
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+                {Boolean(generatedAlias) && (
+                  <View
+                    style={{
+                      backgroundColor: '#0F172A',
+                      borderRadius: 9,
+                      paddingHorizontal: 10,
+                      paddingVertical: 7,
+                      borderWidth: 1,
+                      borderColor: '#38BDF8',
+                    }}
+                  >
+                    <Text style={{ color: '#94A3B8', fontSize: 10, marginBottom: 2 }}>
+                      Mantén presionado el correo de abajo para copiarlo:
+                    </Text>
+                    <TextInput
+                      value={generatedAlias}
+                      editable={true}
+                      selectTextOnFocus={true}
+                      style={{
+                        color: '#38BDF8',
+                        fontSize: 13,
+                        fontWeight: '800',
+                        padding: 0,
+                      }}
+                    />
+                  </View>
+                )}
+              </View>
+            </View>
 
             {/* Quick Sites Grid */}
             <Text style={styles.sectionTitle}>ACCESOS RÁPIDOS</Text>

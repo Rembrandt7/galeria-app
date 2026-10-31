@@ -164,6 +164,195 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     override fun getName(): String = "VideoEngineModule"
 
     @ReactMethod
+    fun isBiometricAvailableNative(promise: Promise) {
+        try {
+            var available = false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val bm = reactContext.getSystemService(android.hardware.biometrics.BiometricManager::class.java)
+                if (bm != null) {
+                    val canAuth = bm.canAuthenticate()
+                    available = (canAuth == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS)
+                }
+            }
+            if (!available && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                @Suppress("DEPRECATION")
+                val fm = reactContext.getSystemService(Context.FINGERPRINT_SERVICE) as? android.hardware.fingerprint.FingerprintManager
+                @Suppress("DEPRECATION", "MissingPermission")
+                if (fm != null && fm.isHardwareDetected && fm.hasEnrolledFingerprints()) {
+                    available = true
+                }
+            }
+            promise.resolve(available)
+        } catch (_: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun authenticateBiometricNative(title: String, subtitle: String, promise: Promise) {
+        val done = AtomicBoolean(false)
+        fun finish(success: Boolean, reason: String) {
+            if (!done.compareAndSet(false, true)) return
+            val map = Arguments.createMap().apply {
+                putBoolean("success", success)
+                putString("reason", reason)
+            }
+            promise.resolve(map)
+        }
+
+        UiThreadUtil.runOnUiThread {
+            try {
+                val act = reactContext.currentActivity
+                if (act == null || act.isFinishing) {
+                    finish(false, "no_activity")
+                    return@runOnUiThread
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    val cancelSignal = android.os.CancellationSignal()
+                    val prompt = android.hardware.biometrics.BiometricPrompt.Builder(act)
+                        .setTitle(title.ifBlank { "Desbloquear con Huella Digital" })
+                        .setSubtitle(subtitle.ifBlank { "Coloca tu huella para acceder a Archivos y Bóveda Privada" })
+                        .setNegativeButton("Usar contraseña", act.mainExecutor) { _, _ ->
+                            finish(false, "use_pin")
+                        }
+                        .build()
+
+                    prompt.authenticate(
+                        cancelSignal,
+                        act.mainExecutor,
+                        object : android.hardware.biometrics.BiometricPrompt.AuthenticationCallback() {
+                            override fun onAuthenticationSucceeded(result: android.hardware.biometrics.BiometricPrompt.AuthenticationResult?) {
+                                finish(true, "ok")
+                            }
+
+                            override fun onAuthenticationError(errorCode: Int, errString: CharSequence?) {
+                                finish(false, errString?.toString() ?: "cancelled")
+                            }
+
+                            override fun onAuthenticationFailed() {
+                                // El sistema permite volver a intentar en el mismo diálogo
+                            }
+                        }
+                    )
+                } else {
+                    finish(false, "unsupported_sdk")
+                }
+            } catch (e: Exception) {
+                finish(false, e.message ?: "error")
+            }
+        }
+    }
+
+    @ReactMethod
+    fun getFolderNoMediaStatusNative(dirPath: String, promise: Promise) {
+        executor.execute {
+            try {
+                val dir = File(cleanFilePath(dirPath))
+                val noMediaFile = File(dir, ".nomedia")
+                promise.resolve(noMediaFile.exists())
+            } catch (_: Exception) {
+                promise.resolve(false)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun setFolderNoMediaNative(dirPath: String, hideFromOtherApps: Boolean, promise: Promise) {
+        executor.execute {
+            try {
+                val dir = File(cleanFilePath(dirPath))
+                if (!dir.exists()) {
+                    dir.mkdirs()
+                }
+                val targets = mutableListOf(dir)
+                val fotosSub = File(dir, "Fotos")
+                val videosSub = File(dir, "Videos")
+                if (fotosSub.exists() && fotosSub.isDirectory) targets.add(fotosSub)
+                if (videosSub.exists() && videosSub.isDirectory) targets.add(videosSub)
+
+                for (t in targets) {
+                    val nm = File(t, ".nomedia")
+                    if (hideFromOtherApps) {
+                        if (!nm.exists()) {
+                            nm.createNewFile()
+                        }
+                    } else {
+                        if (nm.exists()) {
+                            nm.delete()
+                        }
+                    }
+                }
+
+                // Notificar a MediaScanner del cambio
+                try {
+                    val scanList = mutableListOf(dir.absolutePath)
+                    val children = dir.listFiles() ?: emptyArray()
+                    for (c in children.take(60)) {
+                        if (c.isFile && !c.name.startsWith(".")) {
+                            scanList.add(c.absolutePath)
+                        }
+                    }
+                    MediaScannerConnection.scanFile(
+                        reactContext,
+                        scanList.toTypedArray(),
+                        null,
+                        null
+                    )
+                } catch (_: Exception) {}
+
+                val map = Arguments.createMap().apply {
+                    putBoolean("hiddenFromOtherApps", File(dir, ".nomedia").exists())
+                    putString("path", dir.absolutePath)
+                }
+                promise.resolve(map)
+            } catch (e: Exception) {
+                promise.reject("NOMEDIA_ERROR", e.message ?: "No se pudo actualizar .nomedia", e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun clearWebBrowserDataNative(promise: Promise) {
+        UiThreadUtil.runOnUiThread {
+            try {
+                try {
+                    val cm = CookieManager.getInstance()
+                    cm.removeAllCookies(null)
+                    cm.flush()
+                } catch (_: Exception) {}
+
+                try {
+                    android.webkit.WebStorage.getInstance().deleteAllData()
+                } catch (_: Exception) {}
+
+                try {
+                    android.webkit.WebViewDatabase.getInstance(reactContext).clearFormData()
+                    android.webkit.WebViewDatabase.getInstance(reactContext).clearHttpAuthUsernamePassword()
+                } catch (_: Exception) {}
+
+                val act = reactContext.currentActivity
+                if (act != null && !act.isFinishing) {
+                    try {
+                        val tempWv = WebView(act)
+                        tempWv.clearCache(true)
+                        tempWv.clearHistory()
+                        tempWv.clearFormData()
+                        tempWv.destroy()
+                    } catch (_: Exception) {}
+                }
+
+                val res = Arguments.createMap().apply {
+                    putBoolean("success", true)
+                    putDouble("timestamp", System.currentTimeMillis().toDouble())
+                }
+                promise.resolve(res)
+            } catch (e: Exception) {
+                promise.reject("CLEAR_WEB_ERROR", e.message ?: "Error al limpiar navegador", e)
+            }
+        }
+    }
+
+    @ReactMethod
     fun canDrawOverlaysNative(promise: Promise) {
         try {
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
@@ -890,7 +1079,17 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         var webViewRef: WebView? = null
         var urlInputRef: EditText? = null
         var downloadBtnRef: TextView? = null
+        var uaBtnRef: TextView? = null
+        var statusBannerRef: TextView? = null
         var detectedMediaUrl: String? = null
+        var currentUaIndex = 0
+
+        val userAgents = listOf(
+            Pair("📱 S24", "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36"),
+            Pair("🍎 iPhone", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"),
+            Pair("💻 PC", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
+            Pair("📱 Pixel", "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36")
+        )
 
         fun normalizeInputUrl(raw: String): String {
             val trimmed = raw.trim()
@@ -916,6 +1115,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 val map = Arguments.createMap().apply {
                     putString("action", action)
                     putString("url", targetResultUrl ?: "")
+                    putString("detectedStreamUrl", detectedMediaUrl ?: "")
                 }
                 promise.resolve(map)
             }
@@ -938,6 +1138,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 wv.settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
+                    databaseEnabled = true
                     mediaPlaybackRequiresUserGesture = false
                     loadsImagesAutomatically = true
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -945,7 +1146,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     loadWithOverviewMode = true
                     builtInZoomControls = true
                     displayZoomControls = false
-                    userAgentString = "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+                    userAgentString = userAgents[0].second
                 }
 
                 wv.webChromeClient = WebChromeClient()
@@ -974,7 +1175,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         ) {
                             detectedMediaUrl = reqUrl
                             UiThreadUtil.runOnUiThread {
-                                downloadBtnRef?.text = "⬇ Video Listo"
+                                downloadBtnRef?.text = "⬇ ¡Video Detectado! (Bajar)"
                                 downloadBtnRef?.background = GradientDrawable().apply {
                                     cornerRadius = 18f
                                     setColor(Color.parseColor("#10B981"))
@@ -999,18 +1200,19 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     )
                 }
 
+                // Renglón 1: Barra de dirección con margen superior seguro (>= 48dp para no traslapar reloj/batería)
                 val navBar = LinearLayout(act).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setBackgroundColor(Color.parseColor("#151525"))
-                    setPadding(12, 14, 12, 14)
+                    setPadding(16, 108, 16, 12)
                 }
 
                 fun makeNavBtn(label: String, bgHex: String, onClick: () -> Unit): TextView {
                     return TextView(act).apply {
                         text = label
                         setTextColor(Color.WHITE)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
                         typeface = Typeface.DEFAULT_BOLD
                         gravity = Gravity.CENTER
                         setPadding(18, 12, 18, 12)
@@ -1057,6 +1259,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     layoutParams = lp
                     setOnEditorActionListener { v, actionId, _ ->
                         if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_SEARCH) {
+                            detectedMediaUrl = null
                             val target = normalizeInputUrl(v.text?.toString() ?: "")
                             wv.loadUrl(target)
                             true
@@ -1068,16 +1271,10 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 urlInputRef = urlInput
 
                 val goBtn = makeNavBtn("Ir", "#3B82F6") {
+                    detectedMediaUrl = null
                     val target = normalizeInputUrl(urlInput.text?.toString() ?: "")
                     wv.loadUrl(target)
                 }
-
-                val dlBtn = makeNavBtn("⬇ Video", "#6D28D9") {
-                    val currentPageUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
-                    val bestUrl = if (!detectedMediaUrl.isNullOrBlank()) currentPageUrl else currentPageUrl
-                    closeBrowser("download", bestUrl)
-                }
-                downloadBtnRef = dlBtn
 
                 val closeBtn = makeNavBtn("✕", "#EF4444") {
                     closeBrowser("closed", wv.url ?: "")
@@ -1088,16 +1285,100 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 navBar.addView(reloadBtn)
                 navBar.addView(urlInput)
                 navBar.addView(goBtn)
-                navBar.addView(dlBtn)
                 navBar.addView(closeBtn)
+
+                // Renglón 2: Herramientas "Modo 1ª Vez (Limpiar Datos)" + Cambiar Dispositivo + Descargar Video
+                val toolsBar = LinearLayout(act).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setBackgroundColor(Color.parseColor("#0F172A"))
+                    setPadding(16, 8, 16, 12)
+                }
+
+                val statusBanner = TextView(act).apply {
+                    text = ""
+                    visibility = android.view.View.GONE
+                    setTextColor(Color.parseColor("#A7F3D0"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    gravity = Gravity.CENTER
+                    setBackgroundColor(Color.parseColor("#064E3B"))
+                    setPadding(20, 10, 20, 10)
+                }
+                statusBannerRef = statusBanner
+
+                fun showTempBanner(msg: String) {
+                    statusBannerRef?.text = msg
+                    statusBannerRef?.visibility = android.view.View.VISIBLE
+                    mainHandler.postDelayed({
+                        statusBannerRef?.visibility = android.view.View.GONE
+                    }, 3500L)
+                }
+
+                val cleanFirstTimeBtn = makeNavBtn("🧹 Limpiar 1ª Vez", "#059669") {
+                    try {
+                        val cm = CookieManager.getInstance()
+                        cm.removeAllCookies(null)
+                        cm.flush()
+                    } catch (_: Exception) {}
+                    try {
+                        android.webkit.WebStorage.getInstance().deleteAllData()
+                    } catch (_: Exception) {}
+                    try {
+                        wv.evaluateJavascript("try{localStorage.clear();sessionStorage.clear();}catch(e){}", null)
+                        wv.clearCache(true)
+                        wv.clearHistory()
+                        wv.clearFormData()
+                    } catch (_: Exception) {}
+                    // Rotar versión de navegador ligeramente para renovar huella de sesión
+                    val randBuild = (110..199).random()
+                    val basePair = userAgents[currentUaIndex]
+                    wv.settings.userAgentString = basePair.second + " Rev/$randBuild"
+                    showTempBanner("✨ Cookies, caché y sesión limpiadas (entrando como 1ª vez)")
+                    wv.reload()
+                }
+
+                val uaSwitchBtn = makeNavBtn(userAgents[0].first, "#1E293B") {
+                    currentUaIndex = (currentUaIndex + 1) % userAgents.size
+                    val nextPair = userAgents[currentUaIndex]
+                    uaBtnRef?.text = nextPair.first
+                    wv.settings.userAgentString = nextPair.second
+                    showTempBanner("🎭 Vista cambiada a " + nextPair.first)
+                    wv.reload()
+                }
+                uaBtnRef = uaSwitchBtn
+
+                val dlBtn = makeNavBtn("⬇ Bajar Video", "#6D28D9") {
+                    val currentPageUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
+                    val bestUrl = if (!detectedMediaUrl.isNullOrBlank()) detectedMediaUrl!! else currentPageUrl
+                    closeBrowser("download", bestUrl)
+                }
+                downloadBtnRef = dlBtn
+
+                toolsBar.addView(cleanFirstTimeBtn)
+                toolsBar.addView(uaSwitchBtn)
+                toolsBar.addView(dlBtn)
 
                 val webParams = LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     0,
                     1f
                 )
+
+                // Espaciador inferior seguro (>= 48dp) para no traslapar la barra de navegación de Android
+                val bottomSafeSpacer = LinearLayout(act).apply {
+                    setBackgroundColor(Color.parseColor("#0B0B14"))
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        116
+                    )
+                }
+
                 root.addView(navBar)
+                root.addView(toolsBar)
+                root.addView(statusBanner)
                 root.addView(wv, webParams)
+                root.addView(bottomSafeSpacer)
 
                 dlg.setContentView(root)
                 dlg.setOnCancelListener {
@@ -1817,7 +2098,13 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }
                 }
 
-                // Asegurar que las 3 carpetas fijadas de Archivos ("2do plano", "Descargas", "Telegram" raíz) siempre existan y sumen sus subcarpetas
+                // Asegurar que las carpetas fijadas de Archivos ("Bóveda Privada", "2do plano", "Descargas", "Telegram" raíz) siempre existan y sumen sus subcarpetas
+                val bovedaPrivadaDir = File("/storage/emulated/0/Movies/Boveda Privada")
+                try {
+                    if (!bovedaPrivadaDir.exists()) bovedaPrivadaDir.mkdirs()
+                    val nmBoveda = File(bovedaPrivadaDir, ".nomedia")
+                    if (!nmBoveda.exists()) nmBoveda.createNewFile()
+                } catch (_: Exception) {}
                 val telegramRootDir = File("/storage/emulated/0/Telegram")
                 try {
                     if (!telegramRootDir.exists()) telegramRootDir.mkdirs()
@@ -1825,7 +2112,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 val telegramAltDir = File("/storage/emulated/0/Android/media/org.telegram.messenger/Telegram")
                 val downloadRootDir = File("/storage/emulated/0/Download")
 
-                // Remover subcarpetas sueltas o duplicadas de Telegram, 2do plano y Download de mergedByDir para consolidarlas en su carpeta raíz única
+                // Remover subcarpetas sueltas o duplicadas de Telegram, 2do plano, Bóveda Privada y Download de mergedByDir para consolidarlas en su carpeta raíz única
                 val keysToRemove = mutableListOf<String>()
                 for ((k, item) in mergedByDir) {
                     val tLow = item.title.trim().lowercase()
@@ -1836,6 +2123,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         tLow == "telegram" || tLow == "telegram images" || tLow == "telegram video" ||
                         k.endsWith("/2do plano") || k.endsWith("/grabaciones") ||
                         tLow == "2do plano" || tLow == "segundo plano" ||
+                        k.endsWith("/boveda privada") || tLow == "boveda privada" || tLow == "bóveda privada" ||
                         k == "/storage/emulated/0/download" || tLow == "download" || tLow == "descargas"
                     ) {
                         keysToRemove.add(k)
@@ -1844,6 +2132,16 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 for (k in keysToRemove) {
                     mergedByDir.remove(k)
                 }
+
+                val (bpCount, bpCover) = scanDirCountAndCover(listOf(bovedaPrivadaDir), 2)
+                val bpKey = bovedaPrivadaDir.absolutePath.lowercase()
+                mergedByDir[bpKey] = BucketAcc(
+                    id = "pinned_boveda_privada",
+                    title = "Bóveda Privada",
+                    dirPath = bovedaPrivadaDir.absolutePath,
+                    coverPath = bpCover,
+                    count = bpCount
+                )
 
                 val appExtSegundoPlanoDir = reactContext.getExternalFilesDir("2do plano")
                 val spDirsList = mutableListOf(
@@ -1901,9 +2199,10 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 val out = Arguments.createArray()
                 for ((k, item) in mergedByDir) {
                     val pinnedOrder = when (k) {
-                        spKey -> 1
-                        dlKey -> 2
-                        tgKey -> 3
+                        bpKey -> 1
+                        spKey -> 2
+                        dlKey -> 3
+                        tgKey -> 4
                         else -> 0
                     }
                     val map = Arguments.createMap().apply {
@@ -5266,6 +5565,8 @@ module.exports = function withFastAndroidBuild(config) {
       'android.permission.POST_NOTIFICATIONS',
       'android.permission.SYSTEM_ALERT_WINDOW',
       'android.permission.WAKE_LOCK',
+      'android.permission.USE_BIOMETRIC',
+      'android.permission.USE_FINGERPRINT',
     ];
     for (const permName of requiredPerms) {
       const exists = manifest['uses-permission'].some(

@@ -27,7 +27,11 @@ import {
   DOWNLOAD_ALBUM_NAME,
   DOWNLOAD_FOLDER_URI,
 } from '../services/videoDownloadService';
-import { folderService } from '../services/folderService';
+import {
+  folderService,
+  BOVEDA_PRIVADA_FOLDER_NAME,
+  BOVEDA_PRIVADA_FOLDER_URI,
+} from '../services/folderService';
 
 function formatBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 MB';
@@ -50,6 +54,7 @@ export default function VideoDownloaderModal({
   const [downloadItems, setDownloadItems] = useState([]);
   const [filterStatus, setFilterStatus] = useState('all'); // 'all' | 'active' | 'completed' | 'error'
   const [floatingDismissed, setFloatingDismissed] = useState(false);
+  const [saveToVault, setSaveToVault] = useState(false);
 
   // Controladores activos por ID de descarga para pausar/reanudar/cancelar individualmente
   const controllersMapRef = useRef({});
@@ -153,17 +158,39 @@ export default function VideoDownloaderModal({
       delete controllersMapRef.current[itemId];
 
       if (result && result.success) {
+        let finalAlbumName = result.albumName || DOWNLOAD_ALBUM_NAME;
+        let finalFolderUri = result.folderUri || DOWNLOAD_FOLDER_URI;
+        let finalAsset = result.asset || null;
+
+        if (saveToVault && finalAsset?.uri) {
+          try {
+            const vaultUri = await folderService.ensureBovedaPrivadaFolder();
+            await folderService.moveAssetsToFolder(
+              [finalAsset],
+              vaultUri || BOVEDA_PRIVADA_FOLDER_URI,
+              ''
+            );
+            finalAlbumName = BOVEDA_PRIVADA_FOLDER_NAME;
+            finalFolderUri = vaultUri || BOVEDA_PRIVADA_FOLDER_URI;
+            const fname = result.filename || finalAsset.filename || 'video.mp4';
+            finalAsset = {
+              ...finalAsset,
+              uri: `${finalFolderUri}/${fname}`,
+            };
+          } catch (_eVault) {}
+        }
+
         updateItemById(itemId, {
           status: 'completed',
-          statusText: `Guardado en carpeta "${result.albumName}"`,
+          statusText: `Guardado en carpeta "${finalAlbumName}"`,
           percent: 1,
           filename: result.filename,
           title: result.title || result.filename,
           platform: result.platform || platformInfo,
           sizeBytes: result.sizeBytes || 0,
-          albumName: result.albumName || DOWNLOAD_ALBUM_NAME,
-          folderUri: result.folderUri || DOWNLOAD_FOLDER_URI,
-          asset: result.asset || null,
+          albumName: finalAlbumName,
+          folderUri: finalFolderUri,
+          asset: finalAsset,
           errorMessage: null,
           date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         });
@@ -484,24 +511,93 @@ export default function VideoDownloaderModal({
         </View>
 
         {/* 2. BANNER DE CARPETA EXCLUSIVA "VIDEOS DESCARGADOS" */}
+        {/* 2. BANNER DE ACCESO DIRECTO A LA CARPETA DE DESTINO + SELECTOR DE BÓVEDA PRIVADA */}
+        <View style={{ marginHorizontal: 14, marginBottom: 8, gap: 6 }}>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity
+              style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                paddingVertical: 8,
+                paddingHorizontal: 10,
+                borderRadius: 11,
+                borderWidth: 1.5,
+                backgroundColor: !saveToVault ? 'rgba(245, 158, 11, 0.2)' : 'rgba(255,255,255,0.04)',
+                borderColor: !saveToVault ? '#f59e0b' : 'rgba(255,255,255,0.12)',
+              }}
+              onPress={() => setSaveToVault(false)}
+            >
+              <Ionicons name="folder" size={15} color={!saveToVault ? '#fbbf24' : '#94a3b8'} />
+              <Text
+                style={{
+                  color: !saveToVault ? '#fde68a' : '#94a3b8',
+                  fontSize: 11.5,
+                  fontWeight: '800',
+                }}
+              >
+                📁 Videos Descargados
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 6,
+                paddingVertical: 8,
+                paddingHorizontal: 10,
+                borderRadius: 11,
+                borderWidth: 1.5,
+                backgroundColor: saveToVault ? 'rgba(16, 185, 129, 0.22)' : 'rgba(255,255,255,0.04)',
+                borderColor: saveToVault ? '#10b981' : 'rgba(255,255,255,0.12)',
+              }}
+              onPress={() => setSaveToVault(true)}
+            >
+              <Ionicons name="lock-closed" size={15} color={saveToVault ? '#34d399' : '#94a3b8'} />
+              <Text
+                style={{
+                  color: saveToVault ? '#a7f3d0' : '#94a3b8',
+                  fontSize: 11.5,
+                  fontWeight: '800',
+                }}
+              >
+                🔒 Bóveda Privada
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         <TouchableOpacity
           style={styles.dedicatedFolderBanner}
           onPress={() => {
             if (onOpenDownloadedFolder) {
-              onOpenDownloadedFolder(DOWNLOAD_FOLDER_URI);
+              onOpenDownloadedFolder(
+                saveToVault ? BOVEDA_PRIVADA_FOLDER_URI : DOWNLOAD_FOLDER_URI
+              );
             }
           }}
           activeOpacity={0.85}
         >
           <View style={styles.dedicatedFolderIconWrap}>
-            <Ionicons name="folder" size={22} color="#fbbf24" />
+            <Ionicons
+              name={saveToVault ? 'lock-closed' : 'folder'}
+              size={22}
+              color={saveToVault ? '#34d399' : '#fbbf24'}
+            />
           </View>
           <View style={{ flex: 1 }}>
             <Text style={styles.dedicatedFolderTitle}>
-              Carpeta propia: &quot;{DOWNLOAD_ALBUM_NAME}&quot;
+              Destino: &quot;{saveToVault ? BOVEDA_PRIVADA_FOLDER_NAME : DOWNLOAD_ALBUM_NAME}&quot;
             </Text>
             <Text style={styles.dedicatedFolderSub}>
-              Todos tus videos se guardan automáticamente en su propia carpeta. Toca aquí para abrirla.
+              {saveToVault
+                ? 'Se guardarán ocultos (.nomedia) en tu Bóveda Privada. Toca para abrirla.'
+                : 'Todos tus videos se guardan en su propia carpeta. Toca aquí para abrirla.'}
             </Text>
           </View>
           <View style={styles.dedicatedFolderGoPill}>

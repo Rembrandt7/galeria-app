@@ -23,7 +23,7 @@ import { File, Paths } from 'expo-file-system';
 import * as LegacyFS from 'expo-file-system/legacy';
 import { theme } from '../constants/theme';
 import { compressionService } from '../services/compressionService';
-import { folderService } from '../services/folderService';
+import { folderService, BOVEDA_PRIVADA_FOLDER_URI } from '../services/folderService';
 import VideoPlayerScreen from './VideoPlayerScreen';
 import ImageCropper from './ImageCropper';
 import CloneStampEditor from './CloneStampEditor';
@@ -1159,6 +1159,48 @@ export default function FullScreenViewer({
                 <Text style={[styles.actionLabel, { color: '#f59e0b' }]}>Clonar</Text>
               </TouchableOpacity>
             )}
+
+            {/* Mover a Bóveda Privada (.nomedia) */}
+            <TouchableOpacity
+              style={styles.actionItem}
+              onPress={() => {
+                if (!currentAsset?.uri) return;
+                Alert.alert(
+                  '🔒 Mover a Bóveda Privada',
+                  'Este archivo se moverá a "Bóveda Privada" (en la sección Archivos con Huella/Contraseña) y dejará de verse en Google Fotos y WhatsApp.',
+                  [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                      text: 'Mover a Bóveda',
+                      onPress: async () => {
+                        try {
+                          const vaultUri = await folderService.ensureBovedaPrivadaFolder();
+                          await folderService.moveAssetsToFolder(
+                            [currentAsset],
+                            vaultUri || BOVEDA_PRIVADA_FOLDER_URI,
+                            ''
+                          );
+                          folderService.invalidateCache();
+                          if (onMediaSaved) onMediaSaved();
+                          Alert.alert(
+                            '🔒 Guardado en Bóveda Privada',
+                            'El archivo ahora está en tu Bóveda Privada (dentro de Archivos).'
+                          );
+                        } catch (_e) {
+                          Alert.alert('Error', 'No se pudo mover a la Bóveda Privada.');
+                        }
+                      },
+                    },
+                  ]
+                );
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="lock-closed-outline" size={23} color="#34d399" />
+              <Text style={[styles.actionLabel, { color: '#34d399', fontWeight: '700' }]}>
+                Bóveda
+              </Text>
+            </TouchableOpacity>
 
             {/* Eliminar */}
             <TouchableOpacity

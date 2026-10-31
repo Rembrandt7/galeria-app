@@ -128,8 +128,8 @@ export default function AlbumList({
   const groupSmallInVarios = gridConfig?.groupSmallInVarios !== false;
   const showFoldersInScreen = gridConfig?.showFoldersInScreen !== false;
 
-  // Determinar si una carpeta es una de las 3 carpetas fijadas arriba en la sección Archivos:
-  // 1) "2do plano", 2) "Descargas", 3) "Telegram" (raíz del sistema)
+  // Determinar si una carpeta es una de las carpetas fijadas arriba en la sección Archivos:
+  // 1) "2do plano", 2) "Descargas", 3) "Telegram" (raíz del sistema), 4) "Bóveda Privada" (.nomedia)
   const getPinnedFilesOrder = (item) => {
     if (!item || typeof item !== 'object') return 0;
     if (Number(item.pinnedOrder) > 0) return Number(item.pinnedOrder);
@@ -147,6 +147,12 @@ export default function AlbumList({
       u.endsWith('/storage/emulated/0/telegram')
     ) {
       return 3;
+    }
+    if (
+      /^(b[oó]veda\s*privada|boveda\s*privada)$/i.test(t) ||
+      u.endsWith('/boveda privada')
+    ) {
+      return 4;
     }
     return 0;
   };

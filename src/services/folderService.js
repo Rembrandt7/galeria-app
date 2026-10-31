@@ -14,10 +14,19 @@ export const DOWNLOADED_VIDEOS_FOLDER_NAME = 'Videos Descargados';
 export const DOWNLOADED_VIDEOS_FOLDER_URI = 'file:///storage/emulated/0/Movies/Videos Descargados';
 export const SEGUNDO_PLANO_FOLDER_NAME = '2do plano';
 export const SEGUNDO_PLANO_FOLDER_URI = 'file:///storage/emulated/0/Movies/2do plano';
+export const BOVEDA_PRIVADA_FOLDER_NAME = 'Bóveda Privada';
+export const BOVEDA_PRIVADA_FOLDER_URI = 'file:///storage/emulated/0/Movies/Boveda Privada';
 export const TELEGRAM_ROOT_FOLDER_URI = 'file:///storage/emulated/0/Telegram';
 export const DOWNLOAD_ROOT_FOLDER_URI = 'file:///storage/emulated/0/Download';
 
 export const COMMON_SYSTEM_FOLDERS = [
+  {
+    id: 'boveda_privada',
+    name: 'Bóveda Privada (Oculta)',
+    uri: BOVEDA_PRIVADA_FOLDER_URI,
+    icon: 'lock-closed-outline',
+    description: 'Fotos y videos invisibles en Google Fotos, Galería y WhatsApp (.nomedia activo)',
+  },
   {
     id: 'segundo_plano',
     name: '2do plano',
@@ -1040,10 +1049,131 @@ export const folderService = {
       );
     } catch (_eSp) {}
     try {
+      await folderService.ensureBovedaPrivadaFolder();
+    } catch (_eBp) {}
+    try {
       await folderService.addSavedFolder(finalUri, DOWNLOADED_VIDEOS_FOLDER_NAME);
       await folderService.addSavedFolder(SEGUNDO_PLANO_FOLDER_URI, SEGUNDO_PLANO_FOLDER_NAME);
+      await folderService.addSavedFolder(BOVEDA_PRIVADA_FOLDER_URI, BOVEDA_PRIVADA_FOLDER_NAME);
     } catch (_e2) {}
     return finalUri;
+  },
+
+  async ensureBovedaPrivadaFolder() {
+    let finalUri = BOVEDA_PRIVADA_FOLDER_URI;
+    try {
+      const created = await folderService.createSubfolder(
+        'file:///storage/emulated/0/Movies',
+        BOVEDA_PRIVADA_FOLDER_NAME
+      );
+      if (created) finalUri = created;
+    } catch (_e) {}
+    try {
+      await folderService.setFolderNoMedia(finalUri, true);
+    } catch (_eNm) {}
+    try {
+      await folderService.addSavedFolder(finalUri, BOVEDA_PRIVADA_FOLDER_NAME);
+    } catch (_eAdd) {}
+    return finalUri;
+  },
+
+  async getFolderNoMediaStatus(uri) {
+    if (!uri) return { hasNoMedia: false };
+    const phys = folderService.toPhysicalUri(uri);
+    if (NativeModules?.VideoEngineModule?.getFolderNoMediaStatusNative) {
+      try {
+        return await NativeModules.VideoEngineModule.getFolderNoMediaStatusNative(phys);
+      } catch (_e) {}
+    }
+    try {
+      const info = await LegacyFS.getInfoAsync(`${phys}/.nomedia`);
+      return { hasNoMedia: Boolean(info && info.exists), path: phys };
+    } catch (_e2) {
+      return { hasNoMedia: false, path: phys };
+    }
+  },
+
+  async setFolderNoMedia(uri, hideFromOtherApps = true) {
+    if (!uri) return { hasNoMedia: false };
+    const phys = folderService.toPhysicalUri(uri);
+    if (NativeModules?.VideoEngineModule?.setFolderNoMediaNative) {
+      try {
+        const res = await NativeModules.VideoEngineModule.setFolderNoMediaNative(
+          phys,
+          Boolean(hideFromOtherApps)
+        );
+        folderService.invalidateCache(uri);
+        return res;
+      } catch (_e) {}
+    }
+    try {
+      const noMediaUri = `${phys}/.nomedia`;
+      if (hideFromOtherApps) {
+        await LegacyFS.makeDirectoryAsync(phys, { intermediates: true }).catch(() => {});
+        await LegacyFS.writeAsStringAsync(noMediaUri, '');
+      } else {
+        await LegacyFS.deleteAsync(noMediaUri, { idempotent: true });
+      }
+      folderService.invalidateCache(uri);
+      return { hasNoMedia: Boolean(hideFromOtherApps), path: phys };
+    } catch (_e2) {
+      return { hasNoMedia: false, path: phys };
+    }
+  },
+
+  /**
+   * Auto-clasifica los archivos sueltos de una carpeta en subcarpetas limpias:
+   * - Capturas (Screenshot_*, Captura*, ScreenRecording*)
+   * - Fotos (imágenes normales)
+   * - Videos (videos normales)
+   */
+  async autoClassifyFolderContents(folderUri, assets = []) {
+    if (!folderUri || !Array.isArray(assets) || assets.length === 0) {
+      return { movedTotal: 0, capturas: 0, fotos: 0, videos: 0 };
+    }
+    const screenshots = [];
+    const photos = [];
+    const videos = [];
+
+    for (const item of assets) {
+      if (!item?.uri) continue;
+      const fname = String(item.filename || nameFromUri(item.uri) || '').toLowerCase();
+      const isScreenshot =
+        /^(screenshot|captura|screen_recording|screenrecording|grabaci[oó]n_de_pantalla)/i.test(fname) ||
+        /screenshot/i.test(fname);
+      if (isScreenshot) {
+        screenshots.push(item);
+      } else if (item.mediaType === 'video') {
+        videos.push(item);
+      } else {
+        photos.push(item);
+      }
+    }
+
+    let movedCapturas = 0;
+    let movedFotos = 0;
+    let movedVideos = 0;
+
+    if (screenshots.length > 0) {
+      const r = await folderService.moveAssetsToFolder(screenshots, folderUri, 'Capturas');
+      movedCapturas = r.moved || 0;
+    }
+    if (photos.length > 0) {
+      const r = await folderService.moveAssetsToFolder(photos, folderUri, 'Fotos');
+      movedFotos = r.moved || 0;
+    }
+    if (videos.length > 0) {
+      const r = await folderService.moveAssetsToFolder(videos, folderUri, 'Videos');
+      movedVideos = r.moved || 0;
+    }
+
+    folderService.invalidateCache(folderUri);
+    return {
+      movedTotal: movedCapturas + movedFotos + movedVideos,
+      capturas: movedCapturas,
+      fotos: movedFotos,
+      videos: movedVideos,
+    };
   },
 
   async createSubfolder(parentDirUri, subName) {
@@ -1163,7 +1293,7 @@ export const folderService = {
       item.isDownloadedVideos ||
       item.isFavoritesCard ||
       item.isVariosCard ||
-      /^(2do plano|segundo plano|grabaciones|camera|cámara|camara|dcim|videos descargados|favoritos|screenshots|capturas|whatsapp images|whatsapp video|whatsapp|download|descargas|pictures|imágenes|imagenes|movies|películas|peliculas|familia|viajes|trabajo|instagram|facebook|tiktok|telegram|telegram images|telegram video|restored|recuerdos)$/i.test(
+      /^(2do plano|segundo plano|b[oó]veda privada|boveda privada|grabaciones|camera|cámara|camara|dcim|videos descargados|favoritos|screenshots|capturas|whatsapp images|whatsapp video|whatsapp|download|descargas|pictures|imágenes|imagenes|movies|películas|peliculas|familia|viajes|trabajo|instagram|facebook|tiktok|telegram|telegram images|telegram video|restored|recuerdos)$/i.test(
         lowerName
       ) ||
       /^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+20\d{2}/i.test(
@@ -1260,7 +1390,7 @@ export const folderService = {
     }
 
     const isFilesOrSocial =
-      /2do\s*plano|segundo\s*plano|vid_2do_|vid_bvr_|\/grabaciones/i.test(combined) ||
+      /2do\s*plano|segundo\s*plano|b[oó]veda\s*privada|boveda\s*privada|vid_2do_|vid_bvr_|\/grabaciones/i.test(combined) ||
       /screenshot|captura|screen_capture|grabaci[oó]n.*pantalla/i.test(combined) ||
       /whatsapp|wa\d{4}|wa_|_wa\d/i.test(combined) ||
       /\b(x|twitter|x-corp)\b/i.test(lowerTitle) ||

@@ -716,6 +716,44 @@ export default function App() {
     return (baseList || []).filter((a) => a && !trashBin[a.id]);
   }, [activeTab, favorites, assets, folderAssets, filterType, trashBin, activeSegment, selectedAlbum]);
 
+  // Desbloqueo con Huella Digital / Biometría nativa de Android (complementario a la contraseña)
+  const triggerBiometricUnlock = useCallback(
+    async (mode = pinModalMode) => {
+      try {
+        if (!NativeModules?.VideoEngineModule?.authenticateBiometricNative) return false;
+        const avail = await NativeModules.VideoEngineModule.isBiometricAvailableNative?.();
+        if (avail && avail.available === false) return false;
+
+        const title =
+          mode === 'files'
+            ? 'Desbloquear Archivos y Bóveda'
+            : 'Desbloquear Carpetas Ocultas';
+        const subtitle = 'Coloca tu huella digital o usa tu contraseña';
+        const res = await NativeModules.VideoEngineModule.authenticateBiometricNative(
+          title,
+          subtitle
+        );
+        if (res && res.success) {
+          setPinModalVisible(false);
+          setPinAttempt('');
+          if (mode === 'files') {
+            setSelectedAlbum(null);
+            if (activeTab === 'folder') {
+              setActiveTab('albums');
+            }
+            setActiveSegment('files');
+          } else {
+            setShowAllFolders(true);
+            await storageService.setShowAllFolders(true);
+          }
+          return true;
+        }
+      } catch (_e) {}
+      return false;
+    },
+    [pinModalMode, activeTab]
+  );
+
   const handleSelectSegment = useCallback(
     async (seg) => {
       if (seg === 'files') {
@@ -727,6 +765,11 @@ export default function App() {
         setPinAttempt('');
         setPinModalMode('files');
         setPinModalVisible(true);
+        if (pin) {
+          setTimeout(() => {
+            triggerBiometricUnlock('files');
+          }, 180);
+        }
         return;
       }
       setActiveSegment(seg);
@@ -736,7 +779,7 @@ export default function App() {
       }
       AsyncStorage.setItem(ACTIVE_SEGMENT_KEY, seg).catch(() => {});
     },
-    [activeSegment, activeTab]
+    [activeSegment, activeTab, triggerBiometricUnlock]
   );
 
   // Abrir Modo Guardar (organizador por deslizamiento + papelera con restauración en 1 clic)
@@ -897,7 +940,7 @@ export default function App() {
     }
   }, []);
 
-  // Alternar modo todo visible (muestra u oculta las carpetas privadas, con PIN opcional)
+  // Alternar modo todo visible (muestra u oculta las carpetas privadas, con PIN o Huella Digital)
   const handleToggleShowAllFolders = async () => {
     if (showAllFolders) {
       setShowAllFolders(false);
@@ -910,6 +953,9 @@ export default function App() {
       setPinAttempt('');
       setPinModalMode('hidden');
       setPinModalVisible(true);
+      setTimeout(() => {
+        triggerBiometricUnlock('hidden');
+      }, 180);
     } else {
       setShowAllFolders(true);
       await storageService.setShowAllFolders(true);
@@ -1657,17 +1703,43 @@ export default function App() {
               <Text style={styles.pinModalSub}>
                 {pinModalMode === 'files'
                   ? storedPin
-                    ? 'Ingresa tu contraseña para abrir la sección Archivos'
-                    : 'Configura tu contraseña para proteger la sección Archivos'
-                  : 'Ingresa tu contraseña'}
+                    ? 'Usa tu huella digital o ingresa tu contraseña'
+                    : 'Configura tu contraseña (también podrás usar tu huella digital)'
+                  : 'Usa tu huella digital o ingresa tu contraseña'}
               </Text>
+
+              {Boolean(storedPin) && (
+                <TouchableOpacity
+                  style={{
+                    width: '100%',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 8,
+                    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+                    borderWidth: 1.5,
+                    borderColor: '#10b981',
+                    paddingVertical: 12,
+                    paddingHorizontal: 14,
+                    borderRadius: 12,
+                    marginBottom: 12,
+                  }}
+                  onPress={() => triggerBiometricUnlock(pinModalMode)}
+                >
+                  <Ionicons name="finger-print-outline" size={22} color="#34d399" />
+                  <Text style={{ color: '#34d399', fontSize: 14, fontWeight: '800' }}>
+                    Desbloquear con Huella Digital
+                  </Text>
+                </TouchableOpacity>
+              )}
+
               <TextInput
                 style={styles.pinModalInput}
                 value={pinAttempt}
                 onChangeText={(t) => setPinAttempt(t)}
                 maxLength={20}
                 secureTextEntry
-                autoFocus
+                autoFocus={!storedPin}
                 placeholder="••••"
                 placeholderTextColor={theme.colors.textMuted}
                 returnKeyType="done"
