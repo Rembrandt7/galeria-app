@@ -194,8 +194,8 @@ export default function PhotoGrid({
   }, [hasPhotos, showPhotosFilter, showVideosFilter]);
 
   const photoReductionSummary = useMemo(
-    () => compressionService.getBatchReductionSummary(assets, null),
-    [assets]
+    () => compressionService.getBatchReductionSummary(filteredGridAssets, null),
+    [filteredGridAssets]
   );
 
   const selectedReductionSummary = useMemo(
@@ -583,7 +583,10 @@ export default function PhotoGrid({
                 </TouchableOpacity>
               )}
 
-              {(photoAssets.length > 0 || videoAssets.length > 0) && (
+              {(isCompressingBatch ||
+                (filteredGridAssets.length > 0 &&
+                  photoReductionSummary.canCompress &&
+                  photoReductionSummary.level !== 'light')) && (
                 <TouchableOpacity
                   style={[
                     styles.compressBatchBtn,
@@ -617,7 +620,7 @@ export default function PhotoGrid({
                   >
                     {isCompressingBatch
                       ? `${compressProgress?.current || 1}/${compressProgress?.total || 1} (${Math.round((compressProgress?.percent || 0) * 100)}%)`
-                      : `Comprimir (${photoReductionSummary.compressibleCount || assets.length})`}
+                      : `Comprimir (${photoReductionSummary.compressibleCount})`}
                   </Text>
                 </TouchableOpacity>
               )}

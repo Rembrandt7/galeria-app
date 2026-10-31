@@ -217,12 +217,27 @@ export const mediaService = {
             }
           } catch (_e) {}
         }
-        return {
+        result = {
           assets: combined,
           endCursor: null,
           hasNextPage: false,
           totalCount: combined.length,
         };
+      }
+
+      if (Array.isArray(result.assets)) {
+        for (const a of result.assets) {
+          if (a && !a.fileSize && a.uri) {
+            try {
+              const phys = extractPhysicalFileUri(a.uri) || a.uri;
+              if (phys.startsWith('file://')) {
+                const f = new File(phys);
+                const sz = Number(f.size) || 0;
+                if (sz > 0) a.fileSize = sz;
+              }
+            } catch (_e) {}
+          }
+        }
       }
 
       return result;

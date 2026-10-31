@@ -496,18 +496,17 @@ export const compressionService = {
     const yellowThreshold = 4;
 
     if (mb <= greenThreshold) {
-      const estSaved = Math.round(rawBytes * 0.32);
       return {
         level: 'light',
         mb: mb.toFixed(2),
-        color: '#10b981', // Verde: peso ligero
+        color: '#10b981', // Verde: peso ligero (no requiere compresión)
         titleColor: '#10b981',
         bannerBg: 'rgba(16, 185, 129, 0.18)',
         borderColor: '#10b981',
         tagText: 'Ligero (Verde)',
-        reductionText: rawBytes > 0 ? `Comprimir (-${compressionService.formatBytes(estSaved)})` : 'Comprimir',
-        canCompress: true,
-        estimatedSavedBytes: estSaved,
+        reductionText: 'En Verde · Peso óptimo',
+        canCompress: false,
+        estimatedSavedBytes: 0,
         isHeavy: false,
       };
     }
@@ -583,10 +582,7 @@ export const compressionService = {
     }
 
     const compressibleCount = heavyCount + mediumCount;
-    const isVideoOnly = mediaType === 'video';
-    const canCompress = isVideoOnly
-      ? compressibleCount > 0 || unknownSizeCount > 0
-      : filtered.length > 0;
+    const canCompress = compressibleCount > 0;
 
     if (!canCompress) {
       return {
@@ -614,7 +610,7 @@ export const compressionService = {
         textColor: '#fca5a5',
         bgColor: 'rgba(239, 68, 68, 0.20)',
         borderColor: '#ef4444',
-        compressibleCount: compressibleCount || filtered.length,
+        compressibleCount,
         heavyCount,
         mediumCount,
         lightCount,
@@ -625,40 +621,20 @@ export const compressionService = {
     }
 
     // Si hay archivos en Amarillo (reducción media) -> AMARILLO
-    if (mediumCount > 0) {
-      return {
-        canCompress: true,
-        level: 'medium',
-        color: '#f59e0b',
-        textColor: '#fde68a',
-        bgColor: 'rgba(245, 158, 11, 0.20)',
-        borderColor: '#f59e0b',
-        compressibleCount: compressibleCount || filtered.length,
-        heavyCount,
-        mediumCount,
-        lightCount,
-        estimatedSavedBytes,
-        estimatedSavedFormatted:
-          estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '100% res.',
-      };
-    }
-
-    // Si todos están en Verde o aún se están leyendo tamaños -> VERDE/ACTIVO (siempre permite comprimir)
-    const totalEst = estimatedSavedBytes + lightEstimatedSavedBytes;
     return {
       canCompress: true,
-      level: 'light',
-      color: '#10b981',
-      textColor: '#6ee7b7',
-      bgColor: 'rgba(16, 185, 129, 0.18)',
-      borderColor: '#10b981',
-      compressibleCount: filtered.length,
+      level: 'medium',
+      color: '#f59e0b',
+      textColor: '#fde68a',
+      bgColor: 'rgba(245, 158, 11, 0.20)',
+      borderColor: '#f59e0b',
+      compressibleCount,
       heavyCount,
       mediumCount,
       lightCount,
-      estimatedSavedBytes: totalEst,
+      estimatedSavedBytes,
       estimatedSavedFormatted:
-        totalEst > 0 ? compressionService.formatBytes(totalEst) : '100% res.',
+        estimatedSavedBytes > 0 ? compressionService.formatBytes(estimatedSavedBytes) : '100% res.',
     };
   },
 

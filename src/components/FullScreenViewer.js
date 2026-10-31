@@ -1056,41 +1056,43 @@ export default function FullScreenViewer({
               </TouchableOpacity>
             )}
 
-            {/* Comprimir foto o video (siempre activo con su indicador de color) */}
-            <TouchableOpacity
-              style={styles.actionItem}
-              onPress={() => {
-                if (isVideo) {
-                  setOpenedDirectlyAsVideo(false);
-                  setPlayerInitialMode('compress');
-                  setPlayerAsset(currentAsset);
-                } else {
-                  handleCompressCurrentPhoto();
-                }
-              }}
-              disabled={isCompressing}
-              activeOpacity={0.7}
-            >
-              {isCompressing ? (
-                <ActivityIndicator size="small" color={sizeInfo.color} />
-              ) : (
-                <>
-                  <Ionicons
-                    name="sparkles"
-                    size={24}
-                    color={sizeInfo.color}
-                  />
-                  <Text
-                    style={[
-                      styles.actionLabel,
-                      { color: sizeInfo.color, fontWeight: '700' },
-                    ]}
-                  >
-                    Comprimir
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
+            {/* Comprimir foto o video (SOLO si no está en Verde / sí se puede comprimir) */}
+            {(isCompressing || (sizeInfo.canCompress && sizeInfo.level !== 'light')) && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => {
+                  if (isVideo) {
+                    setOpenedDirectlyAsVideo(false);
+                    setPlayerInitialMode('compress');
+                    setPlayerAsset(currentAsset);
+                  } else {
+                    handleCompressCurrentPhoto();
+                  }
+                }}
+                disabled={isCompressing}
+                activeOpacity={0.7}
+              >
+                {isCompressing ? (
+                  <ActivityIndicator size="small" color={sizeInfo.color} />
+                ) : (
+                  <>
+                    <Ionicons
+                      name="sparkles"
+                      size={24}
+                      color={sizeInfo.color}
+                    />
+                    <Text
+                      style={[
+                        styles.actionLabel,
+                        { color: sizeInfo.color, fontWeight: '700' },
+                      ]}
+                    >
+                      Comprimir
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
 
             {/* Girar 90° rápido (solo fotos) o Recortar (en videos) */}
             {!isVideo ? (

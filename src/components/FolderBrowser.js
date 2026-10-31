@@ -483,6 +483,7 @@ export default function FolderBrowser({
 
   // Sincronizar historial al cambiar de carpeta raíz
   useEffect(() => {
+    setViewMode('folders');
     if (rootUri) {
       setHistory([{ uri: rootUri, name: folderService.folderName(rootUri) }]);
     } else {
@@ -516,12 +517,14 @@ export default function FolderBrowser({
 
   // Navegar dentro de una subcarpeta
   const handleOpenSubfolder = (sub) => {
+    setViewMode('folders');
     setHistory((prev) => [...prev, { uri: sub.uri, name: sub.name }]);
   };
 
   // Volver a la carpeta padre
   const handleGoBack = () => {
     if (history.length > 1) {
+      setViewMode('folders');
       setHistory((prev) => prev.slice(0, prev.length - 1));
     }
   };
@@ -529,6 +532,7 @@ export default function FolderBrowser({
   // Ir a un punto específico de la ruta
   const handleJumpToHistory = (index) => {
     if (index >= 0 && index < history.length) {
+      setViewMode('folders');
       setHistory((prev) => prev.slice(0, index + 1));
     }
   };
@@ -686,8 +690,38 @@ export default function FolderBrowser({
     [folderVideos]
   );
 
+  // Detectar automáticamente si existen carpetas vacías dentro de la carpeta actual
+  // Si no hay carpetas vacías (emptyFoldersFound.length === 0), no aparece el botón "Borrar vacías"
+  useEffect(() => {
+    let cancelled = false;
+    const targetUri = currentFolder?.uri || rootUri;
+    if (!targetUri) {
+      setEmptyFoldersFound([]);
+      return;
+    }
+    folderService
+      .scanEmptyFolders(targetUri)
+      .then((empties) => {
+        if (!cancelled) {
+          setEmptyFoldersFound(Array.isArray(empties) ? empties : []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEmptyFoldersFound([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentFolder?.uri, rootUri, subfolders.length, refreshTrigger]);
+
   // Escáner de carpetas vacías
   const handleScanEmptyFolders = async () => {
+    if (emptyFoldersFound.length > 0) {
+      setShowEmptyFoldersModal(true);
+      return;
+    }
     const targetUri = currentFolder?.uri || rootUri;
     if (!targetUri) return;
     setIsScanningEmpty(true);
@@ -781,32 +815,19 @@ export default function FolderBrowser({
 
   // Comprimir fotos de la carpeta completa en 2do plano (permite navegar por la app o minimizarla)
   const handleCompressFolder = async () => {
-    let targetPhotos = folderPhotos;
-
-    if (targetPhotos.length === 0 && currentFolder?.uri) {
-      setIsCompressingFolder(true);
-      setCompressProgress({ current: 0, total: 1, percent: 0, savedFormatted: 'Buscando fotos en subcarpetas…' });
-      try {
-        const recursiveAssets = await folderService.loadFolderAssets(currentFolder.uri);
-        targetPhotos = (recursiveAssets || []).filter((a) => a.mediaType === 'photo');
-      } catch (e) {
-        targetPhotos = [];
-      } finally {
-        if (!compressionService.getJobState()?.isRunning) {
-          setIsCompressingFolder(false);
-          setCompressProgress(null);
-        }
-      }
-    }
+    const targetPhotos = (folderPhotos || []).filter((a) => {
+      const info = compressionService.getSizeLevel(Number(a?.fileSize) || 0, 'photo', 0);
+      return info.canCompress && info.level !== 'light';
+    });
 
     if (targetPhotos.length === 0) {
-      Alert.alert('Sin fotos', 'No se encontraron fotografías en esta carpeta para comprimir.');
+      Alert.alert('En Verde', 'Todas las fotografías de esta carpeta ya están en Verde (peso óptimo).');
       return;
     }
 
     Alert.alert(
       'Comprimir fotos en 2do plano',
-      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas manteniendo el 100% de su resolución original y reemplazando el original sin crear copias?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
+      `¿Deseas optimizar las ${targetPhotos.length} fotos en Amarillo/Rojo manteniendo el 100% de su resolución original y reemplazando el original sin crear copias?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -825,32 +846,23 @@ export default function FolderBrowser({
 
   // Comprimir videos de la carpeta en 2do plano manteniendo el 100% de la resolución original
   const handleCompressVideosFolder = async () => {
-    let targetVideos = folderVideos;
-
-    if (targetVideos.length === 0 && currentFolder?.uri) {
-      setIsCompressingFolder(true);
-      setCompressProgress({ current: 0, total: 1, percent: 0, savedFormatted: 'Buscando videos en subcarpetas…' });
-      try {
-        const recursiveAssets = await folderService.loadFolderAssets(currentFolder.uri);
-        targetVideos = (recursiveAssets || []).filter((a) => a.mediaType === 'video');
-      } catch (e) {
-        targetVideos = [];
-      } finally {
-        if (!compressionService.getJobState()?.isRunning) {
-          setIsCompressingFolder(false);
-          setCompressProgress(null);
-        }
-      }
-    }
+    const targetVideos = (folderVideos || []).filter((a) => {
+      const info = compressionService.getSizeLevel(
+        Number(a?.fileSize) || 0,
+        'video',
+        Number(a?.duration) || 0
+      );
+      return info.canCompress && info.level !== 'light';
+    });
 
     if (targetVideos.length === 0) {
-      Alert.alert('Sin videos', 'No se encontraron videos en esta carpeta para comprimir.');
+      Alert.alert('En Verde', 'Todos los videos de esta carpeta ya están en Verde (óptimos por duración).');
       return;
     }
 
     Alert.alert(
       'Comprimir videos en 2do plano',
-      `¿Deseas comprimir los ${targetVideos.length} videos encontrados manteniendo el 100% de su resolución original y reemplazando cada original sin duplicados?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
+      `¿Deseas comprimir los ${targetVideos.length} videos en Amarillo/Rojo manteniendo el 100% de su resolución original y reemplazando cada original sin duplicados?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -1826,22 +1838,21 @@ export default function FolderBrowser({
             </TouchableOpacity>
           )}
 
-          {/* Opción 1: Comprimir Fotos (disponible si hay fotos en este nivel o dentro de subcarpetas) */}
-          {(folderPhotos.length > 0 || subfolders.length > 0) && (
+          {/* Opción 1: Comprimir Fotos (SOLO si hay fotos en Amarillo o Rojo; si todas están en Verde se oculta) */}
+          {(isCompressingFolder ||
+            (folderPhotos.length > 0 &&
+              photoReductionSummary.canCompress &&
+              photoReductionSummary.level !== 'light')) && (
             <TouchableOpacity
               style={[
                 styles.optionSquareCard,
                 {
                   backgroundColor: isCompressingFolder
                     ? 'rgba(37, 99, 235, 0.28)'
-                    : folderPhotos.length > 0
-                    ? photoReductionSummary.bgColor
-                    : 'rgba(56, 189, 248, 0.16)',
+                    : photoReductionSummary.bgColor,
                   borderColor: isCompressingFolder
                     ? '#38bdf8'
-                    : folderPhotos.length > 0
-                    ? photoReductionSummary.borderColor
-                    : '#38bdf8',
+                    : photoReductionSummary.borderColor,
                 },
               ]}
               onPress={handleCompressFolder}
@@ -1855,7 +1866,7 @@ export default function FolderBrowser({
                   <Ionicons
                     name="sparkles"
                     size={15}
-                    color={folderPhotos.length > 0 ? photoReductionSummary.color : '#38bdf8'}
+                    color={photoReductionSummary.color}
                   />
                 )}
                 <Text
@@ -1864,18 +1875,14 @@ export default function FolderBrowser({
                     {
                       color: isCompressingFolder
                         ? '#ffffff'
-                        : folderPhotos.length > 0
-                        ? photoReductionSummary.textColor || photoReductionSummary.color
-                        : '#bae6fd',
+                        : photoReductionSummary.textColor || photoReductionSummary.color,
                     },
                   ]}
                   numberOfLines={1}
                 >
                   {isCompressingFolder
                     ? `Comprimiendo ${compressProgress?.current || 0}/${compressProgress?.total || 0} (${Math.round((compressProgress?.percent || 0) * 100)}%)`
-                    : folderPhotos.length > 0
-                    ? `Comprimir fotos (${photoReductionSummary.compressibleCount || folderPhotos.length})`
-                    : 'Comprimir fotos'}
+                    : `Comprimir fotos (${photoReductionSummary.compressibleCount})`}
                 </Text>
               </View>
               <Text
@@ -1884,66 +1891,58 @@ export default function FolderBrowser({
                   {
                     color: isCompressingFolder
                       ? '#38bdf8'
-                      : folderPhotos.length > 0
-                      ? photoReductionSummary.color
-                      : '#38bdf8',
+                      : photoReductionSummary.color,
                   },
                 ]}
                 numberOfLines={1}
               >
                 {isCompressingFolder
                   ? `Ahorrado: ${compressProgress?.savedFormatted || '0 B'}`
-                  : folderPhotos.length > 0
-                  ? photoReductionSummary.level === 'heavy'
-                    ? `Reducción alta · -${photoReductionSummary.estimatedSavedFormatted}`
-                    : photoReductionSummary.level === 'medium'
-                    ? `Reducción media · -${photoReductionSummary.estimatedSavedFormatted}`
-                    : `Optimizar 100% res · -${photoReductionSummary.estimatedSavedFormatted}`
-                  : 'Optimizar carpetas e internas'}
+                  : photoReductionSummary.level === 'heavy'
+                  ? `Reducción alta · -${photoReductionSummary.estimatedSavedFormatted}`
+                  : `Reducción media · -${photoReductionSummary.estimatedSavedFormatted}`}
               </Text>
             </TouchableOpacity>
           )}
 
-          {/* Opción 2: Comprimir Videos (Analizados por duración: Verde / Amarillo / Rojo) */}
-          {folderVideos.length > 0 && (
-            <TouchableOpacity
-              style={[
-                styles.optionSquareCard,
-                {
-                  backgroundColor: videoReductionSummary.bgColor,
-                  borderColor: videoReductionSummary.borderColor,
-                },
-              ]}
-              onPress={handleCompressVideosFolder}
-              disabled={isCompressingFolder}
-              activeOpacity={0.8}
-            >
-              <View style={styles.actionToolHeader}>
-                <Ionicons name="videocam" size={15} color={videoReductionSummary.color} />
+          {/* Opción 2: Comprimir Videos (SOLO si hay videos en Amarillo o Rojo; si todos están en Verde se oculta) */}
+          {folderVideos.length > 0 &&
+            videoReductionSummary.canCompress &&
+            videoReductionSummary.level !== 'light' && (
+              <TouchableOpacity
+                style={[
+                  styles.optionSquareCard,
+                  {
+                    backgroundColor: videoReductionSummary.bgColor,
+                    borderColor: videoReductionSummary.borderColor,
+                  },
+                ]}
+                onPress={handleCompressVideosFolder}
+                disabled={isCompressingFolder}
+                activeOpacity={0.8}
+              >
+                <View style={styles.actionToolHeader}>
+                  <Ionicons name="videocam" size={15} color={videoReductionSummary.color} />
+                  <Text
+                    style={[
+                      styles.actionToolTitle,
+                      { color: videoReductionSummary.textColor || videoReductionSummary.color },
+                    ]}
+                    numberOfLines={1}
+                  >
+                    {`Comprimir videos (${videoReductionSummary.compressibleCount})`}
+                  </Text>
+                </View>
                 <Text
-                  style={[
-                    styles.actionToolTitle,
-                    { color: videoReductionSummary.textColor || videoReductionSummary.color },
-                  ]}
+                  style={[styles.actionToolSub, { color: videoReductionSummary.color }]}
                   numberOfLines={1}
                 >
-                  {videoReductionSummary.level === 'light'
-                    ? `Videos en Verde (${folderVideos.length})`
-                    : `Comprimir videos (${videoReductionSummary.compressibleCount || folderVideos.length})`}
+                  {videoReductionSummary.level === 'heavy'
+                    ? `Rojo (Comprimir mucho) · -${videoReductionSummary.estimatedSavedFormatted}`
+                    : `Amarillo (Comprimir poco) · -${videoReductionSummary.estimatedSavedFormatted}`}
                 </Text>
-              </View>
-              <Text
-                style={[styles.actionToolSub, { color: videoReductionSummary.color }]}
-                numberOfLines={1}
-              >
-                {videoReductionSummary.level === 'heavy'
-                  ? `Rojo (Comprimir mucho) · -${videoReductionSummary.estimatedSavedFormatted}`
-                  : videoReductionSummary.level === 'medium'
-                  ? `Amarillo (Comprimir poco) · -${videoReductionSummary.estimatedSavedFormatted}`
-                  : 'En Verde · Óptimos por duración'}
-              </Text>
-            </TouchableOpacity>
-          )}
+              </TouchableOpacity>
+            )}
 
           {/* Opción 3: Organizar por meses */}
           {currentFolderAssets.length > 0 && (
@@ -2042,8 +2041,8 @@ export default function FolderBrowser({
             </TouchableOpacity>
           )}
 
-          {/* Opción 4: Borrar carpetas vacías */}
-          {(subfolders.length > 0 || currentFolder?.uri) && (
+          {/* Opción 4: Borrar carpetas vacías (SOLO si existen carpetas vacías en la carpeta actual) */}
+          {emptyFoldersFound.length > 0 && (
             <TouchableOpacity
               style={[styles.optionSquareCard, styles.actionToolCardCleanEmpty]}
               onPress={handleScanEmptyFolders}
@@ -2057,7 +2056,7 @@ export default function FolderBrowser({
                   <Ionicons name="trash-bin-outline" size={15} color="#38bdf8" />
                 )}
                 <Text style={[styles.actionToolTitle, { color: '#bae6fd' }]} numberOfLines={1}>
-                  Borrar vacías
+                  Borrar vacías ({emptyFoldersFound.length})
                 </Text>
               </View>
               <Text style={[styles.actionToolSub, { color: '#38bdf8' }]} numberOfLines={1}>
@@ -2066,37 +2065,39 @@ export default function FolderBrowser({
             </TouchableOpacity>
           )}
 
-          {/* Opción 5: Alternar Por carpetas / Todo junto */}
-          <TouchableOpacity
-            style={[
-              styles.optionSquareCard,
-              viewMode === 'all'
-                ? { backgroundColor: 'rgba(16, 185, 129, 0.16)', borderColor: '#10b981' }
-                : { backgroundColor: theme.colors.surface, borderColor: theme.colors.surfaceBorder },
-            ]}
-            onPress={() => setViewMode(viewMode === 'folders' ? 'all' : 'folders')}
-            activeOpacity={0.8}
-          >
-            <View style={styles.actionToolHeader}>
-              <Ionicons
-                name={viewMode === 'all' ? 'grid' : 'folder-open-outline'}
-                size={15}
-                color={viewMode === 'all' ? '#10b981' : theme.colors.textSecondary}
-              />
-              <Text
-                style={[
-                  styles.actionToolTitle,
-                  { color: viewMode === 'all' ? '#a7f3d0' : '#ffffff' },
-                ]}
-                numberOfLines={1}
-              >
-                {viewMode === 'all' ? 'Viendo todo junto' : 'Todo junto'}
+          {/* Opción 5: Alternar Por carpetas / Todo junto (SOLO si la carpeta contiene subcarpetas) */}
+          {(nonEmptySubfolders.length > 0 || viewMode === 'all') && (
+            <TouchableOpacity
+              style={[
+                styles.optionSquareCard,
+                viewMode === 'all'
+                  ? { backgroundColor: 'rgba(16, 185, 129, 0.16)', borderColor: '#10b981' }
+                  : { backgroundColor: theme.colors.surface, borderColor: theme.colors.surfaceBorder },
+              ]}
+              onPress={() => setViewMode(viewMode === 'folders' ? 'all' : 'folders')}
+              activeOpacity={0.8}
+            >
+              <View style={styles.actionToolHeader}>
+                <Ionicons
+                  name={viewMode === 'all' ? 'grid' : 'folder-open-outline'}
+                  size={15}
+                  color={viewMode === 'all' ? '#10b981' : theme.colors.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.actionToolTitle,
+                    { color: viewMode === 'all' ? '#a7f3d0' : '#ffffff' },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {viewMode === 'all' ? 'Viendo todo junto' : 'Todo junto'}
+                </Text>
+              </View>
+              <Text style={[styles.actionToolSub, { color: theme.colors.textMuted }]} numberOfLines={1}>
+                {viewMode === 'all' ? 'Toca para ver por nivel' : 'Unir subcarpetas aquí'}
               </Text>
-            </View>
-            <Text style={[styles.actionToolSub, { color: theme.colors.textMuted }]} numberOfLines={1}>
-              {viewMode === 'all' ? 'Toca para ver por nivel' : 'Unir subcarpetas aquí'}
-            </Text>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          )}
         </ScrollView>
       </View>
 
