@@ -20,7 +20,7 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 
-const ALBUMS_FAST_CACHE_KEY = '@galeria_albums_fast_cache_v1';
+const ALBUMS_FAST_CACHE_KEY = '@galeria_albums_fast_cache_v2';
 const ACTIVE_SEGMENT_KEY = '@galeria_active_segment_v1';
 const FOLDER_SEGMENTS_STORAGE_KEY = '@galeria_folder_segments_v2';
 

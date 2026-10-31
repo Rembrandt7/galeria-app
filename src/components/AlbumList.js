@@ -153,13 +153,74 @@ export default function AlbumList({
 
   // Filtrar estrictamente cualquier carpeta que no tenga al menos 1 imagen o video,
   // conservando SIEMPRE las 3 carpetas fijadas de Archivos ("2do plano", "Descargas", "Telegram")
+  // y eliminando cualquier carpeta duplicada por ruta física o por nombre visual.
   const nonEmptyAlbums = useMemo(() => {
-    const base = (albums || []).filter(
+    const rawBase = (albums || []).filter(
       (item) => item && (Number(item.assetCount) > 0 || getPinnedFilesOrder(item) > 0)
     );
-    const hasPin1 = base.some((it) => getPinnedFilesOrder(it) === 1);
-    const hasPin2 = base.some((it) => getPinnedFilesOrder(it) === 2);
-    const hasPin3 = base.some((it) => getPinnedFilesOrder(it) === 3);
+    // Priorizar carpetas fijadas y con mayor cantidad de archivos antes de deduplicar
+    rawBase.sort((a, b) => {
+      const pA = getPinnedFilesOrder(a) > 0 ? 1 : 0;
+      const pB = getPinnedFilesOrder(b) > 0 ? 1 : 0;
+      if (pA !== pB) return pB - pA;
+      return Number(b.assetCount || 0) - Number(a.assetCount || 0);
+    });
+
+    const seenPaths = new Set();
+    const seenDisplayTitles = new Set();
+    const seenPinnedRanks = new Set();
+    const base = [];
+
+    for (const item of rawBase) {
+      const pinRank = getPinnedFilesOrder(item);
+      if (pinRank > 0) {
+        if (seenPinnedRanks.has(pinRank)) continue;
+        seenPinnedRanks.add(pinRank);
+      }
+      let normUri = '';
+      if (item.uri) {
+        try {
+          normUri = decodeURIComponent(folderService.toPhysicalUri(item.uri) || item.uri)
+            .replace(/^file:\/\/\/sdcard(\/|$)/i, 'file:///storage/emulated/0$1')
+            .replace(/\/+$/, '')
+            .toLowerCase();
+        } catch (_e) {
+          normUri = String(item.uri).replace(/\/+$/, '').toLowerCase();
+        }
+      }
+      const dispTitle =
+        pinRank === 1
+          ? '2do plano'
+          : pinRank === 2
+          ? 'descargas'
+          : pinRank === 3
+          ? 'telegram'
+          : folderService
+              .formatFolderDisplayName(item.title, item.uri || '')
+              .trim()
+              .toLowerCase();
+      const canonicalTitle =
+        /^(download|downloads|descarga|descargas)$/i.test(dispTitle)
+          ? 'descargas'
+          : /^(camera|cámara|camara)$/i.test(dispTitle)
+          ? 'camera'
+          : /^(2do\s*plano|segundo\s*plano|grabaciones)$/i.test(dispTitle)
+          ? '2do plano'
+          : /^(telegram|telegram images|telegram video)$/i.test(dispTitle)
+          ? 'telegram'
+          : dispTitle;
+
+      if (normUri && seenPaths.has(normUri)) continue;
+      if (canonicalTitle && seenDisplayTitles.has(canonicalTitle)) continue;
+
+      if (normUri) seenPaths.add(normUri);
+      if (canonicalTitle) seenDisplayTitles.add(canonicalTitle);
+      base.push(item);
+    }
+
+    const hasPin1 = seenPinnedRanks.has(1);
+    const hasPin2 = seenPinnedRanks.has(2);
+    const hasPin3 = seenPinnedRanks.has(3);
     const extraPins = [];
     if (!hasPin1) {
       extraPins.push({

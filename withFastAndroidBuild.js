@@ -1671,6 +1671,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 )
 
                 val buckets = LinkedHashMap<String, BucketAcc>()
+                val seenMediaFiles = HashSet<String>()
                 reactContext.contentResolver.query(
                     queryUri,
                     projection,
@@ -1685,17 +1686,20 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     while (cursor.moveToNext()) {
                         val filePath = if (dataCol >= 0) cursor.getString(dataCol) else null
                         if (filePath.isNullOrBlank()) continue
+                        if (!seenMediaFiles.add(filePath.lowercase())) continue
                         val fileObj = File(filePath)
+                        if (!fileObj.exists()) continue
                         val parentDir = fileObj.parentFile ?: continue
+                        val dirKey = parentDir.absolutePath.trimEnd('/').lowercase()
                         val bucketId = (if (bucketIdCol >= 0) cursor.getString(bucketIdCol) else null)
-                            ?: parentDir.absolutePath.hashCode().toString()
-                        val existing = buckets[bucketId]
+                            ?: dirKey.hashCode().toString()
+                        val existing = buckets[dirKey]
                         if (existing != null) {
                             existing.count += 1
                         } else {
                             val rawTitle = if (bucketNameCol >= 0) cursor.getString(bucketNameCol) else null
                             val title = if (!rawTitle.isNullOrBlank()) rawTitle else parentDir.name
-                            buckets[bucketId] = BucketAcc(
+                            buckets[dirKey] = BucketAcc(
                                 id = bucketId,
                                 title = title,
                                 dirPath = parentDir.absolutePath,
@@ -1790,11 +1794,18 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 val telegramAltDir = File("/storage/emulated/0/Android/media/org.telegram.messenger/Telegram")
                 val downloadRootDir = File("/storage/emulated/0/Download")
 
-                // Remover subcarpetas sueltas de Telegram ("Telegram Images", "Telegram Video") de mergedByDir para consolidarlas en la carpeta raíz "Telegram"
+                // Remover subcarpetas sueltas o duplicadas de Telegram, 2do plano y Download de mergedByDir para consolidarlas en su carpeta raíz única
                 val keysToRemove = mutableListOf<String>()
                 for ((k, item) in mergedByDir) {
-                    if (k.startsWith("/storage/emulated/0/telegram/") ||
-                        k.startsWith("/storage/emulated/0/android/media/org.telegram.messenger/telegram")
+                    val tLow = item.title.trim().lowercase()
+                    if (k.startsWith("/storage/emulated/0/telegram") ||
+                        k.startsWith("/storage/emulated/0/android/media/org.telegram.messenger/telegram") ||
+                        k.startsWith("/storage/emulated/0/pictures/telegram") ||
+                        k.startsWith("/storage/emulated/0/movies/telegram") ||
+                        tLow == "telegram" || tLow == "telegram images" || tLow == "telegram video" ||
+                        k.endsWith("/2do plano") || k.endsWith("/grabaciones") ||
+                        tLow == "2do plano" || tLow == "segundo plano" ||
+                        k == "/storage/emulated/0/download" || tLow == "download" || tLow == "descargas"
                     ) {
                         keysToRemove.add(k)
                     }
@@ -1944,7 +1955,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             for (sf in subFiles) {
                                 if (sf.isFile && !sf.name.startsWith(".")) {
                                     val mt = getMediaType(sf.name)
-                                    if (mt != null && seenAssetPaths.add(sf.absolutePath)) {
+                                    if (mt != null && seenAssetPaths.add(sf.absolutePath.lowercase())) {
                                         assetList.add(FastAsset(sf, mt, sf.lastModified(), sf.length()))
                                     }
                                 }
@@ -1957,7 +1968,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         }
                     } else if (child.isFile) {
                         val mt = getMediaType(name)
-                        if (mt != null && seenAssetPaths.add(child.absolutePath)) {
+                        if (mt != null && seenAssetPaths.add(child.absolutePath.lowercase())) {
                             assetList.add(FastAsset(child, mt, child.lastModified(), child.length()))
                         }
                     }
@@ -1995,6 +2006,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             val rel = fPath.substring(prefix.length)
                             if (rel.isEmpty()) continue
                             val fObj = File(fPath)
+                            if (!fObj.exists()) continue
                             val mTypeInt = if (typeCol >= 0) cursor.getInt(typeCol) else 0
                             val mt = if (mTypeInt == android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO) {
                                 "video"
@@ -2007,7 +2019,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                             val slashIdx = rel.indexOf('/')
                             if (slashIdx < 0) {
-                                if (seenAssetPaths.add(fObj.absolutePath)) {
+                                if (seenAssetPaths.add(fObj.absolutePath.lowercase())) {
                                     assetList.add(FastAsset(fObj, mt, modMs, fSize))
                                 }
                             } else {
@@ -2015,7 +2027,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                 val rest = rel.substring(slashIdx + 1)
                                 val lowSeg = firstSeg.lowercase()
                                 if ((lowSeg == "fotos" || lowSeg == "videos" || (isTelegramRoot && lowSeg.startsWith("telegram "))) && !rest.contains('/')) {
-                                    if (seenAssetPaths.add(fObj.absolutePath)) {
+                                    if (seenAssetPaths.add(fObj.absolutePath.lowercase())) {
                                         assetList.add(FastAsset(fObj, mt, modMs, fSize))
                                     }
                                 }

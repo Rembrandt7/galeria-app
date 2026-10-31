@@ -336,15 +336,40 @@ export const mediaService = {
 
       const seenNormPaths = new Set();
       const seenTitles = new Set();
+      const seenCovers = new Set();
 
       const normalizePathKey = (u) => {
         if (!u) return '';
         try {
-          const phys = folderService.toPhysicalUri(u) || u;
-          return decodeURIComponent(phys).replace(/\/+$/, '').toLowerCase();
+          let phys = folderService.toPhysicalUri(u) || String(u);
+          for (let i = 0; i < 2; i++) {
+            try {
+              const dec = decodeURIComponent(phys);
+              if (dec === phys) break;
+              phys = dec;
+            } catch (_e) {
+              break;
+            }
+          }
+          return phys
+            .replace(/^file:\/\/\/sdcard(\/|$)/i, 'file:///storage/emulated/0$1')
+            .replace(/\/+$/, '')
+            .toLowerCase();
         } catch (_e) {
           return String(u).replace(/\/+$/, '').toLowerCase();
         }
+      };
+
+      const normalizeTitleKey = (rawTitle, uri = '') => {
+        const formatted = folderService.formatFolderDisplayName(rawTitle || '', uri || '');
+        const low = String(formatted || rawTitle || '')
+          .trim()
+          .toLowerCase();
+        if (/^(download|downloads|descarga|descargas)$/i.test(low)) return 'descargas';
+        if (/^(camera|cámara|camara)$/i.test(low)) return 'camera';
+        if (/^(2do\s*plano|segundo\s*plano|grabaciones)$/i.test(low)) return '2do plano';
+        if (/^(telegram|telegram images|telegram video)$/i.test(low)) return 'telegram';
+        return low;
       };
 
       const folderListToInspect = [...(saved || []), ...(suggested || [])].filter((f) => f?.uri);
@@ -355,16 +380,40 @@ export const mediaService = {
         })
       );
 
+      // Ordenar primero las fijadas y las que tienen más archivos para que al deduplicar quede siempre la carpeta principal
+      const sortedMediaAlbums = [...mediaAlbums].sort((a, b) => {
+        const pinA = a?.isPinnedFilesFolder ? 1 : 0;
+        const pinB = b?.isPinnedFilesFolder ? 1 : 0;
+        if (pinA !== pinB) return pinB - pinA;
+        return Number(b?.assetCount || 0) - Number(a?.assetCount || 0);
+      });
+
       // Primero registrar mediaAlbums (que incluye las carpetas fijadas de getAlbumsFastNative)
       const dedupedMediaAlbums = [];
-      for (const ma of mediaAlbums) {
+      for (const ma of sortedMediaAlbums) {
+        if (!ma) continue;
+        const displayTitle = folderService.formatFolderDisplayName(ma.title, ma.uri || '');
         const normPath = normalizePathKey(ma.uri);
-        const lowerTitle = (ma.title || '').trim().toLowerCase();
+        const normTitle = normalizeTitleKey(displayTitle, ma.uri);
+        const rawLowerTitle = String(ma.title || '').trim().toLowerCase();
+        const normCover = normalizePathKey(ma.coverUri);
+
         if (normPath && seenNormPaths.has(normPath)) continue;
-        if (!ma.isPinnedFilesFolder && seenTitles.has(lowerTitle)) continue;
+        if (
+          !ma.isPinnedFilesFolder &&
+          ((normTitle && seenTitles.has(normTitle)) ||
+            (rawLowerTitle && seenTitles.has(rawLowerTitle)))
+        ) {
+          continue;
+        }
         if (normPath) seenNormPaths.add(normPath);
-        if (lowerTitle) seenTitles.add(lowerTitle);
-        dedupedMediaAlbums.push(ma);
+        if (normTitle) seenTitles.add(normTitle);
+        if (rawLowerTitle) seenTitles.add(rawLowerTitle);
+        if (normCover) seenCovers.add(normCover);
+        dedupedMediaAlbums.push({
+          ...ma,
+          title: displayTitle || ma.title,
+        });
       }
 
       const extraAlbums = [];
@@ -374,8 +423,25 @@ export const mediaService = {
           f.uri
         );
         const normPath = normalizePathKey(f.uri);
+        const normTitle = normalizeTitleKey(title, f.uri);
+        const rawLowerName = String(f.name || '').trim().toLowerCase();
+        const normCover = normalizePathKey(info?.coverUri);
+
         if (normPath && seenNormPaths.has(normPath)) continue;
-        if (seenTitles.has(title.toLowerCase())) continue;
+        if (
+          (normTitle && seenTitles.has(normTitle)) ||
+          (rawLowerName && seenTitles.has(rawLowerName))
+        ) {
+          continue;
+        }
+
+        // Si es una carpeta contenedora padre (ej. DCIM, Pictures, Movies) cuya portada proviene de una subcarpeta ya listada, omitir para no duplicar
+        const hasChildAlreadyListed =
+          normPath &&
+          Array.from(seenNormPaths).some((existingPath) => existingPath.startsWith(`${normPath}/`));
+        if (hasChildAlreadyListed && (!normCover || seenCovers.has(normCover))) {
+          continue;
+        }
 
         const total = Number(info.count || f.totalMedia || 0);
         const isUserSaved = (saved || []).some((s) => s.uri === f.uri);
@@ -383,7 +449,9 @@ export const mediaService = {
         // Solo mostrar carpetas que realmente tengan al menos 1 imagen o video
         if (total > 0) {
           if (normPath) seenNormPaths.add(normPath);
-          seenTitles.add(title.toLowerCase());
+          if (normTitle) seenTitles.add(normTitle);
+          if (rawLowerName) seenTitles.add(rawLowerName);
+          if (normCover) seenCovers.add(normCover);
           extraAlbums.push({
             id: `folder_${f.uri}`,
             title,

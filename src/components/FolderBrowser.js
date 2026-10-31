@@ -419,11 +419,20 @@ export default function FolderBrowser({
     setRefreshing(false);
   };
 
-  // División entre Fotos y Videos (excluyendo los archivos enviados a la Papelera temporal del Modo Guardar)
+  // División entre Fotos y Videos (excluyendo los archivos enviados a la Papelera temporal del Modo Guardar y deduplicando por URI)
   const rawFolderList = useMemo(() => {
     const base = viewMode === 'folders' ? currentFolderAssets : allAssets;
-    if (!trashBin || Object.keys(trashBin).length === 0) return base;
-    return (base || []).filter((a) => a && !trashBin[a.id]);
+    const seen = new Set();
+    const out = [];
+    for (const a of base || []) {
+      if (!a) continue;
+      if (trashBin && trashBin[a.id]) continue;
+      const key = String(a.uri || a.id || '').toLowerCase();
+      if (key && seen.has(key)) continue;
+      if (key) seen.add(key);
+      out.push(a);
+    }
+    return out;
   }, [viewMode, currentFolderAssets, allAssets, trashBin]);
   const isVideoAsset = useCallback(
     (a) =>
@@ -1192,11 +1201,36 @@ export default function FolderBrowser({
     [isSubfolderHidden, onToggleSystemFolderManual, onToggleHideFolder]
   );
 
-  // Filtrar estrictamente subcarpetas que sí tengan al menos 1 imagen o video
-  const nonEmptySubfolders = useMemo(
-    () => (subfolders || []).filter((item) => item && Number(item.count) > 0),
-    [subfolders]
-  );
+  // Filtrar estrictamente subcarpetas que sí tengan al menos 1 imagen o video y sin duplicados por ruta o nombre
+  const nonEmptySubfolders = useMemo(() => {
+    const raw = (subfolders || []).filter((item) => item && Number(item.count) > 0);
+    raw.sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
+    const seenUris = new Set();
+    const seenLabels = new Set();
+    const out = [];
+    for (const item of raw) {
+      let normUri = '';
+      if (item.uri) {
+        try {
+          normUri = decodeURIComponent(folderService.toPhysicalUri(item.uri) || item.uri)
+            .replace(/\/+$/, '')
+            .toLowerCase();
+        } catch (_e) {
+          normUri = String(item.uri).replace(/\/+$/, '').toLowerCase();
+        }
+      }
+      const label = folderService
+        .formatFolderDisplayName(item.name, item.uri || '')
+        .trim()
+        .toLowerCase();
+      if (normUri && seenUris.has(normUri)) continue;
+      if (label && seenLabels.has(label)) continue;
+      if (normUri) seenUris.add(normUri);
+      if (label) seenLabels.add(label);
+      out.push(item);
+    }
+    return out;
+  }, [subfolders]);
 
   // Subcarpetas visibles filtradas por el modo oculto, sugerencias de sistema y buscador
   const visibleSubfolders = useMemo(() => {
