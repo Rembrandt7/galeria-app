@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Platform,
   Alert,
+  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -33,6 +34,11 @@ const QUICK_SITES = [
 ];
 
 export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isFoldExpanded =
+    screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
+  const isFoldCompact = !isFoldExpanded && screenWidth <= 375;
+
   const [queryOrUrl, setQueryOrUrl] = useState('');
   const [history, setHistory] = useState([]);
   const [opening, setOpening] = useState(false);
@@ -299,16 +305,31 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
-        <View style={styles.sheet}>
+        <View
+          style={[
+            styles.sheet,
+            isFoldExpanded && {
+              width: Math.min(screenWidth - 20, 860),
+              alignSelf: 'center',
+              maxHeight: '88%',
+              paddingHorizontal: 22,
+            },
+            isFoldCompact && {
+              paddingHorizontal: 11,
+            },
+          ]}
+        >
           {/* Header */}
           <View style={styles.headerRow}>
             <View style={styles.headerTitleWrap}>
               <View style={styles.headerIconBadge}>
                 <Ionicons name="globe" size={18} color="#38BDF8" />
               </View>
-              <View>
-                <Text style={styles.headerTitle}>Navegador Web Integrado</Text>
-                <Text style={styles.headerSubtitle}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.headerTitle, isFoldCompact && { fontSize: 14.5 }]} numberOfLines={1}>
+                  Navegador Web Integrado {isFoldExpanded ? '· 📱 Fold Desplegado' : ''}
+                </Text>
+                <Text style={styles.headerSubtitle} numberOfLines={1}>
                   Navega sin salir de Mi Galería y captura videos con 1 toque
                 </Text>
               </View>
@@ -648,7 +669,11 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
               {QUICK_SITES.map((site) => (
                 <TouchableOpacity
                   key={site.id}
-                  style={styles.quickTile}
+                  style={[
+                    styles.quickTile,
+                    isFoldExpanded && { width: '18.4%', paddingVertical: 12 },
+                    isFoldCompact && { width: '31%', paddingHorizontal: 4, paddingVertical: 8 },
+                  ]}
                   activeOpacity={0.8}
                   onPress={() => launchBrowser(site.url)}
                 >

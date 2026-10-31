@@ -123,25 +123,37 @@ export default function App() {
     }
   }, [activeSegment, showAllFolders, cameraVisible]);
 
-  // Auto-bloqueo automático de Archivos y Bóveda al minimizar la app o apagar pantalla
+  // Auto-bloqueo automático de Archivos y Bóveda al bloquear el celular o minimizar la app (regresa siempre a Fotos)
+  const lockAndReturnToPhotos = useCallback(() => {
+    setActiveSegment('photos');
+    setActiveTab('albums');
+    setSelectedAlbum(null);
+    setViewerVisible(false);
+    setViewerCustomAssets(null);
+    setModoGuardarVisible(false);
+    setDupVisible(false);
+    setPinModalVisible(false);
+    setPinAttempt('');
+    setShowAllFolders(false);
+    setIsDecoyMode(false);
+    storageService.setShowAllFolders(false).catch(() => {});
+    AsyncStorage.setItem(ACTIVE_SEGMENT_KEY, 'photos').catch(() => {});
+  }, []);
+
   useEffect(() => {
     const subLock = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background') {
-        setActiveSegment((prev) => {
-          if (prev === 'files') {
-            setActiveTab('albums');
-            setSelectedAlbum(null);
-            return 'photos';
-          }
-          return prev;
-        });
-        setShowAllFolders(false);
-        setIsDecoyMode(false);
-        storageService.setShowAllFolders(false).catch(() => {});
+        lockAndReturnToPhotos();
       }
     });
-    return () => subLock.remove();
-  }, []);
+    const subScreenOff = DeviceEventEmitter.addListener('DeviceScreenLocked', () => {
+      lockAndReturnToPhotos();
+    });
+    return () => {
+      subLock.remove();
+      subScreenOff.remove();
+    };
+  }, [lockAndReturnToPhotos]);
 
   // Portadas personalizadas de carpetas y configuración de columnas (Fold / Sistema)
   const [customCovers, setCustomCovers] = useState({});
@@ -474,13 +486,10 @@ export default function App() {
     }
   };
 
-  // Al minimizar/salir de la app, bloquear automáticamente las carpetas ocultas; al volver revisar permisos
+  // Al volver a la app revisar permisos si aún no estaban concedidos
   useEffect(() => {
     const sub = AppState.addEventListener('change', async (state) => {
       if (state !== 'active') {
-        setShowAllFolders(false);
-        storageService.setShowAllFolders(false);
-        setActiveSegment('photos');
         return;
       }
       if (hasPermission !== false) return;
@@ -739,6 +748,10 @@ export default function App() {
       baseList = (assets || []).filter((a) => {
         if (filterType === 'photos' && a.mediaType !== 'photo') return false;
         if (filterType === 'videos' && a.mediaType !== 'video') return false;
+        if (isDecoyMode && activeSegment === 'files') {
+          const textCheck = `${a.uri || ''} ${a.filename || ''} ${a.albumTitle || ''}`;
+          return /whatsapp/i.test(textCheck);
+        }
         if (activeSegment !== 'all') {
           const seg = folderService.classifyMediaSegment(a);
           return seg === activeSegment;
@@ -747,7 +760,7 @@ export default function App() {
       });
     }
     return (baseList || []).filter((a) => a && !trashBin[a.id]);
-  }, [activeTab, favorites, assets, folderAssets, filterType, trashBin, activeSegment, selectedAlbum]);
+  }, [activeTab, favorites, assets, folderAssets, filterType, trashBin, activeSegment, selectedAlbum, isDecoyMode]);
 
   // Desbloqueo con Huella Digital / Biometría nativa de Android (complementario a la contraseña)
   const triggerBiometricUnlock = useCallback(
@@ -791,7 +804,7 @@ export default function App() {
   const handleSelectSegment = useCallback(
     async (seg) => {
       if (seg === 'files') {
-        if (activeSegment === 'files' && activeTab !== 'folder') {
+        if (activeSegment === 'files' && activeTab !== 'folder' && !isDecoyMode) {
           return;
         }
         const pin = await storageService.getPin();
@@ -808,6 +821,7 @@ export default function App() {
         }
         return;
       }
+      setIsDecoyMode(false);
       setActiveSegment(seg);
       setSelectedAlbum(null);
       if (activeTab === 'folder') {
@@ -815,7 +829,7 @@ export default function App() {
       }
       AsyncStorage.setItem(ACTIVE_SEGMENT_KEY, seg).catch(() => {});
     },
-    [activeSegment, activeTab, triggerBiometricUnlock]
+    [activeSegment, activeTab, isDecoyMode, triggerBiometricUnlock]
   );
 
   // Abrir Modo Guardar (organizador por deslizamiento + papelera con restauración en 1 clic)
@@ -1026,8 +1040,8 @@ export default function App() {
           setActiveTab('albums');
         }
         setActiveSegment('files');
-      } else if (decoyPin && cleanInput === decoyPin) {
-        // Modo Señuelo / Modo Pánico: entra a Archivos pero oculta Bóveda Privada y 2do plano
+      } else {
+        // Si ingresa cualquier contraseña incorrecta en Archivos, abre únicamente lo de WhatsApp sin mostrar error
         setPinModalVisible(false);
         setPinAttempt('');
         setIsDecoyMode(true);
@@ -1036,9 +1050,6 @@ export default function App() {
           setActiveTab('albums');
         }
         setActiveSegment('files');
-      } else {
-        Alert.alert('Contraseña incorrecta', 'La contraseña ingresada no coincide.');
-        setPinAttempt('');
       }
       return;
     }
@@ -1049,14 +1060,11 @@ export default function App() {
       setIsDecoyMode(false);
       setShowAllFolders(true);
       await storageService.setShowAllFolders(true);
-    } else if (decoyPin && cleanInput === decoyPin) {
+    } else {
       setPinModalVisible(false);
       setPinAttempt('');
       setIsDecoyMode(true);
       setShowAllFolders(false);
-    } else {
-      Alert.alert('Contraseña incorrecta', 'La contraseña ingresada no coincide.');
-      setPinAttempt('');
     }
   };
 
@@ -1157,7 +1165,11 @@ export default function App() {
       active++;
       const seg = getResolvedFolderSegment ? getResolvedFolderSegment(item) : 'photos';
       if (seg === 'photos') pCount++;
-      else if (seg === 'files') fCount++;
+      else if (seg === 'files') {
+        if (!isDecoyMode || /whatsapp/i.test(`${item.title || ''} ${item.name || ''} ${item.uri || ''}`)) {
+          fCount++;
+        }
+      }
     }
     return {
       activeAlbumsCount: active,
@@ -1166,7 +1178,7 @@ export default function App() {
       filesAlbumsCount: fCount,
       totalActiveAlbumsCount: active,
     };
-  }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders, folderSegments, getResolvedFolderSegment]);
+  }, [albums, hiddenFolders, manuallyEnabledSystemFolders, autoHideSystemFolders, folderSegments, getResolvedFolderSegment, isDecoyMode]);
 
   // Conteo de fotos por segmento
   const { photosAssetsCount, filesAssetsCount } = useMemo(() => {
@@ -1176,10 +1188,14 @@ export default function App() {
       if (!a || typeof a !== 'object' || (trashBin && trashBin[a.id])) continue;
       const seg = folderService.classifyMediaSegment(a);
       if (seg === 'photos') p++;
-      else if (seg === 'files') f++;
+      else if (seg === 'files') {
+        if (!isDecoyMode || /whatsapp/i.test(`${a.uri || ''} ${a.filename || ''} ${a.albumTitle || ''}`)) {
+          f++;
+        }
+      }
     }
     return { photosAssetsCount: p, filesAssetsCount: f };
-  }, [assets, trashBin]);
+  }, [assets, trashBin, isDecoyMode]);
 
   const currentFolderCoverUri = useMemo(() => {
     if (selectedAlbum) {
@@ -1468,12 +1484,17 @@ export default function App() {
 
           {activeTab === 'folder' ? (
             <FolderBrowser
-              rootUri={folderUri}
+              rootUri={
+                isDecoyMode && (!folderUri || !/whatsapp/i.test(folderUri))
+                  ? 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media'
+                  : folderUri
+              }
               savedFolders={
                 isDecoyMode
-                  ? savedFolders.filter((f) => !/2do\s*plano|b[oó]veda/i.test(`${f?.name || ''} ${f?.uri || ''}`))
+                  ? savedFolders.filter((f) => /whatsapp/i.test(`${f?.name || ''} ${f?.uri || ''}`))
                   : savedFolders
               }
+              isDecoyMode={isDecoyMode}
               onSelectSavedFolder={async (uri) => {
                 const updated = await folderService.getSavedFolders();
                 setSavedFolders(updated);

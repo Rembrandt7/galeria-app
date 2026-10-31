@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function SegmentBar({
@@ -11,6 +11,10 @@ export default function SegmentBar({
   photosCount = 0,
   filesCount = 0,
 }) {
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isFoldExpanded =
+    screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
+  const isFoldCompact = !isFoldExpanded && screenWidth <= 375;
   const isExplorerActive = activeTab === 'folder';
 
   const segments = [
@@ -70,8 +74,8 @@ export default function SegmentBar({
   ];
 
   return (
-    <View style={styles.outerContainer}>
-      <View style={styles.segmentTrack}>
+    <View style={[styles.outerContainer, isFoldExpanded && { paddingHorizontal: 14 }, isFoldCompact && { paddingHorizontal: 5 }]}>
+      <View style={[styles.segmentTrack, isFoldExpanded && { padding: 4, gap: 6 }]}>
         {segments.map((seg) => {
           const isActive = seg.isActive;
           if (seg.iconOnly) {

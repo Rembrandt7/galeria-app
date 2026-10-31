@@ -41,8 +41,9 @@ export default function PhotoGrid({
   isLoadingMore,
   emptyMessage = 'No se encontraron fotos ni videos.',
 }) {
-  const { width: screenWidth } = useWindowDimensions();
-  const isFoldExpanded = screenWidth >= 580;
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isFoldExpanded =
+    screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
 
   const selectRef = useRef(onSelectPhoto);
   selectRef.current = onSelectPhoto;
@@ -55,12 +56,19 @@ export default function PhotoGrid({
   const [showPhotosFilter, setShowPhotosFilter] = useState(true);
   const [showVideosFilter, setShowVideosFilter] = useState(false);
   const [numColumns, setNumColumns] = useState(() =>
-    defaultColumns > 0 ? defaultColumns : isFoldExpanded ? 6 : NUM_COLUMNS
+    defaultColumns > 0
+      ? isFoldExpanded && Number(defaultColumns) <= 4
+        ? Number(defaultColumns) + 2
+        : Number(defaultColumns)
+      : isFoldExpanded
+      ? 6
+      : NUM_COLUMNS
   );
 
   useEffect(() => {
     if (defaultColumns > 0) {
-      setNumColumns(Number(defaultColumns));
+      const baseCols = Number(defaultColumns);
+      setNumColumns(isFoldExpanded && baseCols <= 4 ? baseCols + 2 : baseCols);
     } else {
       setNumColumns(isFoldExpanded ? 6 : NUM_COLUMNS);
     }
@@ -637,7 +645,8 @@ export default function PhotoGrid({
         onTouchCancel={handleGridTouchEnd}
       >
         <FlatList
-          key={`photo_grid_${numColumns}`}
+          key={`photo_grid_${numColumns}_${Math.round(screenWidth)}`}
+          extraData={`${screenWidth}_${numColumns}`}
           data={filteredGridAssets}
           renderItem={renderItem}
           keyExtractor={(item) => item.id}

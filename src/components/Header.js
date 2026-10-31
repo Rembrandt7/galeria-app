@@ -59,16 +59,30 @@ export default function Header({
   systemAlbumsCount = 0,
 }) {
   const [systemPanelOpen, setSystemPanelOpen] = useState(false);
-  const { width: screenWidth } = useWindowDimensions();
-  const isFoldExpanded = screenWidth >= 580;
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isFoldExpanded =
+    screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
+  const isFoldCompact = !isFoldExpanded && screenWidth <= 375;
 
   const effectiveAlbumCols =
-    gridConfig?.albumColumns > 0 ? gridConfig.albumColumns : isFoldExpanded ? 5 : 3;
+    gridConfig?.albumColumns > 0
+      ? isFoldExpanded && Number(gridConfig.albumColumns) <= 3
+        ? Number(gridConfig.albumColumns) + 2
+        : Number(gridConfig.albumColumns)
+      : isFoldExpanded
+      ? 5
+      : 3;
   const effectivePhotoCols =
-    gridConfig?.photoColumns > 0 ? gridConfig.photoColumns : isFoldExpanded ? 6 : 4;
+    gridConfig?.photoColumns > 0
+      ? isFoldExpanded && Number(gridConfig.photoColumns) <= 4
+        ? Number(gridConfig.photoColumns) + 2
+        : Number(gridConfig.photoColumns)
+      : isFoldExpanded
+      ? 6
+      : 4;
 
   return (
-    <View style={styles.headerContainer}>
+    <View style={[styles.headerContainer, isFoldExpanded && { paddingHorizontal: 14 }, isFoldCompact && { paddingHorizontal: 5 }]}>
       <View style={styles.topRow}>
         {/* Izquierda: Regresar + Título o [Actualizar] + [⚙️ Sistema] lado a lado */}
         <View style={styles.leftSection}>

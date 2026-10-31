@@ -70,25 +70,32 @@ export default function AlbumList({
   onOpenVisibilityModal,
   isDecoyMode = false,
 }) {
-  const { width: screenWidth } = useWindowDimensions();
-  const isFoldExpanded = screenWidth >= 580;
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isFoldExpanded =
+    screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
+  const isFoldCompact = !isFoldExpanded && screenWidth <= 375;
   const effectiveColumns =
     gridConfig?.albumColumns > 0
-      ? Number(gridConfig.albumColumns)
+      ? isFoldExpanded && Number(gridConfig.albumColumns) <= 3
+        ? Number(gridConfig.albumColumns) + 2
+        : Number(gridConfig.albumColumns)
       : isFoldExpanded
       ? 5
       : 3;
+
+  const sidePad = isFoldCompact ? 6 : isFoldExpanded ? 14 : SIDE_PADDING;
+  const colGap = isFoldCompact ? 6 : COLUMN_GAP;
 
   const cardWidth = useMemo(
     () =>
       Math.max(
         70,
         Math.floor(
-          (screenWidth - SIDE_PADDING * 2 - COLUMN_GAP * (effectiveColumns - 1)) /
+          (screenWidth - sidePad * 2 - colGap * (effectiveColumns - 1)) /
             effectiveColumns
         )
       ),
-    [screenWidth, effectiveColumns]
+    [screenWidth, sidePad, colGap, effectiveColumns]
   );
   const cardHeight = useMemo(() => Math.round(cardWidth * 1.24), [cardWidth]);
   const favStackSize = useMemo(() => Math.round(cardWidth * 0.64), [cardWidth]);
@@ -165,8 +172,8 @@ export default function AlbumList({
     const rawBase = (albums || []).filter((item) => {
       if (!item) return false;
       if (isDecoyMode) {
-        const pinOrd = getPinnedFilesOrder(item);
-        if (pinOrd === 1 || pinOrd === 4) return false;
+        const textCheck = `${item.title || ''} ${item.name || ''} ${item.uri || ''}`;
+        return /whatsapp/i.test(textCheck);
       }
       return Number(item.assetCount) > 0 || getPinnedFilesOrder(item) > 0;
     });
@@ -230,11 +237,33 @@ export default function AlbumList({
       base.push(item);
     }
 
+    if (isDecoyMode) {
+      if (base.length === 0) {
+        return [
+          {
+            id: 'decoy_whatsapp_images',
+            title: 'WhatsApp Images',
+            uri: 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images',
+            assetCount: 0,
+            coverUri: null,
+          },
+          {
+            id: 'decoy_whatsapp_video',
+            title: 'WhatsApp Video',
+            uri: 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video',
+            assetCount: 0,
+            coverUri: null,
+          },
+        ];
+      }
+      return base;
+    }
+
     const hasPin1 = seenPinnedRanks.has(1);
     const hasPin2 = seenPinnedRanks.has(2);
     const hasPin3 = seenPinnedRanks.has(3);
     const extraPins = [];
-    if (!hasPin1 && !isDecoyMode) {
+    if (!hasPin1) {
       extraPins.push({
         id: 'pinned_2do_plano',
         title: '2do plano',
@@ -341,12 +370,16 @@ export default function AlbumList({
   };
 
   const { mainVisibleAlbums, smallGroupedAlbums } = useMemo(() => {
-    const base = showAllFolders || quickEditVisibility
+    const base = isDecoyMode || showAllFolders || quickEditVisibility
       ? nonEmptyAlbums
       : nonEmptyAlbums.filter((item) => !isAlbumHidden(item));
 
     const baseAfterSegment = (base || []).filter((item) => {
       if (!item || typeof item !== 'object') return false;
+      if (isDecoyMode) {
+        const textCheck = `${item.title || ''} ${item.name || ''} ${item.uri || ''}`;
+        return /whatsapp/i.test(textCheck);
+      }
       if (activeSegment === 'all') return true;
       const seg = getResolvedFolderSegment
         ? getResolvedFolderSegment(item)
@@ -367,8 +400,8 @@ export default function AlbumList({
     const smallList = [];
 
     for (const item of filtered) {
-      // Si el modo "Varios (<5)" está activo y no estamos buscando ni editando visibilidad individual
-      if (groupSmallInVarios && !q && !quickEditVisibility && isSmallMiscAlbum(item)) {
+      // Si el modo "Varios (<5)" está activo y no estamos buscando ni editando visibilidad individual (ni en modo WhatsApp señuelo)
+      if (!isDecoyMode && groupSmallInVarios && !q && !quickEditVisibility && isSmallMiscAlbum(item)) {
         smallList.push(item);
       } else {
         mainList.push(item);
@@ -433,6 +466,7 @@ export default function AlbumList({
     activeSegment,
     folderSegments,
     getResolvedFolderSegment,
+    isDecoyMode,
   ]);
 
   // Clasificación de carpetas para mostrar conteos exactos y sugerencias de sistema
@@ -1163,13 +1197,21 @@ export default function AlbumList({
   return (
     <View style={styles.container}>
       <FlatList
-        key={`albums_grid_${effectiveColumns}`}
+        key={`albums_grid_${effectiveColumns}_${Math.round(screenWidth)}`}
+        extraData={`${screenWidth}_${effectiveColumns}_${isDecoyMode}_${activeSegment}`}
         data={gridData}
         renderItem={renderItem}
         keyExtractor={(item) => item.id}
         numColumns={effectiveColumns}
-        columnWrapperStyle={effectiveColumns > 1 ? styles.columnWrapper : undefined}
-        contentContainerStyle={styles.listContent}
+        columnWrapperStyle={
+          effectiveColumns > 1
+            ? [styles.columnWrapper, { gap: colGap }]
+            : undefined
+        }
+        contentContainerStyle={[
+          styles.listContent,
+          { paddingHorizontal: sidePad },
+        ]}
         showsVerticalScrollIndicator={false}
         initialNumToRender={12}
         maxToRenderPerBatch={12}

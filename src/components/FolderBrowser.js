@@ -85,12 +85,19 @@ export default function FolderBrowser({
   trashBin = {},
   onAssignFolderToSegment,
   refreshTrigger = 0,
+  isDecoyMode = false,
 }) {
-  const { width: screenWidth } = useWindowDimensions();
-  const isFoldExpanded = screenWidth >= 580;
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isFoldExpanded =
+    screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
+  const isFoldCompact = !isFoldExpanded && screenWidth <= 375;
   // Historial de navegación dentro de la carpeta activa: [{ uri, name }]
   const [history, setHistory] = useState(() => {
-    return rootUri ? [{ uri: rootUri, name: folderService.folderName(rootUri) }] : [];
+    const startUri =
+      isDecoyMode && (!rootUri || !/whatsapp/i.test(rootUri))
+        ? 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media'
+        : rootUri;
+    return startUri ? [{ uri: startUri, name: folderService.folderName(startUri) }] : [];
   });
 
   // Modo de visualización: 'folders' (por carpetas) | 'all' (todo junto)
@@ -207,7 +214,9 @@ export default function FolderBrowser({
   const [sizeFilter, setSizeFilter] = useState('all'); // 'all' | 'heavy' (>4MB) | 'medium' (2-4MB)
   const [photoColumns, setPhotoColumns] = useState(() =>
     gridConfig?.photoColumns > 0
-      ? Number(gridConfig.photoColumns)
+      ? isFoldExpanded && Number(gridConfig.photoColumns) <= 4
+        ? Number(gridConfig.photoColumns) + 2
+        : Number(gridConfig.photoColumns)
       : isFoldExpanded
       ? 6
       : NUM_PHOTO_COLUMNS
@@ -217,7 +226,8 @@ export default function FolderBrowser({
 
   useEffect(() => {
     if (gridConfig?.photoColumns > 0) {
-      setPhotoColumns(Number(gridConfig.photoColumns));
+      const baseCols = Number(gridConfig.photoColumns);
+      setPhotoColumns(isFoldExpanded && baseCols <= 4 ? baseCols + 2 : baseCols);
     } else {
       setPhotoColumns(isFoldExpanded ? 6 : NUM_PHOTO_COLUMNS);
     }
@@ -226,12 +236,17 @@ export default function FolderBrowser({
   const effectiveSubfolderCols = useMemo(
     () =>
       gridConfig?.albumColumns > 0
-        ? Number(gridConfig.albumColumns)
+        ? isFoldExpanded && Number(gridConfig.albumColumns) <= 3
+          ? Number(gridConfig.albumColumns) + 2
+          : Number(gridConfig.albumColumns)
         : isFoldExpanded
         ? 5
         : SUBFOLDER_COLS,
     [gridConfig?.albumColumns, isFoldExpanded]
   );
+
+  const subSidePad = isFoldCompact ? 6 : isFoldExpanded ? 14 : SUBFOLDER_SIDE_PADDING;
+  const subGap = isFoldCompact ? 6 : SUBFOLDER_GAP;
 
   const subfolderCardWidth = useMemo(
     () =>
@@ -239,12 +254,12 @@ export default function FolderBrowser({
         70,
         Math.floor(
           (screenWidth -
-            SUBFOLDER_SIDE_PADDING * 2 -
-            SUBFOLDER_GAP * (effectiveSubfolderCols - 1)) /
+            subSidePad * 2 -
+            subGap * (effectiveSubfolderCols - 1)) /
             effectiveSubfolderCols
         )
       ),
-    [screenWidth, effectiveSubfolderCols]
+    [screenWidth, subSidePad, subGap, effectiveSubfolderCols]
   );
   const subfolderCardHeight = useMemo(
     () => Math.round(subfolderCardWidth * 1.22),
@@ -1345,7 +1360,14 @@ export default function FolderBrowser({
 
   // Filtrar estrictamente subcarpetas que sí tengan al menos 1 imagen o video y sin duplicados por ruta o nombre
   const nonEmptySubfolders = useMemo(() => {
-    const raw = (subfolders || []).filter((item) => item && Number(item.count) > 0);
+    const raw = (subfolders || []).filter((item) => {
+      if (!item || Number(item.count) <= 0) return false;
+      if (isDecoyMode) {
+        const textCheck = `${item.name || ''} ${item.uri || ''}`;
+        if (!/whatsapp/i.test(textCheck)) return false;
+      }
+      return true;
+    });
     raw.sort((a, b) => Number(b.count || 0) - Number(a.count || 0));
     const seenUris = new Set();
     const seenLabels = new Set();
@@ -1372,7 +1394,7 @@ export default function FolderBrowser({
       out.push(item);
     }
     return out;
-  }, [subfolders]);
+  }, [subfolders, isDecoyMode]);
 
   // Subcarpetas visibles filtradas por el modo oculto, sugerencias de sistema y buscador
   const visibleSubfolders = useMemo(() => {
@@ -1427,7 +1449,7 @@ export default function FolderBrowser({
     if (viewMode !== 'folders' || nonEmptySubfolders.length === 0) return null;
 
     return (
-      <View style={styles.subfoldersGalaxySection}>
+      <View style={[styles.subfoldersGalaxySection, { paddingHorizontal: subSidePad }]}>
         <View style={styles.subfoldersGalaxyHeaderRow}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
             <Ionicons name="folder-open" size={16} color="#60a5fa" />
@@ -1514,7 +1536,7 @@ export default function FolderBrowser({
             <Text style={{ color: '#60a5fa', fontSize: 12, fontWeight: '800' }}>Mostrar</Text>
           </TouchableOpacity>
         ) : (
-          <View style={styles.subfoldersGalaxyGrid}>
+          <View style={[styles.subfoldersGalaxyGrid, { gap: subGap }]}>
             {mainSubfolders.map((sub) => {
               const isHidden = isSubfolderHidden(sub);
               const displayLabel = folderService.formatFolderDisplayName(sub.name, sub.uri);
@@ -2261,7 +2283,14 @@ export default function FolderBrowser({
           {/* Nombre de la Carpeta Seleccionada + Conteo */}
           <View style={styles.selectedFolderInlineBadge}>
             <Ionicons name="folder-open" size={14} color="#38bdf8" />
-            <Text style={styles.selectedFolderInlineText} numberOfLines={1}>
+            <Text
+              style={[
+                styles.selectedFolderInlineText,
+                isFoldExpanded && { maxWidth: 260 },
+                isFoldCompact && { maxWidth: 115, fontSize: 11 },
+              ]}
+              numberOfLines={1}
+            >
               {currentFolderDisplayName} ({totalFilteredAssets.length})
             </Text>
           </View>
@@ -2318,7 +2347,13 @@ export default function FolderBrowser({
           )}
 
           {/* Buscador Compacto dentro del mismo renglón */}
-          <View style={styles.inlineSearchBox}>
+          <View
+            style={[
+              styles.inlineSearchBox,
+              isFoldExpanded && { minWidth: 190, maxWidth: 280 },
+              isFoldCompact && { minWidth: 96, maxWidth: 130 },
+            ]}
+          >
             <Ionicons name="search" size={13} color={theme.colors.textMuted} />
             <TextInput
               style={styles.inlineSearchInput}
@@ -2516,7 +2551,8 @@ export default function FolderBrowser({
           onTouchCancel={handleGridTouchEnd}
         >
           <FlatList
-            key={`folder_grid_${photoColumns}`}
+            key={`folder_grid_${photoColumns}_${effectiveSubfolderCols}_${Math.round(screenWidth)}`}
+            extraData={`${screenWidth}_${photoColumns}_${effectiveSubfolderCols}`}
             data={paginatedAssets}
             keyExtractor={(item) => item.id}
             numColumns={photoColumns}

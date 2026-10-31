@@ -138,6 +138,32 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     init {
         reactContext.addActivityEventListener(this)
         activeReactContext = reactContext
+        try {
+            val filter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_OFF)
+                addAction(Intent.ACTION_USER_PRESENT)
+            }
+            val lockReceiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(context: Context?, intent: Intent?) {
+                    val actName = intent?.action ?: return
+                    if (actName == Intent.ACTION_SCREEN_OFF || actName == Intent.ACTION_USER_PRESENT) {
+                        try {
+                            val params = Arguments.createMap().apply {
+                                putString("event", actName)
+                            }
+                            reactContext
+                                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                                .emit("DeviceScreenLocked", params)
+                        } catch (_: Exception) {}
+                    }
+                }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                reactContext.registerReceiver(lockReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                reactContext.registerReceiver(lockReceiver, filter)
+            }
+        } catch (_: Exception) {}
     }
 
     companion object {
@@ -1240,31 +1266,51 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     )
                 }
 
+                fun dp(value: Int): Int {
+                    val density = act.resources.displayMetrics.density
+                    return (value * density).toInt()
+                }
+
+                fun isUnfoldedFold(): Boolean {
+                    val cfg = act.resources.configuration
+                    val wDp = cfg.screenWidthDp
+                    val hDp = cfg.screenHeightDp.coerceAtLeast(1)
+                    return wDp >= 480 || (wDp.toFloat() / hDp.toFloat() >= 0.65f && wDp >= 420)
+                }
+
                 // Renglón 1: Barra de dirección con margen superior seguro (>= 48dp para no traslapar reloj/batería)
                 val navBar = LinearLayout(act).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
                     setBackgroundColor(Color.parseColor("#151525"))
-                    setPadding(16, 108, 16, 12)
+                    val hPad = if (isUnfoldedFold()) dp(14) else dp(6)
+                    setPadding(hPad, dp(48), hPad, dp(8))
                 }
 
-                fun makeNavBtn(label: String, bgHex: String, onClick: () -> Unit): TextView {
+                fun makeNavBtn(label: String, bgHex: String, isToolbar: Boolean = false, onClick: () -> Unit): TextView {
+                    val unfolded = isUnfoldedFold()
                     return TextView(act).apply {
                         text = label
                         setTextColor(Color.WHITE)
-                        setTextSize(TypedValue.COMPLEX_UNIT_SP, 12.5f)
+                        setTextSize(
+                            TypedValue.COMPLEX_UNIT_SP,
+                            if (unfolded) 13f else if (isToolbar) 11.5f else 11f
+                        )
                         typeface = Typeface.DEFAULT_BOLD
                         gravity = Gravity.CENTER
-                        setPadding(18, 12, 18, 12)
+                        val padH = if (unfolded) dp(12) else if (isToolbar) dp(9) else dp(7)
+                        val padV = if (unfolded) dp(8) else dp(6)
+                        setPadding(padH, padV, padH, padV)
                         background = GradientDrawable().apply {
-                            cornerRadius = 18f
+                            cornerRadius = dp(10).toFloat()
                             setColor(Color.parseColor(bgHex))
                         }
                         val lp = LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.WRAP_CONTENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT
                         )
-                        lp.setMargins(4, 0, 4, 0)
+                        val m = if (unfolded) dp(3) else dp(2)
+                        lp.setMargins(m, 0, m, 0)
                         layoutParams = lp
                         setOnClickListener { onClick() }
                     }
@@ -1282,20 +1328,20 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 val urlInput = EditText(act).apply {
                     setText(normalizeInputUrl(startUrl))
-                    hint = "Buscar en Google o escribir URL..."
+                    hint = if (isUnfoldedFold()) "Buscar en Google o pegar dirección URL..." else "Buscar o escribir URL..."
                     setHintTextColor(Color.parseColor("#71717A"))
                     setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, if (isUnfoldedFold()) 13.5f else 12f)
                     setSingleLine(true)
                     imeOptions = EditorInfo.IME_ACTION_GO
-                    setPadding(22, 12, 22, 12)
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
                     background = GradientDrawable().apply {
-                        cornerRadius = 18f
+                        cornerRadius = dp(10).toFloat()
                         setColor(Color.parseColor("#090910"))
                         setStroke(2, Color.parseColor("#2E2E42"))
                     }
                     val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                    lp.setMargins(6, 0, 6, 0)
+                    lp.setMargins(dp(3), 0, dp(3), 0)
                     layoutParams = lp
                     setOnEditorActionListener { v, actionId, _ ->
                         if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_SEARCH) {
@@ -1327,13 +1373,21 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 navBar.addView(goBtn)
                 navBar.addView(closeBtn)
 
-                // Renglón 2: Herramientas "Modo 1ª Vez (Limpiar Datos)" + Cambiar Dispositivo + Descargar Video
+                // Renglón 2: Herramientas con HorizontalScrollView para adaptarse a Galaxy Fold doblado y desplegado
+                val toolsScroll = android.widget.HorizontalScrollView(act).apply {
+                    isHorizontalScrollBarEnabled = false
+                    isFillViewport = true
+                    setBackgroundColor(Color.parseColor("#0F172A"))
+                }
+
                 val toolsBar = LinearLayout(act).apply {
                     orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
+                    gravity = if (isUnfoldedFold()) Gravity.CENTER else Gravity.CENTER_VERTICAL
                     setBackgroundColor(Color.parseColor("#0F172A"))
-                    setPadding(16, 8, 16, 12)
+                    val hPad = if (isUnfoldedFold()) dp(14) else dp(6)
+                    setPadding(hPad, dp(5), hPad, dp(7))
                 }
+                toolsScroll.addView(toolsBar)
 
                 val statusBanner = TextView(act).apply {
                     text = ""
@@ -1343,7 +1397,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     typeface = Typeface.DEFAULT_BOLD
                     gravity = Gravity.CENTER
                     setBackgroundColor(Color.parseColor("#064E3B"))
-                    setPadding(20, 10, 20, 10)
+                    setPadding(dp(12), dp(6), dp(12), dp(6))
                 }
                 statusBannerRef = statusBanner
 
@@ -1355,7 +1409,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }, 3500L)
                 }
 
-                val cleanFirstTimeBtn = makeNavBtn("🧹 Limpiar 1ª Vez", "#059669") {
+                val cleanFirstTimeBtn = makeNavBtn("🧹 Limpiar 1ª Vez", "#059669", true) {
                     try {
                         val cm = CookieManager.getInstance()
                         cm.removeAllCookies(null)
@@ -1378,7 +1432,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     wv.reload()
                 }
 
-                val uaSwitchBtn = makeNavBtn(userAgents[0].first, "#1E293B") {
+                val uaSwitchBtn = makeNavBtn(userAgents[0].first, "#1E293B", true) {
                     currentUaIndex = (currentUaIndex + 1) % userAgents.size
                     val nextPair = userAgents[currentUaIndex]
                     uaBtnRef?.text = nextPair.first
@@ -1388,11 +1442,11 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 uaBtnRef = uaSwitchBtn
 
-                val blockAppsBtn = makeNavBtn("🚫 No Apps: ON", "#0D9488") {
+                val blockAppsBtn = makeNavBtn("🚫 No Apps: ON", "#0D9488", true) {
                     blockExternalApps = !blockExternalApps
                     blockAppsBtnRef?.text = if (blockExternalApps) "🚫 No Apps: ON" else "📲 Apps: Permitir"
                     blockAppsBtnRef?.background = GradientDrawable().apply {
-                        cornerRadius = 18f
+                        cornerRadius = dp(10).toFloat()
                         setColor(Color.parseColor(if (blockExternalApps) "#0D9488" else "#475569"))
                     }
                     showTempBanner(
@@ -1404,7 +1458,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 blockAppsBtnRef = blockAppsBtn
 
-                val dlBtn = makeNavBtn("⬇ Video", "#6D28D9") {
+                val dlBtn = makeNavBtn("⬇ Video", "#6D28D9", true) {
                     val currentPageUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
                     val bestUrl = if (!detectedMediaUrl.isNullOrBlank()) detectedMediaUrl!! else currentPageUrl
                     closeBrowser("download", bestUrl)
@@ -1427,12 +1481,27 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     setBackgroundColor(Color.parseColor("#0B0B14"))
                     layoutParams = LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
-                        116
+                        dp(48)
                     )
                 }
 
+                // Adaptación automática en tiempo real al doblar o desplegar Galaxy Fold
+                var lastMeasuredWidth = 0
+                root.viewTreeObserver.addOnGlobalLayoutListener {
+                    val curW = root.width
+                    if (curW > 0 && kotlin.math.abs(curW - lastMeasuredWidth) > dp(40)) {
+                        lastMeasuredWidth = curW
+                        val unfoldedNow = isUnfoldedFold()
+                        val hPad = if (unfoldedNow) dp(14) else dp(6)
+                        navBar.setPadding(hPad, dp(48), hPad, dp(8))
+                        toolsBar.setPadding(hPad, dp(5), hPad, dp(7))
+                        toolsBar.gravity = if (unfoldedNow) Gravity.CENTER else Gravity.CENTER_VERTICAL
+                        urlInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, if (unfoldedNow) 13.5f else 12f)
+                    }
+                }
+
                 root.addView(navBar)
-                root.addView(toolsBar)
+                root.addView(toolsScroll)
                 root.addView(statusBanner)
                 root.addView(wv, webParams)
                 root.addView(bottomSafeSpacer)
@@ -5677,6 +5746,25 @@ module.exports = function withFastAndroidBuild(config) {
       }
     }
 
+    if (app) {
+      app.$ = app.$ || {};
+      app.$['android:resizeableActivity'] = 'true';
+      if (!Array.isArray(app['meta-data'])) {
+        app['meta-data'] = [];
+      }
+      const ensureMeta = (name, value) => {
+        const existing = app['meta-data'].find((m) => m.$?.['android:name'] === name);
+        if (existing) {
+          existing.$['android:value'] = value;
+        } else {
+          app['meta-data'].push({ $: { 'android:name': name, 'android:value': value } });
+        }
+      };
+      ensureMeta('android.max_aspect', '3.0');
+      ensureMeta('android.allow_multiple_resumed_activities', 'true');
+      ensureMeta('samsung.android.sdk.multiwindow.penwindow.enable', 'true');
+    }
+
     if (app && Array.isArray(app.activity)) {
       const mainAct = app.activity.find(
         (a) =>
@@ -5685,6 +5773,9 @@ module.exports = function withFastAndroidBuild(config) {
       );
       if (mainAct) {
         mainAct.$['android:launchMode'] = 'singleTask';
+        mainAct.$['android:resizeableActivity'] = 'true';
+        mainAct.$['android:configChanges'] =
+          'keyboard|keyboardHidden|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density';
         if (!Array.isArray(mainAct['intent-filter'])) {
           mainAct['intent-filter'] = [];
         }
