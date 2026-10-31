@@ -270,86 +270,6 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
-    @ReactMethod
-    fun getFolderNoMediaStatusNative(dirPath: String, promise: Promise) {
-        executor.execute {
-            try {
-                val dir = File(cleanFilePath(dirPath))
-                val noMediaFile = File(dir, ".nomedia")
-                val exists = noMediaFile.exists()
-                val map = Arguments.createMap().apply {
-                    putBoolean("hasNoMedia", exists)
-                    putBoolean("hiddenFromOtherApps", exists)
-                    putString("path", dir.absolutePath)
-                }
-                promise.resolve(map)
-            } catch (_: Exception) {
-                val map = Arguments.createMap().apply {
-                    putBoolean("hasNoMedia", false)
-                    putBoolean("hiddenFromOtherApps", false)
-                }
-                promise.resolve(map)
-            }
-        }
-    }
-
-    @ReactMethod
-    fun setFolderNoMediaNative(dirPath: String, hideFromOtherApps: Boolean, promise: Promise) {
-        executor.execute {
-            try {
-                val dir = File(cleanFilePath(dirPath))
-                if (!dir.exists()) {
-                    dir.mkdirs()
-                }
-                val targets = mutableListOf(dir)
-                val fotosSub = File(dir, "Fotos")
-                val videosSub = File(dir, "Videos")
-                if (fotosSub.exists() && fotosSub.isDirectory) targets.add(fotosSub)
-                if (videosSub.exists() && videosSub.isDirectory) targets.add(videosSub)
-
-                for (t in targets) {
-                    val nm = File(t, ".nomedia")
-                    if (hideFromOtherApps) {
-                        if (!nm.exists()) {
-                            nm.createNewFile()
-                        }
-                    } else {
-                        if (nm.exists()) {
-                            nm.delete()
-                        }
-                    }
-                }
-
-                // Notificar a MediaScanner del cambio
-                try {
-                    val scanList = mutableListOf(dir.absolutePath)
-                    val children = dir.listFiles() ?: emptyArray()
-                    for (c in children.take(60)) {
-                        if (c.isFile && !c.name.startsWith(".")) {
-                            scanList.add(c.absolutePath)
-                        }
-                    }
-                    MediaScannerConnection.scanFile(
-                        reactContext,
-                        scanList.toTypedArray(),
-                        null,
-                        null
-                    )
-                } catch (_: Exception) {}
-
-                val existsNow = File(dir, ".nomedia").exists()
-                val map = Arguments.createMap().apply {
-                    putBoolean("hasNoMedia", existsNow)
-                    putBoolean("hiddenFromOtherApps", existsNow)
-                    putString("path", dir.absolutePath)
-                }
-                promise.resolve(map)
-            } catch (e: Exception) {
-                promise.reject("NOMEDIA_ERROR", e.message ?: "No se pudo actualizar .nomedia", e)
-            }
-        }
-    }
-
     private val authDomainsToPreserve = listOf(
         "https://accounts.google.com",
         "https://www.google.com",
@@ -2587,9 +2507,19 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     saveHiddenArchivosDirs(reg)
                     removeNoMediaFromDir(dir, 2)
                 }
-                promise.resolve(hideFromOtherApps)
+                val existsNow = File(dir, ".nomedia").exists()
+                val map = Arguments.createMap().apply {
+                    putBoolean("hasNoMedia", existsNow)
+                    putBoolean("hiddenFromOtherApps", existsNow)
+                    putString("path", dir.absolutePath)
+                }
+                promise.resolve(map)
             } catch (e: Exception) {
-                promise.resolve(false)
+                val map = Arguments.createMap().apply {
+                    putBoolean("hasNoMedia", false)
+                    putBoolean("hiddenFromOtherApps", false)
+                }
+                promise.resolve(map)
             }
         }
     }
@@ -2599,9 +2529,19 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         executor.execute {
             try {
                 val dir = File(cleanFilePath(dirPath))
-                promise.resolve(File(dir, ".nomedia").exists())
+                val exists = File(dir, ".nomedia").exists()
+                val map = Arguments.createMap().apply {
+                    putBoolean("hasNoMedia", exists)
+                    putBoolean("hiddenFromOtherApps", exists)
+                    putString("path", dir.absolutePath)
+                }
+                promise.resolve(map)
             } catch (_: Exception) {
-                promise.resolve(false)
+                val map = Arguments.createMap().apply {
+                    putBoolean("hasNoMedia", false)
+                    putBoolean("hiddenFromOtherApps", false)
+                }
+                promise.resolve(map)
             }
         }
     }
