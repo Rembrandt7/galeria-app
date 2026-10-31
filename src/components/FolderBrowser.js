@@ -79,6 +79,7 @@ export default function FolderBrowser({
   trashCount = 0,
   trashBin = {},
   onAssignFolderToSegment,
+  refreshTrigger = 0,
 }) {
   const { width: screenWidth } = useWindowDimensions();
   const isFoldExpanded = screenWidth >= 580;
@@ -362,10 +363,10 @@ export default function FolderBrowser({
     }
   }, [rootUri]);
 
-  // Ejecutar carga cuando cambia la carpeta activa o el modo y reiniciar filtro por defecto a solo Fotos
+  // Ejecutar carga cuando cambia la carpeta activa o el modo y mantener Fotos y Videos visibles
   useEffect(() => {
     setShowPhotosFilter(true);
-    setShowVideosFilter(false);
+    setShowVideosFilter(true);
     if (currentFolder?.uri) {
       if (viewMode === 'folders') {
         loadCurrentLevel(currentFolder.uri);
@@ -374,6 +375,17 @@ export default function FolderBrowser({
       }
     }
   }, [currentFolder?.uri, viewMode]);
+
+  // Recargar inmediatamente cuando se guarda un nuevo video o foto en 2do plano
+  useEffect(() => {
+    if (refreshTrigger > 0 && currentFolder?.uri) {
+      if (viewMode === 'folders') {
+        loadCurrentLevel(currentFolder.uri, true);
+      } else {
+        loadAllRecursive(currentFolder.uri);
+      }
+    }
+  }, [refreshTrigger]);
 
   // Navegar dentro de una subcarpeta
   const handleOpenSubfolder = (sub) => {

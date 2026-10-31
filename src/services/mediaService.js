@@ -156,6 +156,39 @@ export const mediaService = {
         result = await MediaLibrary.getAssetsAsync(options);
       } catch (_mErr) {}
 
+      // En la primera página de "Todas las fotos" (!albumId && !after), fusionar siempre los videos/fotos de "2do plano"
+      // para que cualquier grabación (incluso en Android Scoped Storage) aparezca de inmediato al principio de la galería
+      if (!albumId && !after) {
+        try {
+          const wantPhoto = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.photo) || mediaTypes.includes('photo');
+          const wantVideo = !mediaTypes || mediaTypes.includes(MediaLibrary.MediaType.video) || mediaTypes.includes('video');
+          const spItems = await folderService.loadFolderAssets('file:///storage/emulated/0/Movies/2do plano');
+          if (Array.isArray(spItems) && spItems.length > 0) {
+            const existingNames = new Set(
+              (result.assets || []).map((a) => (a.filename || (a.uri || '').split('/').pop() || '').toLowerCase())
+            );
+            const extraSp = [];
+            for (const item of spItems) {
+              const fn = (item.filename || (item.uri || '').split('/').pop() || '').toLowerCase();
+              if (fn && existingNames.has(fn)) continue;
+              if ((item.mediaType === 'photo' && wantPhoto) || (item.mediaType === 'video' && wantVideo)) {
+                if (fn) existingNames.add(fn);
+                extraSp.push(item);
+              }
+            }
+            if (extraSp.length > 0) {
+              const mergedAssets = [...extraSp, ...(result.assets || [])];
+              mergedAssets.sort((a, b) => (b.creationTime || 0) - (a.creationTime || 0));
+              result = {
+                ...result,
+                assets: mergedAssets,
+                totalCount: (result.totalCount || 0) + extraSp.length,
+              };
+            }
+          }
+        } catch (_spErr) {}
+      }
+
       // Si estamos en "Todas las fotos" (!albumId) y MediaStore no devolvió nada o muy poco, combinar con las carpetas guardadas/comunes
       if (!albumId && !after && (!result.assets || result.assets.length === 0)) {
         const saved = await folderService.getSavedFolders();

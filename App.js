@@ -67,6 +67,7 @@ export default function App() {
   const [savedFolders, setSavedFolders] = useState([]);
   const [folderUri, setFolderUri] = useState(null);
   const [folderAssets, setFolderAssets] = useState([]);
+  const [folderRefreshKey, setFolderRefreshKey] = useState(0);
 
   // Paginación y Carga
   const [endCursor, setEndCursor] = useState(null);
@@ -489,9 +490,11 @@ export default function App() {
   const handleRefresh = async () => {
     setIsRefreshing(true);
     folderService.invalidateCache();
-    if (activeTab === 'albums' && !selectedAlbum) {
-      await loadAlbums(true);
-    } else if (activeTab !== 'folder') {
+    mediaService._albumsMemCache = null;
+    mediaService._albumsMemTime = 0;
+    setFolderRefreshKey((prev) => prev + 1);
+    await loadAlbums(true);
+    if (activeTab !== 'folder' && (activeTab !== 'albums' || selectedAlbum)) {
       await loadAssets({ reset: true, album: selectedAlbum, filter: filterType });
     }
     const updatedFavs = await storageService.getFavorites();
@@ -1240,6 +1243,7 @@ export default function App() {
               trashCount={Object.keys(trashBin).length}
               trashBin={trashBin}
               onAssignFolderToSegment={handleSetFolderSegment}
+              refreshTrigger={folderRefreshKey}
             />
           ) : activeTab === 'albums' && !selectedAlbum ? (
             <AlbumList
@@ -1330,6 +1334,13 @@ export default function App() {
               setTimeout(() => setCameraVisible(true), 10);
             }}
             onVideoSaved={() => handleRefresh()}
+            onOpenSegundoPlano={async () => {
+              await handleRefresh();
+              setSelectedAlbum(null);
+              setActiveSegment('files');
+              setFolderUri('file:///storage/emulated/0/Movies/2do plano');
+              setActiveTab('folder');
+            }}
           />
         </View>
 

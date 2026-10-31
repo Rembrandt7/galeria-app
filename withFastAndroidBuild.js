@@ -236,6 +236,47 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun startCameraPreviewNative(
+        facing: String,
+        torchOn: Boolean,
+        promise: Promise
+    ) {
+        try {
+            val cleanSpec = facing.trim()
+            val useFront = cleanSpec.lowercase() == "front"
+            BackgroundVideoRecordService.startServicePreview(
+                context = reactContext,
+                useFrontCamera = useFront,
+                cameraSpec = cleanSpec,
+                enableTorch = torchOn
+            )
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun stopCameraPreviewNative(promise: Promise) {
+        try {
+            BackgroundVideoRecordService.stopPreviewIfIdle(reactContext)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
+    fun takeCameraPhotoNative(promise: Promise) {
+        try {
+            BackgroundVideoRecordService.takePhotoSnapshot(reactContext)
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    @ReactMethod
     fun switchBackgroundCameraNative(facingOrCameraId: String, promise: Promise) {
         try {
             BackgroundVideoRecordService.switchCamera(reactContext, facingOrCameraId.trim())
@@ -306,6 +347,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         try {
             val map = Arguments.createMap().apply {
                 putBoolean("isRecording", BackgroundVideoRecordService.isRunning)
+                putBoolean("isPreviewOnly", BackgroundVideoRecordService.isServiceActive && !BackgroundVideoRecordService.isRunning)
                 putBoolean("isPaused", BackgroundVideoRecordService.isPausedState)
                 putInt("elapsedSeconds", BackgroundVideoRecordService.elapsedSecondsState)
                 putString("facing", if (BackgroundVideoRecordService.useFrontState) "front" else "back")
@@ -1761,8 +1803,19 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     mergedByDir.remove(k)
                 }
 
+                val appExtSegundoPlanoDir = reactContext.getExternalFilesDir("2do plano")
+                val spDirsList = mutableListOf(
+                    segundoPlanoDir,
+                    File("/storage/emulated/0/2do plano"),
+                    File("/storage/emulated/0/Pictures/2do plano"),
+                    File("/storage/emulated/0/DCIM/2do plano"),
+                    File("/storage/emulated/0/DCIM/Grabaciones")
+                )
+                if (appExtSegundoPlanoDir != null) {
+                    spDirsList.add(appExtSegundoPlanoDir)
+                }
                 val (spCount, spCover) = scanDirCountAndCover(
-                    listOf(segundoPlanoDir, File("/storage/emulated/0/2do plano")),
+                    spDirsList,
                     1
                 )
                 val spKey = segundoPlanoDir.absolutePath.lowercase()
@@ -1844,7 +1897,12 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
             try {
                 val clean = cleanFilePath(dirPath)
                 val rootDir = File(clean)
-                if (!rootDir.exists() || !rootDir.isDirectory) {
+                val isTelegramRoot = rootDir.absolutePath.equals("/storage/emulated/0/Telegram", ignoreCase = true)
+                val isSegundoPlanoRoot =
+                    rootDir.absolutePath.endsWith("/2do plano", ignoreCase = true) ||
+                    rootDir.absolutePath.endsWith("/Grabaciones", ignoreCase = true)
+
+                if ((!rootDir.exists() || !rootDir.isDirectory) && !isTelegramRoot && !isSegundoPlanoRoot) {
                     val emptyRes = Arguments.createMap().apply {
                         putArray("assets", Arguments.createArray())
                         putArray("subfolders", Arguments.createArray())
@@ -1875,8 +1933,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 val assetList = ArrayList<FastAsset>(128)
                 val subDirs = ArrayList<File>(16)
 
-                val children = rootDir.listFiles() ?: emptyArray()
-                val isTelegramRoot = rootDir.absolutePath.equals("/storage/emulated/0/Telegram", ignoreCase = true)
+                val children = if (rootDir.exists() && rootDir.isDirectory) (rootDir.listFiles() ?: emptyArray()) else emptyArray()
                 for (child in children) {
                     val name = child.name
                     if (name.startsWith(".")) continue
@@ -1902,6 +1959,39 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         val mt = getMediaType(name)
                         if (mt != null) {
                             assetList.add(FastAsset(child, mt, child.lastModified(), child.length()))
+                        }
+                    }
+                }
+
+                if (isSegundoPlanoRoot) {
+                    val extraSpDirs = mutableListOf(
+                        File("/storage/emulated/0/Movies/2do plano"),
+                        File("/storage/emulated/0/2do plano"),
+                        File("/storage/emulated/0/Pictures/2do plano"),
+                        File("/storage/emulated/0/DCIM/2do plano"),
+                        File("/storage/emulated/0/DCIM/Grabaciones")
+                    )
+                    val appExtSp = reactContext.getExternalFilesDir("2do plano")
+                    if (appExtSp != null) {
+                        extraSpDirs.add(appExtSp)
+                    }
+                    val seenSpNames = HashSet<String>()
+                    val seenSpPaths = HashSet<String>()
+                    for (a in assetList) {
+                        seenSpPaths.add(a.file.absolutePath)
+                        seenSpNames.add(a.file.name)
+                    }
+                    for (ed in extraSpDirs) {
+                        if (!ed.exists() || !ed.isDirectory) continue
+                        val eChildren = ed.listFiles() ?: continue
+                        for (ec in eChildren) {
+                            if (ec.name.startsWith(".")) continue
+                            if (ec.isFile) {
+                                val mt = getMediaType(ec.name)
+                                if (mt != null && seenSpPaths.add(ec.absolutePath) && seenSpNames.add(ec.name)) {
+                                    assetList.add(FastAsset(ec, mt, ec.lastModified(), ec.length()))
+                                }
+                            }
                         }
                     }
                 }
@@ -3043,17 +3133,24 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.graphics.Color
-import android.graphics.PixelFormat
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
+import android.graphics.Matrix
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
+import android.media.Image
+import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaRecorder
 import android.media.MediaScannerConnection
@@ -3064,65 +3161,70 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.provider.Settings
+import android.provider.MediaStore
+import android.util.Base64
 import android.util.Range
 import android.util.Size
-import android.view.Gravity
-import android.view.MotionEvent
 import android.view.Surface
-import android.view.SurfaceHolder
-import android.view.SurfaceView
-import android.view.View
-import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.facebook.react.bridge.Arguments
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /**
- * Motor nativo de grabación de video en segundo plano extraído y reconstruido de:
- * com.bravo.video.recorder.background.service.RecordService1 (Video Recorder v3.0.1).
+ * Motor nativo unificado de vista previa y grabación de video en 2do plano (Camera2 + ImageReader + MediaRecorder).
  *
  * Características:
- * - ForegroundService con FOREGROUND_SERVICE_TYPE_CAMERA | FOREGROUND_SERVICE_TYPE_MICROPHONE (0xC0 = 192).
- * - Superficie persistente MediaCodec.createPersistentInputSurface() inicializada con MediaRecorder.
- * - Ventana superpuesta WindowManager (TYPE_APPLICATION_OVERLAY = 2038, flags = 0x80108) de 1x1 px
- *   en modo oculto o 140x190 dp arrastrable en modo vista previa flotante.
- * - Funciona con la pantalla bloqueada/apagada (botón físico) o usando cualquier otra aplicación.
+ * - Captura fotogramas en vivo directamente desde el HAL de Camera2 mediante ImageReader (YUV_420_888)
+ *   sin depender de SurfaceView ni WindowManager, garantizando que la vista previa dentro del <Modal>
+ *   de React Native se vea al 100% tanto antes de grabar como durante la grabación en 2do plano.
+ * - Soporta cambio en caliente entre Trasera, Frontal y lentes adicionales.
+ * - Publica automáticamente cada video y foto en /storage/emulated/0/Movies/2do plano vía MediaStore
+ *   y MediaScannerConnection para que aparezca de inmediato en la galería.
  */
-class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
+class BackgroundVideoRecordService : Service() {
 
-    private var windowManager: WindowManager? = null
-    private var overlaySurfaceView: SurfaceView? = null
-    private var overlayLayoutParams: WindowManager.LayoutParams? = null
-    private var inAppParentGroup: android.view.ViewGroup? = null
-    private var inAppLayoutParams: android.widget.FrameLayout.LayoutParams? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val frameExecutor = Executors.newSingleThreadExecutor()
 
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var persistentRecorderSurface: Surface? = null
-    private var previewHolderSurface: Surface? = null
+    private var previewImageReader: ImageReader? = null
     private var mediaRecorder: MediaRecorder? = null
 
     private var cameraId: String = "0"
     private var videoWidth: Int = 1920
     private var videoHeight: Int = 1080
+    private var previewWidth: Int = 320
+    private var previewHeight: Int = 240
     private var videoFps: Int = 30
     private var videoBitrate: Int = 10_000_000
     private var maxDurationSec: Int = 600
     private var useFrontCamera: Boolean = false
     private var enableTorch: Boolean = false
-    private var showFloatingPreview: Boolean = false
+    private var showFloatingPreview: Boolean = true
+    private var isPreviewOnly: Boolean = false
     private var outputFile: File? = null
     private var sessionStarted: Boolean = false
+    private var lastFrameEmitTimeMs: Long = 0L
+
+    @Volatile
+    private var isEncodingFrame: Boolean = false
+
+    @Volatile
+    private var lastCapturedJpegBytes: ByteArray? = null
 
     private val timerRunnable = object : Runnable {
         override fun run() {
@@ -3160,6 +3262,9 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                     val spec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
                     switchCameraInternal(spec)
                 }
+                ACTION_TAKE_PHOTO -> {
+                    takePhotoInternal()
+                }
             }
         }
     }
@@ -3179,6 +3284,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             addAction(ACTION_SET_PREVIEW)
             addAction(ACTION_SET_TORCH)
             addAction(ACTION_SWITCH_CAMERA)
+            addAction(ACTION_TAKE_PHOTO)
         }
         try {
             ContextCompat.registerReceiver(
@@ -3198,6 +3304,13 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             ACTION_STOP -> {
                 stopRecordingAndSelf()
                 return START_NOT_STICKY
+            }
+            ACTION_STOP_PREVIEW -> {
+                if (!isRunning) {
+                    stopRecordingAndSelf()
+                    return START_NOT_STICKY
+                }
+                return START_STICKY
             }
             ACTION_PAUSE_RECORD -> {
                 pauseRecordingInternal()
@@ -3222,16 +3335,66 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                 switchCameraInternal(spec)
                 return START_STICKY
             }
-            ACTION_START -> {
+            ACTION_TAKE_PHOTO -> {
+                takePhotoInternal()
+                return START_STICKY
+            }
+            ACTION_START_PREVIEW -> {
                 if (isRunning && sessionStarted) {
+                    updateOverlayPreviewSize(true)
                     return START_STICKY
                 }
                 val camSpec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
                 useFrontCamera = intent.getBooleanExtra(EXTRA_USE_FRONT_CAMERA, camSpec.lowercase() == "front")
                 enableTorch = intent.getBooleanExtra(EXTRA_ENABLE_TORCH, false)
-                showFloatingPreview = intent.getBooleanExtra(EXTRA_SHOW_PREVIEW, false)
+                showFloatingPreview = true
+
+                val nextCamId = resolveCameraIdFromSpec(camSpec, useFrontCamera)
+                if (isServiceActive && sessionStarted && isPreviewOnly) {
+                    floatingPreviewState = true
+                    showFloatingPreview = true
+                    if (nextCamId != cameraId) {
+                        switchCameraInternal(camSpec)
+                    } else if (enableTorch != torchOnState) {
+                        updateTorchMode(enableTorch)
+                    } else {
+                        emitStatusToJs()
+                    }
+                    return START_STICKY
+                }
+
+                cameraId = nextCamId
+                useFrontCamera = isCameraIdFront(cameraId)
+                useFrontState = useFrontCamera
+                cameraSpecState = camSpec
+                torchOnState = enableTorch
+                floatingPreviewState = true
+                elapsedSecondsState = 0
+                isPausedState = false
+                isPreviewOnly = true
+                isRunning = false
+                isServiceActive = true
+
+                startForegroundWithNotification()
+                chooseOptimalVideoSize(cameraId)
+                chooseOptimalPreviewSize(cameraId)
+                ensurePreviewImageReader()
+                cameraHandler?.post {
+                    startCameraAndRecorderSession(previewImageReader?.surface)
+                }
+                emitStatusToJs()
+            }
+            ACTION_START -> {
+                if (isRunning && sessionStarted && !isPreviewOnly) {
+                    return START_STICKY
+                }
+                val camSpec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                useFrontCamera = intent.getBooleanExtra(EXTRA_USE_FRONT_CAMERA, camSpec.lowercase() == "front")
+                enableTorch = intent.getBooleanExtra(EXTRA_ENABLE_TORCH, false)
+                showFloatingPreview = intent.getBooleanExtra(EXTRA_SHOW_PREVIEW, true)
                 maxDurationSec = intent.getIntExtra(EXTRA_MAX_DURATION_SEC, 600)
 
+                val wasPreviewOnly = isServiceActive && isPreviewOnly
                 cameraId = resolveCameraIdFromSpec(camSpec, useFrontCamera)
                 useFrontCamera = isCameraIdFront(cameraId)
                 useFrontState = useFrontCamera
@@ -3240,20 +3403,182 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                 floatingPreviewState = showFloatingPreview
                 elapsedSecondsState = 0
                 isPausedState = false
+                isPreviewOnly = false
                 isRunning = true
+                isServiceActive = true
 
                 acquireWakeLock()
                 startForegroundWithNotification()
 
                 chooseOptimalVideoSize(cameraId)
-                outputFile = createTargetOutputFile()
+                chooseOptimalPreviewSize(cameraId)
+                ensurePreviewImageReader()
+                outputFile = createTargetOutputFile("VID_2DO_", ".mp4")
                 currentOutputPath = outputFile?.absolutePath
 
-                setupOverlayOrStartDirect()
+                if (wasPreviewOnly) {
+                    sessionStarted = false
+                    cameraHandler?.post {
+                        try { captureSession?.stopRepeating() } catch (_: Exception) {}
+                        try { captureSession?.close() } catch (_: Exception) {}
+                        captureSession = null
+                        val dev = cameraDevice
+                        if (dev != null) {
+                            sessionStarted = true
+                            val persistentSurface = persistentRecorderSurface ?: createInitializedPersistentSurface().also {
+                                persistentRecorderSurface = it
+                            }
+                            createCaptureSessionAndStart(dev, previewImageReader?.surface, persistentSurface)
+                        } else {
+                            startCameraAndRecorderSession(previewImageReader?.surface)
+                        }
+                    }
+                } else {
+                    cameraHandler?.post {
+                        startCameraAndRecorderSession(previewImageReader?.surface)
+                    }
+                }
                 emitStatusToJs()
             }
         }
         return START_STICKY
+    }
+
+    private fun ensurePreviewImageReader() {
+        val current = previewImageReader
+        if (current != null && current.width == previewWidth && current.height == previewHeight) {
+            return
+        }
+        try { current?.close() } catch (_: Exception) {}
+        val reader = ImageReader.newInstance(previewWidth, previewHeight, ImageFormat.YUV_420_888, 2)
+        reader.setOnImageAvailableListener({ r ->
+            val image = try { r.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
+            val now = System.currentTimeMillis()
+            if (!floatingPreviewState || !isServiceActive || isEncodingFrame || (now - lastFrameEmitTimeMs < 85L)) {
+                try { image.close() } catch (_: Exception) {}
+                return@setOnImageAvailableListener
+            }
+            val nv21: ByteArray
+            val imgW = image.width
+            val imgH = image.height
+            try {
+                nv21 = yuv420ToNv21(image)
+            } catch (_: Exception) {
+                try { image.close() } catch (_: Exception) {}
+                return@setOnImageAvailableListener
+            } finally {
+                try { image.close() } catch (_: Exception) {}
+            }
+
+            lastFrameEmitTimeMs = now
+            isEncodingFrame = true
+            val rotDeg = computeOrientationHint()
+            val mirrorFront = useFrontCamera
+
+            frameExecutor.execute {
+                try {
+                    val yuvImg = YuvImage(nv21, ImageFormat.NV21, imgW, imgH, null)
+                    val rawBaos = ByteArrayOutputStream(24576)
+                    yuvImg.compressToJpeg(Rect(0, 0, imgW, imgH), 82, rawBaos)
+                    val rawJpeg = rawBaos.toByteArray()
+
+                    val finalJpeg = if (rotDeg != 0 || mirrorFront) {
+                        val decoded = BitmapFactory.decodeByteArray(rawJpeg, 0, rawJpeg.size)
+                        if (decoded != null) {
+                            val matrix = Matrix().apply {
+                                if (rotDeg != 0) {
+                                    postRotate(rotDeg.toFloat())
+                                }
+                                if (mirrorFront) {
+                                    postScale(-1f, 1f)
+                                }
+                            }
+                            val rotated = Bitmap.createBitmap(
+                                decoded,
+                                0,
+                                0,
+                                decoded.width,
+                                decoded.height,
+                                matrix,
+                                true
+                            )
+                            if (rotated != decoded) {
+                                decoded.recycle()
+                            }
+                            val rotBaos = ByteArrayOutputStream(24576)
+                            rotated.compress(Bitmap.CompressFormat.JPEG, 76, rotBaos)
+                            rotated.recycle()
+                            rotBaos.toByteArray()
+                        } else {
+                            rawJpeg
+                        }
+                    } else {
+                        rawJpeg
+                    }
+
+                    if (finalJpeg.isNotEmpty()) {
+                        lastCapturedJpegBytes = finalJpeg
+                        val b64 = Base64.encodeToString(finalJpeg, Base64.NO_WRAP)
+                        val map = Arguments.createMap().apply {
+                            putString("frame", "data:image/jpeg;base64," + b64)
+                        }
+                        VideoEngineModule.emitBgRecordEvent("BackgroundRecordingPreviewFrame", map)
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    isEncodingFrame = false
+                }
+            }
+        }, cameraHandler)
+        previewImageReader = reader
+    }
+
+    private fun yuv420ToNv21(image: Image): ByteArray {
+        val width = image.width
+        val height = image.height
+        val ySize = width * height
+        val uvSize = width * height / 2
+        val nv21 = ByteArray(ySize + uvSize)
+
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+
+        val yBuffer = yPlane.buffer
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+
+        val yRowStride = yPlane.rowStride
+        val yPixelStride = yPlane.pixelStride
+
+        var pos = 0
+        if (yRowStride == width && yPixelStride == 1) {
+            yBuffer.position(0)
+            yBuffer.get(nv21, 0, ySize)
+            pos = ySize
+        } else {
+            for (row in 0 until height) {
+                val rowStart = row * yRowStride
+                for (col in 0 until width) {
+                    nv21[pos++] = yBuffer.get(rowStart + col * yPixelStride)
+                }
+            }
+        }
+
+        val uvRowStride = uPlane.rowStride
+        val uvPixelStride = uPlane.pixelStride
+        val uvHeight = height / 2
+        val uvWidth = width / 2
+
+        for (row in 0 until uvHeight) {
+            val rowStart = row * uvRowStride
+            for (col in 0 until uvWidth) {
+                val uvIndex = rowStart + col * uvPixelStride
+                nv21[pos++] = vBuffer.get(uvIndex)
+                nv21[pos++] = uBuffer.get(uvIndex)
+            }
+        }
+        return nv21
     }
 
     private fun acquireWakeLock() {
@@ -3288,9 +3613,12 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         val notification = buildNotification()
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                // 64 (CAMERA) or 128 (MICROPHONE) = 192 (0xC0), idéntico a RecordService1.p0
-                val fgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                val fgsType = if (isPreviewOnly) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                }
                 startForeground(NOTIFICATION_ID, notification, fgsType)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
@@ -3348,230 +3676,80 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val statusTitle = if (isPausedState) {
+        val statusTitle = if (isPreviewOnly) {
+            "Vista previa de cámara activa"
+        } else if (isPausedState) {
             "Grabación en pausa (" + formatTime(elapsedSecondsState) + ")"
         } else {
             "Grabando en 2do plano (" + formatTime(elapsedSecondsState) + ")"
         }
 
-        return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setContentTitle(statusTitle)
-            .setContentText("Mi Galería · Cámara activa fuera de la app / pantalla apagada")
+            .setContentText(
+                if (isPreviewOnly) {
+                    "Mi Galería · Lista para grabar en 2do plano"
+                } else {
+                    "Mi Galería · Guardando en Archivos › 2do plano"
+                }
+            )
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
             .setSilent(true)
             .setContentIntent(openPending)
-            .addAction(
+
+        if (!isPreviewOnly) {
+            builder.addAction(
                 if (isPausedState) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
                 if (isPausedState) "Reanudar" else "Pausar",
                 togglePausePending
             )
-            .addAction(
+            builder.addAction(
                 android.R.drawable.ic_delete,
                 "Detener y Guardar",
                 stopPending
             )
-            .build()
-    }
-
-    private fun dpToPx(dp: Int): Int {
-        val density = resources.displayMetrics.density
-        return (dp * density).toInt().coerceAtLeast(1)
-    }
-
-    /**
-     * Equivalente a RecordService1.k0():
-     * Si el permiso SYSTEM_ALERT_WINDOW está activo, monta un SurfaceView en WindowManager
-     * con TYPE_APPLICATION_OVERLAY (2038) y flags 0x80108 (524552).
-     * Si no está activo, inicia directamente con la PersistentInputSurface sin vista flotante.
-     */
-    @SuppressLint("ClickableViewAccessibility")
-    private fun setupOverlayOrStartDirect() {
-        val canOverlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(this)
-        } else {
-            true
         }
-
-        if (!canOverlay) {
-            mainHandler.post {
-                try {
-                    val actRoot = VideoEngineModule.getActiveActivity()
-                        ?.findViewById<android.view.ViewGroup>(android.R.id.content)
-                    if (actRoot != null) {
-                        val widthPx = if (showFloatingPreview) dpToPx(148) else 1
-                        val heightPx = if (showFloatingPreview) dpToPx(200) else 1
-                        val flp = android.widget.FrameLayout.LayoutParams(
-                            widthPx,
-                            heightPx,
-                            Gravity.TOP or Gravity.START
-                        ).apply {
-                            leftMargin = dpToPx(16)
-                            topMargin = dpToPx(96)
-                        }
-                        inAppLayoutParams = flp
-
-                        val sv = SurfaceView(this).apply {
-                            translationZ = 999f
-                            elevation = 100f
-                        }
-                        try {
-                            sv.holder.setFixedSize(videoWidth, videoHeight)
-                        } catch (_: Exception) {}
-                        sv.holder.addCallback(this)
-
-                        var initialX = 0
-                        var initialY = 0
-                        var touchX = 0f
-                        var touchY = 0f
-                        sv.setOnTouchListener { _: View, event: MotionEvent ->
-                            if (!floatingPreviewState) return@setOnTouchListener false
-                            val params = inAppLayoutParams ?: return@setOnTouchListener false
-                            when (event.actionMasked) {
-                                MotionEvent.ACTION_DOWN -> {
-                                    initialX = params.leftMargin
-                                    initialY = params.topMargin
-                                    touchX = event.rawX
-                                    touchY = event.rawY
-                                    true
-                                }
-                                MotionEvent.ACTION_MOVE -> {
-                                    params.leftMargin = (initialX + (event.rawX - touchX).toInt()).coerceAtLeast(0)
-                                    params.topMargin = (initialY + (event.rawY - touchY).toInt()).coerceAtLeast(dpToPx(48))
-                                    try {
-                                        sv.layoutParams = params
-                                    } catch (_: Exception) {}
-                                    true
-                                }
-                                else -> false
-                            }
-                        }
-
-                        overlaySurfaceView = sv
-                        inAppParentGroup = actRoot
-                        actRoot.addView(sv, flp)
-                        cameraHandler?.postDelayed({
-                            if (!sessionStarted && isRunning) {
-                                startCameraAndRecorderSession(previewHolderSurface)
-                            }
-                        }, 450L)
-                        return@post
-                    }
-                } catch (_: Exception) {}
-                cameraHandler?.post {
-                    startCameraAndRecorderSession(null)
-                }
-            }
-            return
-        }
-
-        try {
-            val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            windowManager = wm
-
-            val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY // 2038 (0x7f6)
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            }
-
-            val widthPx = if (showFloatingPreview) dpToPx(136) else 1
-            val heightPx = if (showFloatingPreview) dpToPx(184) else 1
-
-            // Flags exactos de RecordService1.k0(): 524552 (0x80108)
-            val lp = WindowManager.LayoutParams(
-                widthPx,
-                heightPx,
-                overlayType,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    @Suppress("DEPRECATION")
-                    WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = dpToPx(16)
-                y = dpToPx(96)
-            }
-            overlayLayoutParams = lp
-
-            val sv = SurfaceView(this)
-            try {
-                sv.holder.setFixedSize(videoWidth, videoHeight)
-            } catch (_: Exception) {}
-            sv.holder.addCallback(this)
-
-            var initialX = 0
-            var initialY = 0
-            var touchX = 0f
-            var touchY = 0f
-            sv.setOnTouchListener { _: View, event: MotionEvent ->
-                if (!floatingPreviewState) return@setOnTouchListener false
-                val params = overlayLayoutParams ?: return@setOnTouchListener false
-                when (event.actionMasked) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x
-                        initialY = params.y
-                        touchX = event.rawX
-                        touchY = event.rawY
-                        true
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX + (event.rawX - touchX).toInt()
-                        params.y = initialY + (event.rawY - touchY).toInt()
-                        try {
-                            windowManager?.updateViewLayout(sv, params)
-                        } catch (_: Exception) {}
-                        true
-                    }
-                    else -> false
-                }
-            }
-
-            overlaySurfaceView = sv
-            wm.addView(sv, lp)
-            cameraHandler?.postDelayed({
-                if (!sessionStarted && isRunning) {
-                    startCameraAndRecorderSession(previewHolderSurface)
-                }
-            }, 450L)
-        } catch (e: Exception) {
-            cameraHandler?.post {
-                startCameraAndRecorderSession(null)
-            }
-        }
+        return builder.build()
     }
 
     private fun updateOverlayPreviewSize(visible: Boolean) {
         showFloatingPreview = visible
         floatingPreviewState = visible
         mainHandler.post {
-            val wm = windowManager
-            val sv = overlaySurfaceView
-            val lp = overlayLayoutParams
-            val flp = inAppLayoutParams
-            if (wm != null && sv != null && lp != null && sv.isAttachedToWindow) {
-                lp.width = if (visible) dpToPx(148) else 1
-                lp.height = if (visible) dpToPx(200) else 1
-                try {
-                    wm.updateViewLayout(sv, lp)
-                } catch (_: Exception) {}
-            } else if (sv != null && flp != null && sv.isAttachedToWindow) {
-                flp.width = if (visible) dpToPx(148) else 1
-                flp.height = if (visible) dpToPx(200) else 1
-                try {
-                    sv.layoutParams = flp
-                } catch (_: Exception) {}
-            }
             emitStatusToJs()
+        }
+    }
+
+    private fun takePhotoInternal() {
+        frameExecutor.execute {
+            try {
+                val jpegBytes = lastCapturedJpegBytes
+                if (jpegBytes == null || jpegBytes.isEmpty()) {
+                    emitErrorToJs("Activa primero la vista previa de la cámara para capturar foto.")
+                    return@execute
+                }
+                val photoFile = createTargetOutputFile("IMG_2DO_", ".jpg")
+                FileOutputStream(photoFile).use { fos ->
+                    fos.write(jpegBytes)
+                    fos.flush()
+                }
+                finalizeAndPublishSavedMedia(
+                    rawFile = photoFile,
+                    mimeType = "image/jpeg",
+                    isVideo = false,
+                    durationSec = 0
+                )
+            } catch (e: Exception) {
+                emitErrorToJs(e.message ?: "Error al guardar foto")
+            }
         }
     }
 
     @SuppressLint("MissingPermission")
     private fun switchCameraInternal(newSpec: String) {
-        if (!isRunning) return
+        if (!isServiceActive) return
         cameraHandler?.post {
             try {
                 val nextCamId = resolveCameraIdFromSpec(newSpec, newSpec.lowercase() == "front")
@@ -3595,8 +3773,9 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                 try { cameraDevice?.close() } catch (_: Exception) {}
                 cameraDevice = null
 
-                val recSurf = persistentRecorderSurface ?: return@post
-                val prevSurf = previewHolderSurface
+                ensurePreviewImageReader()
+                val recSurf = if (isPreviewOnly) null else persistentRecorderSurface
+                val prevSurf = previewImageReader?.surface
                 val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
                 cm.openCamera(
                     cameraId,
@@ -3608,7 +3787,10 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                                 if (prevSurf != null && prevSurf.isValid) {
                                     outputs.add(prevSurf)
                                 }
-                                outputs.add(recSurf)
+                                if (recSurf != null && recSurf.isValid) {
+                                    outputs.add(recSurf)
+                                }
+                                if (outputs.isEmpty()) return
                                 device.createCaptureSession(
                                     outputs,
                                     object : CameraCaptureSession.StateCallback() {
@@ -3647,29 +3829,12 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             try {
                 val dev = cameraDevice ?: return@post
                 val sess = captureSession ?: return@post
-                val recSurf = persistentRecorderSurface ?: return@post
-                val req = buildRecordCaptureRequest(dev, previewHolderSurface, recSurf)
+                val recSurf = if (isPreviewOnly) null else persistentRecorderSurface
+                val req = buildRecordCaptureRequest(dev, previewImageReader?.surface, recSurf)
                 sess.setRepeatingRequest(req, null, cameraHandler)
             } catch (_: Exception) {}
             mainHandler.post { emitStatusToJs() }
         }
-    }
-
-    override fun surfaceCreated(holder: SurfaceHolder) {
-        previewHolderSurface = holder.surface
-        if (!sessionStarted) {
-            cameraHandler?.post {
-                startCameraAndRecorderSession(holder.surface)
-            }
-        }
-    }
-
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        previewHolderSurface = holder.surface
-    }
-
-    override fun surfaceDestroyed(holder: SurfaceHolder) {
-        previewHolderSurface = null
     }
 
     @SuppressLint("MissingPermission")
@@ -3678,8 +3843,12 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         sessionStarted = true
 
         try {
-            val persistentSurface = persistentRecorderSurface ?: createInitializedPersistentSurface().also {
-                persistentRecorderSurface = it
+            val persistentSurface = if (isPreviewOnly) {
+                null
+            } else {
+                persistentRecorderSurface ?: createInitializedPersistentSurface().also {
+                    persistentRecorderSurface = it
+                }
             }
 
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -3688,15 +3857,15 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                 object : CameraDevice.StateCallback() {
                     override fun onOpened(device: CameraDevice) {
                         cameraDevice = device
-                        createCaptureSessionAndStart(device, previewSurface, persistentSurface)
+                        createCaptureSessionAndStart(device, previewSurface ?: previewImageReader?.surface, persistentSurface)
                     }
 
                     override fun onDisconnected(device: CameraDevice) {
                         try { device.close() } catch (_: Exception) {}
                         cameraDevice = null
-                        if (attempt < 6 && isRunning) {
+                        if (attempt < 6 && isServiceActive) {
                             cameraHandler?.postDelayed({
-                                startCameraAndRecorderSession(previewSurface, attempt + 1)
+                                startCameraAndRecorderSession(previewSurface ?: previewImageReader?.surface, attempt + 1)
                             }, 280L)
                         } else {
                             mainHandler.post { stopRecordingAndSelf() }
@@ -3706,12 +3875,12 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                     override fun onError(device: CameraDevice, error: Int) {
                         try { device.close() } catch (_: Exception) {}
                         cameraDevice = null
-                        if (attempt < 6 && isRunning) {
+                        if (attempt < 6 && isServiceActive) {
                             cameraHandler?.postDelayed({
-                                startCameraAndRecorderSession(previewSurface, attempt + 1)
+                                startCameraAndRecorderSession(previewSurface ?: previewImageReader?.surface, attempt + 1)
                             }, 280L)
                         } else {
-                            emitErrorToJs("No se pudo abrir la cámara en 2do plano (código " + error + ").")
+                            emitErrorToJs("No se pudo abrir la cámara (código " + error + ").")
                             mainHandler.post { stopRecordingAndSelf() }
                         }
                     }
@@ -3719,12 +3888,12 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                 cameraHandler
             )
         } catch (e: Exception) {
-            if (attempt < 6 && isRunning) {
+            if (attempt < 6 && isServiceActive) {
                 cameraHandler?.postDelayed({
-                    startCameraAndRecorderSession(previewSurface, attempt + 1)
+                    startCameraAndRecorderSession(previewSurface ?: previewImageReader?.surface, attempt + 1)
                 }, 280L)
             } else {
-                emitErrorToJs(e.message ?: "Error al iniciar la sesión de cámara en 2do plano")
+                emitErrorToJs(e.message ?: "Error al iniciar la sesión de cámara")
                 mainHandler.post { stopRecordingAndSelf() }
             }
         }
@@ -3734,25 +3903,44 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
     private fun createCaptureSessionAndStart(
         device: CameraDevice,
         previewSurface: Surface?,
-        recordSurface: Surface
+        recordSurface: Surface?
     ) {
         try {
             val outputs = mutableListOf<Surface>()
             val activePreview = if (previewSurface != null && previewSurface.isValid) {
                 previewSurface
+            } else if (previewImageReader?.surface != null && previewImageReader!!.surface.isValid) {
+                previewImageReader!!.surface
             } else {
                 null
             }
             if (activePreview != null) {
                 outputs.add(activePreview)
             }
-            outputs.add(recordSurface)
-
-            val recorder = buildConfiguredMediaRecorder(recordSurface).apply {
-                setOrientationHint(computeOrientationHint())
-                prepare()
+            if (!isPreviewOnly && recordSurface != null && recordSurface.isValid) {
+                outputs.add(recordSurface)
             }
-            mediaRecorder = recorder
+
+            if (outputs.isEmpty()) {
+                sessionStarted = false
+                return
+            }
+
+            if (!isPreviewOnly && recordSurface != null) {
+                try {
+                    mediaRecorder?.apply {
+                        setOnErrorListener(null)
+                        setOnInfoListener(null)
+                        reset()
+                        release()
+                    }
+                } catch (_: Exception) {}
+                val recorder = buildConfiguredMediaRecorder(recordSurface).apply {
+                    setOrientationHint(computeOrientationHint())
+                    prepare()
+                }
+                mediaRecorder = recorder
+            }
 
             device.createCaptureSession(
                 outputs,
@@ -3760,14 +3948,23 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                     override fun onConfigured(session: CameraCaptureSession) {
                         captureSession = session
                         try {
-                            val req = buildRecordCaptureRequest(device, activePreview, recordSurface)
+                            val req = buildRecordCaptureRequest(
+                                device,
+                                activePreview,
+                                if (isPreviewOnly) null else recordSurface
+                            )
                             session.setRepeatingRequest(req, null, cameraHandler)
-                            mediaRecorder?.start()
-
-                            mainHandler.post {
-                                mainHandler.removeCallbacks(timerRunnable)
-                                mainHandler.postDelayed(timerRunnable, 1000L)
-                                emitStatusToJs()
+                            if (!isPreviewOnly) {
+                                mediaRecorder?.start()
+                                mainHandler.post {
+                                    mainHandler.removeCallbacks(timerRunnable)
+                                    mainHandler.postDelayed(timerRunnable, 1000L)
+                                    emitStatusToJs()
+                                }
+                            } else {
+                                mainHandler.post {
+                                    emitStatusToJs()
+                                }
                             }
                         } catch (startErr: Exception) {
                             emitErrorToJs(startErr.message ?: "Error al iniciar MediaRecorder")
@@ -3788,11 +3985,6 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         }
     }
 
-    /**
-     * Equivalente a RecordService1$p.a():
-     * Crea MediaCodec.createPersistentInputSurface() y la inicializa preparando y liberando
-     * un MediaRecorder temporal.
-     */
     private fun createInitializedPersistentSurface(): Surface {
         val surface = MediaCodec.createPersistentInputSurface()
         val tempFile = File(cacheDir, "bvr_init_surface.mp4")
@@ -3816,7 +4008,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             @Suppress("DEPRECATION")
             MediaRecorder()
         }
-        val target = overrideFile ?: outputFile ?: createTargetOutputFile().also { outputFile = it }
+        val target = overrideFile ?: outputFile ?: createTargetOutputFile("VID_2DO_", ".mp4").also { outputFile = it }
 
         val hasMicPermission = ContextCompat.checkSelfPermission(
             this,
@@ -3860,13 +4052,20 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
     private fun buildRecordCaptureRequest(
         device: CameraDevice,
         previewSurface: Surface?,
-        recordSurface: Surface
+        recordSurface: Surface?
     ): CaptureRequest {
-        return device.createCaptureRequest(CameraDevice.TEMPLATE_RECORD).apply {
+        val template = if (recordSurface != null && recordSurface.isValid) {
+            CameraDevice.TEMPLATE_RECORD
+        } else {
+            CameraDevice.TEMPLATE_PREVIEW
+        }
+        return device.createCaptureRequest(template).apply {
             if (previewSurface != null && previewSurface.isValid) {
                 addTarget(previewSurface)
             }
-            addTarget(recordSurface)
+            if (recordSurface != null && recordSurface.isValid) {
+                addTarget(recordSurface)
+            }
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
             set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(videoFps, videoFps))
             if (enableTorch && !useFrontCamera) {
@@ -3913,11 +4112,108 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         stopSelf()
     }
 
+    private fun finalizeAndPublishSavedMedia(
+        rawFile: File,
+        mimeType: String,
+        isVideo: Boolean,
+        durationSec: Int
+    ) {
+        var finalFile = rawFile
+        val publicMoviesDir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+            "2do plano"
+        )
+        try {
+            if (!publicMoviesDir.exists()) {
+                publicMoviesDir.mkdirs()
+            }
+        } catch (_: Exception) {}
+
+        val expectedPublicFile = File(publicMoviesDir, rawFile.name)
+
+        if (!rawFile.absolutePath.equals(expectedPublicFile.absolutePath, ignoreCase = true)) {
+            var copiedToPublic = false
+            try {
+                if (publicMoviesDir.exists() && publicMoviesDir.canWrite()) {
+                    FileInputStream(rawFile).use { fis ->
+                        FileOutputStream(expectedPublicFile).use { fos ->
+                            fis.copyTo(fos)
+                            fos.flush()
+                        }
+                    }
+                    if (expectedPublicFile.exists() && expectedPublicFile.length() > 512L) {
+                        finalFile = expectedPublicFile
+                        copiedToPublic = true
+                    }
+                }
+            } catch (_: Exception) {}
+
+            if (!copiedToPublic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    val resolver = applicationContext.contentResolver
+                    val collection = if (isVideo) {
+                        MediaStore.Video.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    } else {
+                        MediaStore.Images.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                    }
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, rawFile.name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/2do plano")
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    val itemUri = resolver.insert(collection, values)
+                    if (itemUri != null) {
+                        resolver.openOutputStream(itemUri)?.use { outStream ->
+                            FileInputStream(rawFile).use { inStream ->
+                                inStream.copyTo(outStream)
+                                outStream.flush()
+                            }
+                        }
+                        val doneValues = ContentValues().apply {
+                            put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        }
+                        resolver.update(itemUri, doneValues, null, null)
+                        if (expectedPublicFile.exists() && expectedPublicFile.length() > 512L) {
+                            finalFile = expectedPublicFile
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+
+        val payload = Arguments.createMap().apply {
+            putString("uri", "file://" + finalFile.absolutePath)
+            putString("path", finalFile.absolutePath)
+            putString("mediaType", if (isVideo) "video" else "photo")
+            putInt("durationSec", durationSec)
+            putDouble("sizeBytes", finalFile.length().toDouble())
+        }
+        VideoEngineModule.emitBgRecordEvent("BackgroundRecordingSaved", payload)
+
+        try {
+            val pathsToScan = if (finalFile.absolutePath != rawFile.absolutePath) {
+                arrayOf(finalFile.absolutePath, rawFile.absolutePath)
+            } else {
+                arrayOf(finalFile.absolutePath)
+            }
+            MediaScannerConnection.scanFile(
+                applicationContext,
+                pathsToScan,
+                Array(pathsToScan.size) { mimeType },
+                null
+            )
+        } catch (_: Exception) {}
+    }
+
     override fun onDestroy() {
+        val wasRecordingVideo = isRunning && !isPreviewOnly
         val finalDuration = elapsedSecondsState
         val savedFile = outputFile
 
         isRunning = false
+        isServiceActive = false
+        isPreviewOnly = false
         isPausedState = false
         sessionStarted = false
         mainHandler.removeCallbacks(timerRunnable)
@@ -3953,26 +4249,12 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         try { persistentRecorderSurface?.release() } catch (_: Exception) {}
         persistentRecorderSurface = null
 
+        try { previewImageReader?.close() } catch (_: Exception) {}
+        previewImageReader = null
+
         try { cameraThread?.quitSafely() } catch (_: Exception) {}
         cameraThread = null
         cameraHandler = null
-
-        mainHandler.post {
-            try {
-                val wm = windowManager
-                val sv = overlaySurfaceView
-                val parentGroup = inAppParentGroup
-                if (wm != null && sv != null && sv.isAttachedToWindow) {
-                    wm.removeView(sv)
-                } else if (parentGroup != null && sv != null) {
-                    parentGroup.removeView(sv)
-                }
-            } catch (_: Exception) {}
-            overlaySurfaceView = null
-            windowManager = null
-            inAppParentGroup = null
-            inAppLayoutParams = null
-        }
 
         try {
             if (wakeLock?.isHeld == true) {
@@ -3983,29 +4265,14 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
 
         emitStatusToJs()
 
-        if (savedFile != null && savedFile.exists() && savedFile.length() > 1024L) {
-            try {
-                MediaScannerConnection.scanFile(
-                    applicationContext,
-                    arrayOf(savedFile.absolutePath),
-                    arrayOf("video/mp4")
-                ) { _, _ ->
-                    val map = Arguments.createMap().apply {
-                        putString("uri", "file://" + savedFile.absolutePath)
-                        putString("path", savedFile.absolutePath)
-                        putInt("durationSec", finalDuration)
-                        putDouble("sizeBytes", savedFile.length().toDouble())
-                    }
-                    VideoEngineModule.emitBgRecordEvent("BackgroundRecordingSaved", map)
-                }
-            } catch (_: Exception) {
-                val map = Arguments.createMap().apply {
-                    putString("uri", "file://" + savedFile.absolutePath)
-                    putString("path", savedFile.absolutePath)
-                    putInt("durationSec", finalDuration)
-                    putDouble("sizeBytes", savedFile.length().toDouble())
-                }
-                VideoEngineModule.emitBgRecordEvent("BackgroundRecordingSaved", map)
+        if (wasRecordingVideo && savedFile != null && savedFile.exists() && savedFile.length() > 512L) {
+            frameExecutor.execute {
+                finalizeAndPublishSavedMedia(
+                    rawFile = savedFile,
+                    mimeType = "video/mp4",
+                    isVideo = true,
+                    durationSec = finalDuration
+                )
             }
         }
 
@@ -4061,6 +4328,35 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         }
     }
 
+    private fun chooseOptimalPreviewSize(camId: String) {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val chars = cm.getCameraCharacteristics(camId)
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
+            val sizes: Array<Size> = map.getOutputSizes(ImageFormat.YUV_420_888) ?: return
+            val exact320 = sizes.firstOrNull { it.width == 320 && it.height == 240 }
+            if (exact320 != null) {
+                previewWidth = 320
+                previewHeight = 240
+                return
+            }
+            val exact640 = sizes.firstOrNull { it.width == 640 && it.height == 480 }
+            if (exact640 != null) {
+                previewWidth = 640
+                previewHeight = 480
+                return
+            }
+            val candidate = sizes
+                .filter { it.width in 240..640 && it.height in 180..480 }
+                .minByOrNull { it.width * it.height }
+                ?: sizes.minByOrNull { it.width * it.height }
+            if (candidate != null) {
+                previewWidth = candidate.width
+                previewHeight = candidate.height
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun chooseOptimalVideoSize(camId: String) {
         try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -4101,9 +4397,9 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         }
     }
 
-    private fun createTargetOutputFile(): File {
+    private fun createTargetOutputFile(prefix: String, ext: String): File {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "VID_2DO_" + stamp + ".mp4"
+        val fileName = prefix + stamp + ext
         try {
             val moviesSegundoPlanoDir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
@@ -4135,6 +4431,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
     private fun emitStatusToJs() {
         val map = Arguments.createMap().apply {
             putBoolean("isRecording", isRunning)
+            putBoolean("isPreviewOnly", isServiceActive && !isRunning)
             putBoolean("isPaused", isPausedState)
             putInt("elapsedSeconds", elapsedSecondsState)
             putString("facing", if (useFrontState) "front" else "back")
@@ -4158,12 +4455,15 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         private const val NOTIFICATION_ID = 5000
 
         const val ACTION_START = "com.bravo.video.recorder.background.service.ACTION_START"
+        const val ACTION_START_PREVIEW = "com.bravo.video.recorder.background.service.ACTION_START_PREVIEW"
+        const val ACTION_STOP_PREVIEW = "com.bravo.video.recorder.background.service.ACTION_STOP_PREVIEW"
         const val ACTION_STOP = "com.bravo.video.recorder.background.service.ACTION_STOP"
         const val ACTION_PAUSE_RECORD = "com.bravo.video.recorder.background.service.ACTION_PAUSE_RECORD"
         const val ACTION_RESUME_RECORD = "com.bravo.video.recorder.background.service.ACTION_RESUME_RECORD"
         const val ACTION_SET_PREVIEW = "com.bravo.video.recorder.background.service.ACTION_SET_PREVIEW"
         const val ACTION_SET_TORCH = "com.bravo.video.recorder.background.service.ACTION_SET_TORCH"
         const val ACTION_SWITCH_CAMERA = "com.bravo.video.recorder.background.service.ACTION_SWITCH_CAMERA"
+        const val ACTION_TAKE_PHOTO = "com.bravo.video.recorder.background.service.ACTION_TAKE_PHOTO"
 
         const val EXTRA_USE_FRONT_CAMERA = "EXTRA_USE_FRONT_CAMERA"
         const val EXTRA_CAMERA_SPEC = "EXTRA_CAMERA_SPEC"
@@ -4173,6 +4473,9 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
 
         @Volatile
         var isRunning: Boolean = false
+
+        @Volatile
+        var isServiceActive: Boolean = false
 
         @Volatile
         var isPausedState: Boolean = false
@@ -4190,7 +4493,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         var torchOnState: Boolean = false
 
         @Volatile
-        var floatingPreviewState: Boolean = false
+        var floatingPreviewState: Boolean = true
 
         @Volatile
         var currentOutputPath: String? = null
@@ -4214,9 +4517,41 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             ContextCompat.startForegroundService(context, intent)
         }
 
+        fun startServicePreview(
+            context: Context,
+            useFrontCamera: Boolean,
+            cameraSpec: String,
+            enableTorch: Boolean
+        ) {
+            val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
+                action = ACTION_START_PREVIEW
+                putExtra(EXTRA_USE_FRONT_CAMERA, useFrontCamera)
+                putExtra(EXTRA_CAMERA_SPEC, cameraSpec)
+                putExtra(EXTRA_ENABLE_TORCH, enableTorch)
+                putExtra(EXTRA_SHOW_PREVIEW, true)
+            }
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun stopPreviewIfIdle(context: Context) {
+            if (isRunning) return
+            val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
+                action = ACTION_STOP_PREVIEW
+            }
+            context.startService(intent)
+        }
+
+        fun takePhotoSnapshot(context: Context) {
+            if (!isServiceActive) return
+            val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
+                action = ACTION_TAKE_PHOTO
+            }
+            context.startService(intent)
+        }
+
         fun switchCamera(context: Context, cameraSpec: String) {
             cameraSpecState = cameraSpec
-            if (!isRunning) return
+            if (!isServiceActive) return
             val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
                 action = ACTION_SWITCH_CAMERA
                 putExtra(EXTRA_CAMERA_SPEC, cameraSpec)
@@ -4232,7 +4567,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         }
 
         fun sendControlAction(context: Context, actionName: String) {
-            if (!isRunning) return
+            if (!isServiceActive) return
             val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
                 action = actionName
             }
@@ -4241,7 +4576,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
 
         fun setFloatingPreview(context: Context, visible: Boolean) {
             floatingPreviewState = visible
-            if (!isRunning) return
+            if (!isServiceActive) return
             val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
                 action = ACTION_SET_PREVIEW
                 putExtra(EXTRA_SHOW_PREVIEW, visible)
@@ -4251,7 +4586,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
 
         fun setTorch(context: Context, enabled: Boolean) {
             torchOnState = enabled
-            if (!isRunning) return
+            if (!isServiceActive) return
             val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
                 action = ACTION_SET_TORCH
                 putExtra(EXTRA_ENABLE_TORCH, enabled)

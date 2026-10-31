@@ -16,16 +16,13 @@ import {
   Modal,
   Linking,
   ScrollView,
+  Image,
 } from 'react-native';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
-import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Ionicons } from '@expo/vector-icons';
-import {
-  SEGUNDO_PLANO_FOLDER_NAME,
-  SEGUNDO_PLANO_FOLDER_URI,
-} from '../services/folderService';
+import { SEGUNDO_PLANO_FOLDER_URI } from '../services/folderService';
 
 const { VideoEngineModule } = NativeModules;
 const HAS_NATIVE_BG_RECORDER =
@@ -33,7 +30,6 @@ const HAS_NATIVE_BG_RECORDER =
   Boolean(VideoEngineModule?.startBackgroundVideoRecordNative);
 
 const MAX_DURATION_SECONDS = 600; // 10 minutos exactos
-const ALBUM_NAME = SEGUNDO_PLANO_FOLDER_NAME || '2do plano';
 const TARGET_DIR_URI = SEGUNDO_PLANO_FOLDER_URI || 'file:///storage/emulated/0/Movies/2do plano';
 
 function formatTimer(seconds) {
@@ -42,10 +38,16 @@ function formatTimer(seconds) {
   return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved }) {
+export default function CameraScreen({
+  visible,
+  onClose,
+  onOpen,
+  onVideoSaved,
+  onOpenSegundoPlano,
+}) {
   const cameraRef = useRef(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const [micPermission, requestMicPermission] = useMicrophonePermissions();
+  const [, requestMicPermission] = useMicrophonePermissions();
   const [hasCamPerm, setHasCamPerm] = useState(false);
   const [hasMicPerm, setHasMicPerm] = useState(false);
 
@@ -57,19 +59,20 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     { cameraId: '1', facing: 'front', label: 'Frontal', spec: 'front' },
   ]);
 
-  const [cameraMode] = useState('video'); // 'video' | 'picture'
+  const [cameraMode] = useState('video');
   const [torchOn, setTorchOn] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [saving, setSaving] = useState(false);
 
-  // Control de "Prender Vista / Apagar Vista"
-  const [previewEnabled, setPreviewEnabled] = useState(false);
+  // Vista de cámara ENCENDIDA por defecto al abrir para que el usuario siempre vea el previo en vivo
+  const [previewEnabled, setPreviewEnabled] = useState(true);
+  const [previewFrameUri, setPreviewFrameUri] = useState(null);
+  const [lastSavedBanner, setLastSavedBanner] = useState(null);
 
-  // Motor nativo BVR 3.0.1 (RecordService1)
+  // Motor nativo BVR (BackgroundVideoRecordService)
   const [usingNativeBgService, setUsingNativeBgService] = useState(false);
-  const [hasOverlayPermission, setHasOverlayPermission] = useState(true);
 
   // Modo pantalla bloqueada / oculta total (pantalla 100% negra simulando estar apagada)
   const [stealthLocked, setStealthLocked] = useState(false);
@@ -105,14 +108,6 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
         }
         setAvailableCameras(formatted);
       }
-    } catch (_e) {}
-  }, []);
-
-  const checkOverlayStatus = useCallback(async () => {
-    if (!HAS_NATIVE_BG_RECORDER || !VideoEngineModule?.canDrawOverlaysNative) return;
-    try {
-      const ok = await VideoEngineModule.canDrawOverlaysNative();
-      setHasOverlayPermission(Boolean(ok));
     } catch (_e) {}
   }, []);
 
@@ -195,21 +190,45 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
         .then((ok) => setHasMicPerm(Boolean(ok)))
         .catch(() => {});
     }
-    checkOverlayStatus();
     loadAvailableCameras();
     syncNativeRecorderState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Al abrir el panel de cámara, descolapsar el icono y pedir permisos sin bucle
+  // Al abrir el panel de cámara, descolapsar el icono, pedir permisos y encender vista previa nativa
   useEffect(() => {
     if (visible) {
       setIsIconCollapsed(false);
-      ensureCameraAndMicPermissions(false);
-      checkOverlayStatus();
+      setPreviewEnabled(true);
       loadAvailableCameras();
       syncNativeRecorderState();
       FileSystem.makeDirectoryAsync(TARGET_DIR_URI, { intermediates: true }).catch(() => {});
+      ensureCameraAndMicPermissions(false).then((camOk) => {
+        if (camOk && HAS_NATIVE_BG_RECORDER && VideoEngineModule?.startCameraPreviewNative) {
+          VideoEngineModule.getBackgroundVideoRecordStatusNative?.()
+            .then((st) => {
+              if (st && st.isRecording) {
+                VideoEngineModule.setBackgroundFloatingPreviewNative?.(true).catch(() => {});
+              } else {
+                VideoEngineModule.startCameraPreviewNative(
+                  cameraSpec || facing,
+                  torchOn
+                ).catch(() => {});
+              }
+            })
+            .catch(() => {
+              VideoEngineModule.startCameraPreviewNative(
+                cameraSpec || facing,
+                torchOn
+              ).catch(() => {});
+            });
+        }
+      });
+    } else {
+      // Si se cierra el panel y NO está grabando, apagar la vista previa de cámara para liberar batería
+      if (!isRecording && HAS_NATIVE_BG_RECORDER && VideoEngineModule?.stopCameraPreviewNative) {
+        VideoEngineModule.stopCameraPreviewNative().catch(() => {});
+      }
     }
     // Importante: solo depender de [visible] para nunca ciclar los diálogos de permisos en Android
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -227,36 +246,21 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
             .then((ok) => setHasMicPerm(Boolean(ok)))
             .catch(() => {});
         }
-        checkOverlayStatus();
         syncNativeRecorderState();
       }
     });
     return () => sub.remove();
-  }, [checkOverlayStatus, syncNativeRecorderState]);
+  }, [syncNativeRecorderState]);
 
-  const registerFileInSegundoPlanoAlbum = useCallback(
-    async (fileUri) => {
-      try {
-        const asset = await MediaLibrary.createAssetAsync(fileUri);
-        let album = await MediaLibrary.getAlbumAsync(ALBUM_NAME);
-        if (!album) {
-          await MediaLibrary.createAlbumAsync(ALBUM_NAME, asset, false);
-        } else {
-          await MediaLibrary.addAssetsToAlbumAsync([asset], album, false);
-        }
-      } catch (_err) {
-        try {
-          await MediaLibrary.saveToLibraryAsync(fileUri);
-        } catch (_e2) {}
-      }
-      if (onVideoSaved) onVideoSaved();
-    },
-    [onVideoSaved]
-  );
-
-  // Suscripción a eventos del motor nativo BackgroundVideoRecordService (BVR 3.0.1)
+  // Suscripción a eventos del motor nativo BackgroundVideoRecordService
   useEffect(() => {
     if (!HAS_NATIVE_BG_RECORDER) return;
+
+    const subFrame = DeviceEventEmitter.addListener('BackgroundRecordingPreviewFrame', (evt) => {
+      if (evt && typeof evt.frame === 'string' && evt.frame.length > 0) {
+        setPreviewFrameUri(evt.frame);
+      }
+    });
 
     const subStatus = DeviceEventEmitter.addListener('BackgroundRecordingStatus', (evt) => {
       if (!evt) return;
@@ -287,42 +291,55 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     });
 
     const subSaved = DeviceEventEmitter.addListener('BackgroundRecordingSaved', async (evt) => {
-      setSaving(true);
-      try {
-        const savedUri = evt?.uri;
-        if (savedUri) {
-          await registerFileInSegundoPlanoAlbum(savedUri);
-        } else if (onVideoSaved) {
-          onVideoSaved();
-        }
-      } catch (_e) {
-      } finally {
-        setSaving(false);
-        setIsRecording(false);
-        setIsPaused(false);
-        setUsingNativeBgService(false);
-        setStealthLocked(false);
+      setSaving(false);
+      setIsRecording(false);
+      setIsPaused(false);
+      setUsingNativeBgService(false);
+      setStealthLocked(false);
+
+      const savedPath = evt?.path || evt?.uri || '';
+      const fileName = savedPath.split('/').pop() || 'Video guardado';
+      setLastSavedBanner({
+        fileName,
+        mediaType: evt?.mediaType || 'video',
+        timestamp: Date.now(),
+      });
+
+      if (onVideoSaved) {
+        onVideoSaved();
+      }
+
+      // Si el modal sigue abierto y el usuario tenía la vista prendida, reanudar vista previa en vivo
+      if (visible && previewEnabled && VideoEngineModule?.startCameraPreviewNative) {
+        setTimeout(() => {
+          VideoEngineModule.startCameraPreviewNative(
+            cameraSpec || facing,
+            torchOn
+          ).catch(() => {});
+        }, 250);
       }
     });
 
     const subError = DeviceEventEmitter.addListener('BackgroundRecordingError', (evt) => {
+      setSaving(false);
       setIsRecording(false);
       setIsPaused(false);
       setUsingNativeBgService(false);
       setStealthLocked(false);
       if (!stealthLockedRef.current && evt?.message) {
-        Alert.alert('Aviso de Grabación 2do Plano', evt.message);
+        Alert.alert('Aviso de Cámara 2do Plano', evt.message);
       }
     });
 
     syncNativeRecorderState();
 
     return () => {
+      subFrame.remove();
       subStatus.remove();
       subSaved.remove();
       subError.remove();
     };
-  }, [registerFileInSegundoPlanoAlbum, onVideoSaved, syncNativeRecorderState]);
+  }, [onVideoSaved, syncNativeRecorderState, visible, previewEnabled, cameraSpec, facing, torchOn]);
 
   // Botón físico Atrás de Android: colapsa a solo icono si está abierto
   useEffect(() => {
@@ -336,7 +353,9 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
         setIsIconCollapsed(true);
         return true;
       }
-      setPreviewEnabled(false);
+      if (HAS_NATIVE_BG_RECORDER && VideoEngineModule?.stopCameraPreviewNative) {
+        VideoEngineModule.stopCameraPreviewNative().catch(() => {});
+      }
       onClose();
       return true;
     });
@@ -386,42 +405,30 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     };
   }, [stealthLocked, isRecording]);
 
-  const saveMediaFileToSegundoPlano = async (fileUri, prefix = 'IMG', ext = 'jpg') => {
-    let destUri = fileUri;
-    try {
-      await FileSystem.makeDirectoryAsync(TARGET_DIR_URI, { intermediates: true }).catch(() => {});
-      destUri = `${TARGET_DIR_URI}/${prefix}_2DO_${Date.now()}.${ext}`;
-      await FileSystem.copyAsync({ from: fileUri, to: destUri });
-    } catch (_ePhys) {
-      destUri = fileUri;
-    }
-    await registerFileInSegundoPlanoAlbum(destUri);
-  };
-
-  // Tomar foto 100% silenciosa y guardarla en "2do plano"
+  // Tomar foto silenciosa y guardarla en "Archivos › 2do plano"
   const handleTakePhoto = async () => {
     if (saving) return;
     const granted = await ensureCameraAndMicPermissions(true);
     if (!granted) return;
 
-    if (!previewEnabled) {
-      setPreviewEnabled(true);
-      setTimeout(async () => {
-        if (!cameraRef.current) return;
-        setSaving(true);
-        try {
-          const photo = await cameraRef.current.takePictureAsync({
-            quality: 0.92,
-            shutterSound: false,
-          });
-          if (photo?.uri) {
-            await saveMediaFileToSegundoPlano(photo.uri, 'IMG', 'jpg');
-          }
-        } catch (_e) {}
+    if (HAS_NATIVE_BG_RECORDER && VideoEngineModule?.takeCameraPhotoNative) {
+      setSaving(true);
+      try {
+        if (!previewEnabled) {
+          setPreviewEnabled(true);
+          await VideoEngineModule.startCameraPreviewNative?.(cameraSpec || facing, torchOn);
+          setTimeout(() => {
+            VideoEngineModule.takeCameraPhotoNative().catch(() => setSaving(false));
+          }, 450);
+        } else {
+          await VideoEngineModule.takeCameraPhotoNative();
+        }
+      } catch (_e) {
         setSaving(false);
-      }, 500);
+      }
       return;
     }
+
     if (!cameraRef.current) return;
     setSaving(true);
     try {
@@ -430,7 +437,10 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
         shutterSound: false,
       });
       if (photo?.uri) {
-        await saveMediaFileToSegundoPlano(photo.uri, 'IMG', 'jpg');
+        await FileSystem.makeDirectoryAsync(TARGET_DIR_URI, { intermediates: true }).catch(() => {});
+        const destUri = `${TARGET_DIR_URI}/IMG_2DO_${Date.now()}.jpg`;
+        await FileSystem.copyAsync({ from: photo.uri, to: destUri }).catch(() => {});
+        if (onVideoSaved) onVideoSaved();
       }
     } catch (_e) {
       Alert.alert('Error', 'No se pudo tomar la fotografía.');
@@ -444,32 +454,26 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     const granted = await ensureCameraAndMicPermissions(true);
     if (!granted) return;
 
+    setLastSavedBanner(null);
+
     if (HAS_NATIVE_BG_RECORDER) {
       try {
         setUsingNativeBgService(true);
         setIsRecording(true);
         setIsPaused(false);
         setElapsed(0);
-        // Dar tiempo breve si la vista previa local estaba activa para liberar la cámara antes del Servicio Nativo
-        const waitMs = previewEnabled ? 420 : 80;
-        setTimeout(async () => {
-          try {
-            await VideoEngineModule.startBackgroundVideoRecordNative(
-              cameraSpec || facing,
-              torchOn,
-              previewEnabled,
-              MAX_DURATION_SECONDS
-            );
-          } catch (_err) {
-            setUsingNativeBgService(false);
-            setIsRecording(false);
-            Alert.alert('Error', 'No se pudo iniciar la grabación en 2do plano.');
-          }
-        }, waitMs);
+        await VideoEngineModule.startBackgroundVideoRecordNative(
+          cameraSpec || facing,
+          torchOn,
+          previewEnabled,
+          MAX_DURATION_SECONDS
+        );
         return;
       } catch (_e) {
         setUsingNativeBgService(false);
         setIsRecording(false);
+        Alert.alert('Error', 'No se pudo iniciar la grabación en 2do plano.');
+        return;
       }
     }
 
@@ -482,7 +486,10 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
       if (video?.uri) {
         setSaving(true);
         try {
-          await saveMediaFileToSegundoPlano(video.uri, 'VID', 'mp4');
+          await FileSystem.makeDirectoryAsync(TARGET_DIR_URI, { intermediates: true }).catch(() => {});
+          const destUri = `${TARGET_DIR_URI}/VID_2DO_${Date.now()}.mp4`;
+          await FileSystem.copyAsync({ from: video.uri, to: destUri }).catch(() => {});
+          if (onVideoSaved) onVideoSaved();
         } catch (_saveErr) {}
         setSaving(false);
       }
@@ -494,10 +501,13 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
   };
 
   const handleStopRecording = async () => {
-    if (usingNativeBgService && HAS_NATIVE_BG_RECORDER) {
+    if ((usingNativeBgService || isRecording) && HAS_NATIVE_BG_RECORDER) {
+      setSaving(true);
       try {
         await VideoEngineModule.stopBackgroundVideoRecordNative();
-      } catch (_e) {}
+      } catch (_e) {
+        setSaving(false);
+      }
       return;
     }
     if (cameraRef.current && isRecording) {
@@ -530,12 +540,13 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     const nextVal = !previewEnabled;
     setPreviewEnabled(nextVal);
 
-    if (usingNativeBgService && HAS_NATIVE_BG_RECORDER) {
-      VideoEngineModule.setBackgroundFloatingPreviewNative(nextVal).catch(() => {});
-      // Si está grabando en 2do plano y aún no tiene permiso de superposición sobre otras apps,
-      // minimizamos el modal a icono para que vea de inmediato el recuadro flotante en pantalla
-      if (nextVal && !hasOverlayPermission) {
-        setIsIconCollapsed(true);
+    if (HAS_NATIVE_BG_RECORDER) {
+      if (isRecording || usingNativeBgService) {
+        VideoEngineModule.setBackgroundFloatingPreviewNative?.(nextVal).catch(() => {});
+      } else if (nextVal) {
+        VideoEngineModule.startCameraPreviewNative?.(cameraSpec || facing, torchOn).catch(() => {});
+      } else {
+        VideoEngineModule.stopCameraPreviewNative?.().catch(() => {});
       }
     }
   };
@@ -547,15 +558,16 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     const nextSpec = camItem.spec || nextFacing;
     setFacing(nextFacing);
     setCameraSpec(nextSpec);
+    const nextTorch = nextFacing === 'front' ? false : torchOn;
     if (nextFacing === 'front' && torchOn) {
       setTorchOn(false);
     }
-    if (
-      usingNativeBgService &&
-      HAS_NATIVE_BG_RECORDER &&
-      VideoEngineModule?.switchBackgroundCameraNative
-    ) {
-      VideoEngineModule.switchBackgroundCameraNative(nextSpec).catch(() => {});
+    if (HAS_NATIVE_BG_RECORDER) {
+      if (isRecording || usingNativeBgService) {
+        VideoEngineModule.switchBackgroundCameraNative?.(nextSpec).catch(() => {});
+      } else if (previewEnabled) {
+        VideoEngineModule.startCameraPreviewNative?.(nextSpec, nextTorch).catch(() => {});
+      }
     }
   };
 
@@ -563,8 +575,8 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     if (facing === 'front') return;
     const nextTorch = !torchOn;
     setTorchOn(nextTorch);
-    if (usingNativeBgService && HAS_NATIVE_BG_RECORDER) {
-      VideoEngineModule.setBackgroundTorchNative(nextTorch).catch(() => {});
+    if (HAS_NATIVE_BG_RECORDER) {
+      VideoEngineModule.setBackgroundTorchNative?.(nextTorch).catch(() => {});
     }
   };
 
@@ -592,7 +604,9 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
     if (isRecording) {
       setIsIconCollapsed(true);
     } else {
-      setPreviewEnabled(false);
+      if (HAS_NATIVE_BG_RECORDER && VideoEngineModule?.stopCameraPreviewNative) {
+        VideoEngineModule.stopCameraPreviewNative().catch(() => {});
+      }
       setIsIconCollapsed(false);
       onClose();
     }
@@ -773,13 +787,47 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
                     </View>
                   </View>
 
-                  {/* Insignia de carpeta destino: Archivos > 2do plano */}
-                  <View style={styles.folderTargetBadge}>
+                  {/* Insignia de carpeta destino (tocable para ir directo a Archivos > 2do plano) */}
+                  <TouchableOpacity
+                    style={styles.folderTargetBadge}
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      if (onOpenSegundoPlano) {
+                        handleCloseOrCollapse();
+                        onOpenSegundoPlano();
+                      }
+                    }}
+                  >
                     <Ionicons name="pin" size={11} color="#f87171" />
                     <Text style={styles.folderTargetText} numberOfLines={1}>
                       Guarda en: Archivos › 2do plano
                     </Text>
-                  </View>
+                    <Ionicons name="open-outline" size={12} color="#fca5a5" />
+                  </TouchableOpacity>
+
+                  {/* Banner de confirmación al guardar un video o foto */}
+                  {lastSavedBanner && (
+                    <TouchableOpacity
+                      style={styles.savedSuccessBanner}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        if (onOpenSegundoPlano) {
+                          handleCloseOrCollapse();
+                          onOpenSegundoPlano();
+                        }
+                      }}
+                    >
+                      <Ionicons name="checkmark-circle" size={16} color="#34d399" />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.savedSuccessTitle} numberOfLines={1}>
+                          ¡Guardado en 2do plano!
+                        </Text>
+                        <Text style={styles.savedSuccessSub} numberOfLines={1}>
+                          Toca aquí para abrir la carpeta 2do plano ›
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  )}
 
                   {!permissionsGranted ? (
                     <TouchableOpacity
@@ -792,46 +840,49 @@ export default function CameraScreen({ visible, onClose, onOpen, onVideoSaved })
                     </TouchableOpacity>
                   ) : (
                     <>
-                      {/* RECUADRO DE VISTA DE CÁMARA (PRENDIDA O APAGADA) */}
-                      {previewEnabled && !usingNativeBgService ? (
+                      {/* RECUADRO DE VISTA EN VIVO DE CÁMARA (VISIBLE 100% DENTRO DEL MODAL) */}
+                      {previewEnabled ? (
                         <View style={styles.livePreviewBox}>
-                          <CameraView
-                            ref={cameraRef}
-                            style={StyleSheet.absoluteFillObject}
-                            facing={facing}
-                            mode={cameraMode}
-                            enableTorch={torchOn}
-                            animateShutter={false}
-                            mute={!hasMicPerm}
-                          />
-                          <View style={styles.previewOverlayBadge}>
-                            <Ionicons name="eye" size={11} color="#10b981" />
-                            <Text style={styles.previewOverlayBadgeText}>
-                              {facing === 'front' ? 'Frontal en vivo' : 'Trasera en vivo'}
-                            </Text>
-                          </View>
-                        </View>
-                      ) : previewEnabled && usingNativeBgService ? (
-                        <View style={styles.nativePreviewActiveNotice}>
-                          <Ionicons name="eye" size={16} color="#34d399" />
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.nativePreviewActiveText}>
-                              Vista en vivo activa (puedes arrastrarla en pantalla)
-                            </Text>
-                            {!hasOverlayPermission && (
-                              <TouchableOpacity
-                                style={styles.overlayPermMiniBtn}
-                                onPress={() => {
-                                  VideoEngineModule?.requestOverlayPermissionNative?.().catch(
-                                    () => {}
-                                  );
-                                }}
-                              >
-                                <Text style={styles.overlayPermMiniBtnText}>
-                                  Permitir flotar sobre otras apps ›
+                          {HAS_NATIVE_BG_RECORDER ? (
+                            previewFrameUri ? (
+                              <Image
+                                source={{ uri: previewFrameUri }}
+                                style={StyleSheet.absoluteFillObject}
+                                resizeMode="cover"
+                                fadeDuration={0}
+                              />
+                            ) : (
+                              <View style={styles.previewLoadingCenter}>
+                                <ActivityIndicator size="small" color="#34d399" />
+                                <Text style={styles.previewLoadingText}>
+                                  Abriendo lente {facing === 'front' ? 'Frontal' : 'Trasera'}...
                                 </Text>
-                              </TouchableOpacity>
-                            )}
+                              </View>
+                            )
+                          ) : (
+                            <CameraView
+                              ref={cameraRef}
+                              style={StyleSheet.absoluteFillObject}
+                              facing={facing}
+                              mode={cameraMode}
+                              enableTorch={torchOn}
+                              animateShutter={false}
+                              mute={!hasMicPerm}
+                            />
+                          )}
+                          <View style={styles.previewOverlayBadge}>
+                            <Ionicons
+                              name={isRecording ? 'radio-button-on' : 'eye'}
+                              size={11}
+                              color={isRecording ? '#ef4444' : '#10b981'}
+                            />
+                            <Text style={styles.previewOverlayBadgeText}>
+                              {isRecording
+                                ? `Grabando (${facing === 'front' ? 'Frontal' : 'Trasera'}) · ${formatTimer(elapsed)}`
+                                : facing === 'front'
+                                ? 'Frontal en vivo'
+                                : 'Trasera en vivo'}
+                            </Text>
                           </View>
                         </View>
                       ) : (
@@ -1096,7 +1147,7 @@ const styles = StyleSheet.create({
   },
   compactCameraCard: {
     marginTop: 10,
-    width: 284,
+    width: 286,
     maxHeight: '82%',
     backgroundColor: '#0c101a',
     borderRadius: 18,
@@ -1149,12 +1200,34 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(248, 113, 113, 0.35)',
     paddingHorizontal: 9,
-    paddingVertical: 4.5,
+    paddingVertical: 5,
     borderRadius: 9,
   },
   folderTargetText: {
     color: '#fecaca',
     fontSize: 10.5,
+    fontWeight: '700',
+    flex: 1,
+  },
+  savedSuccessBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(52, 211, 153, 0.5)',
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 9,
+  },
+  savedSuccessTitle: {
+    color: '#d1fae5',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  savedSuccessSub: {
+    color: '#6ee7b7',
+    fontSize: 10,
     fontWeight: '700',
   },
   grantPermBtn: {
@@ -1173,12 +1246,25 @@ const styles = StyleSheet.create({
   },
   livePreviewBox: {
     width: '100%',
-    height: 186,
+    height: 196,
     borderRadius: 12,
     overflow: 'hidden',
-    backgroundColor: '#000000',
-    borderWidth: 1.2,
+    backgroundColor: '#050811',
+    borderWidth: 1.5,
     borderColor: '#10b981',
+  },
+  previewLoadingCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+  },
+  previewLoadingText: {
+    color: '#a7f3d0',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   previewOffBox: {
     width: '100%',
@@ -1218,30 +1304,6 @@ const styles = StyleSheet.create({
     color: '#ecfdf5',
     fontSize: 10,
     fontWeight: '700',
-  },
-  nativePreviewActiveNotice: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(52, 211, 153, 0.4)',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  nativePreviewActiveText: {
-    color: '#d1fae5',
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  overlayPermMiniBtn: {
-    marginTop: 4,
-  },
-  overlayPermMiniBtnText: {
-    color: '#38bdf8',
-    fontSize: 10.5,
-    fontWeight: '800',
   },
   toggleViewBtn: {
     flexDirection: 'row',
