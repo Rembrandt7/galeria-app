@@ -2382,7 +2382,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingTop: Platform.OS === 'android' ? Math.max(StatusBar.currentHeight || 0, 28) + 10 : 12,
+    paddingTop: Platform.OS === 'android' ? Math.max((StatusBar.currentHeight || 36) + 14, 50) : 52,
     paddingBottom: 10,
     backgroundColor: '#0b0f19',
     borderBottomWidth: 1,
@@ -2545,7 +2545,7 @@ const styles = StyleSheet.create({
     borderTopColor: '#1e293b',
     paddingHorizontal: 12,
     paddingTop: 8,
-    paddingBottom: Platform.OS === 'android' ? 42 : 20,
+    paddingBottom: Platform.OS === 'android' ? 52 : 30,
     gap: 8,
   },
   modeSelectorBar: {

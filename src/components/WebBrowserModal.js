@@ -10,6 +10,7 @@ import {
   NativeModules,
   Linking,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -252,8 +253,8 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 16,
     paddingTop: 14,
-    paddingBottom: 24,
-    maxHeight: '88%',
+    paddingBottom: Platform.OS === 'android' ? 52 : 32,
+    maxHeight: '84%',
     borderTopWidth: 1,
     borderColor: 'rgba(56, 189, 248, 0.25)',
   },

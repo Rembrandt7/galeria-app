@@ -11,6 +11,8 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Platform,
+  StatusBar,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -773,7 +775,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingTop: Platform.OS === 'android' ? Math.max((StatusBar.currentHeight || 36) + 12, 48) : 14,
+    paddingBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#27272a',
   },
@@ -987,7 +990,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-evenly',
     paddingHorizontal: 14,
     paddingTop: 6,
-    paddingBottom: 6,
+    paddingBottom: Platform.OS === 'android' ? 48 : 28,
   },
   quickActionCircle: {
     alignItems: 'center',
@@ -1132,7 +1135,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
-    paddingBottom: 40,
+    paddingBottom: Platform.OS === 'android' ? 64 : 40,
   },
   trashCard: {
     width: CARD_GRID_SIZE,

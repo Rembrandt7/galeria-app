@@ -835,7 +835,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#080b14',
   },
   header: {
-    paddingTop: Platform.OS === 'android' ? Math.max(StatusBar.currentHeight || 38, 38) + 10 : 18,
+    paddingTop: Platform.OS === 'android' ? Math.max((StatusBar.currentHeight || 36) + 14, 50) : 52,
     paddingHorizontal: 16,
     paddingBottom: 12,
     backgroundColor: '#0d1322',
@@ -934,7 +934,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
-    paddingBottom: 40,
+    paddingBottom: Platform.OS === 'android' ? 68 : 40,
     gap: 14,
   },
   centerBox: {

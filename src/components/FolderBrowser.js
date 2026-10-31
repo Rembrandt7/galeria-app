@@ -1654,7 +1654,9 @@ export default function FolderBrowser({
                   borderColor: '#f59e0b',
                 },
               ]}
-              onPress={onFindDuplicates}
+              onPress={() =>
+                onFindDuplicates(currentFolder?.uri || rootUri, currentFolderDisplayName)
+              }
               activeOpacity={0.8}
             >
               <View style={styles.actionToolHeader}>

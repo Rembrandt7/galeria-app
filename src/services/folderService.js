@@ -1112,10 +1112,28 @@ export const folderService = {
   },
 
   async deleteFile(uri) {
+    if (!uri) return false;
     try {
-      new File(uri).delete();
-      folderService._dirMemCache.clear();
-      return true;
+      const phys = folderService.toPhysicalUri(uri);
+      const target = phys || uri;
+      let deleted = false;
+      try {
+        await LegacyFS.deleteAsync(target, { idempotent: false });
+        deleted = true;
+      } catch (_e1) {
+        try {
+          const f = new File(target);
+          if (f.exists) {
+            f.delete();
+            deleted = !f.exists;
+          }
+        } catch (_e2) {}
+      }
+      if (deleted) {
+        folderService._dirMemCache.clear();
+        folderService._coverMemCache.clear();
+      }
+      return deleted;
     } catch (e) {
       console.error('Error al eliminar archivo de carpeta:', e);
       return false;

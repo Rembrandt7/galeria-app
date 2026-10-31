@@ -11,6 +11,7 @@ import {
   SafeAreaView,
   BackHandler,
   NativeModules,
+  Platform,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Image as RNImage } from 'react-native';
@@ -512,7 +513,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingTop: Platform.OS === 'android' ? Math.max((StatusBar.currentHeight || 36) + 14, 50) : 52,
+    paddingBottom: 10,
   },
   iconBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   title: { color: '#fff', fontSize: 16, fontWeight: '600' },
@@ -539,7 +541,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'center',
     gap: 8,
-    paddingVertical: 14,
+    paddingVertical: 12,
   },
   chip: {
     paddingHorizontal: 14,
@@ -555,7 +557,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     paddingHorizontal: 16,
-    paddingBottom: 14,
+    paddingTop: 6,
+    paddingBottom: Platform.OS === 'android' ? 52 : 34,
   },
   saveCopyBtn: {
     flex: 1,

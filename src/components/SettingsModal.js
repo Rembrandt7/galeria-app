@@ -12,6 +12,7 @@ import {
   SafeAreaView,
   StatusBar,
   TextInput,
+  Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
@@ -545,7 +546,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingTop: Platform.OS === 'android' ? Math.max((StatusBar.currentHeight || 36) + 14, 50) : 52,
+    paddingBottom: 12,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.surfaceBorder,
     backgroundColor: theme.colors.surface,
@@ -567,7 +569,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     gap: 16,
-    paddingBottom: 40,
+    paddingBottom: Platform.OS === 'android' ? 68 : 40,
   },
   card: {
     backgroundColor: theme.colors.surface,

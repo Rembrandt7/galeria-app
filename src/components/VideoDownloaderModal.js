@@ -1265,7 +1265,7 @@ const styles = StyleSheet.create({
   queueScrollContent: {
     paddingHorizontal: 12,
     paddingTop: 4,
-    paddingBottom: 36,
+    paddingBottom: Platform.OS === 'android' ? 68 : 36,
     gap: 10,
   },
   emptyQueueBox: {
@@ -1507,7 +1507,7 @@ const styles = StyleSheet.create({
   /* Barra flotante movible cuando el modal está minimizado */
   floatingMovableWidget: {
     position: 'absolute',
-    bottom: 24,
+    bottom: Platform.OS === 'android' ? 54 : 32,
     right: 14,
     left: 14,
     flexDirection: 'row',

@@ -82,6 +82,7 @@ export default function App() {
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerCustomAssets, setViewerCustomAssets] = useState(null);
   const [dupVisible, setDupVisible] = useState(false);
+  const [dupTargetFolder, setDupTargetFolder] = useState(null);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(false);
   const [downloaderVisible, setDownloaderVisible] = useState(false);
@@ -1394,7 +1395,14 @@ export default function App() {
               onToggleShowAllFolders={handleToggleShowAllFolders}
               onExitFolder={handleBackFromAlbum}
               onOpenModoGuardar={handleOpenModoGuardar}
-              onFindDuplicates={() => setDupVisible(true)}
+              onFindDuplicates={(targetUri, targetName) => {
+                if (typeof targetUri === 'string' && targetUri) {
+                  setDupTargetFolder({ uri: targetUri, name: targetName || null });
+                } else {
+                  setDupTargetFolder(null);
+                }
+                setDupVisible(true);
+              }}
               trashCount={Object.keys(trashBin).length}
               trashBin={trashBin}
               onAssignFolderToSegment={handleSetFolderSegment}
@@ -1448,7 +1456,14 @@ export default function App() {
               hasMore={activeTab !== 'favorites' && hasNextPage}
               isLoadingMore={isLoadingMore}
               onOpenModoGuardar={handleOpenModoGuardar}
-              onFindDuplicates={() => setDupVisible(true)}
+              onFindDuplicates={(targetUri, targetName) => {
+                if (typeof targetUri === 'string' && targetUri) {
+                  setDupTargetFolder({ uri: targetUri, name: targetName || null });
+                } else {
+                  setDupTargetFolder(null);
+                }
+                setDupVisible(true);
+              }}
               trashCount={Object.keys(trashBin).length}
               emptyMessage={
                 activeTab === 'favorites'
@@ -1549,7 +1564,23 @@ export default function App() {
               ? displayedAssets
               : null
           }
-          onClose={() => setDupVisible(false)}
+          folderUri={
+            dupTargetFolder?.uri ||
+            (activeTab === 'folder' ? folderUri : selectedAlbum?.uri || null)
+          }
+          folderName={
+            dupTargetFolder?.name ||
+            (activeTab === 'folder'
+              ? folderService.formatFolderDisplayName(
+                  folderService.folderName(folderUri || ''),
+                  folderUri || ''
+                )
+              : selectedAlbum?.title || null)
+          }
+          onClose={() => {
+            setDupVisible(false);
+            setDupTargetFolder(null);
+          }}
           onChanged={() => handleRefresh()}
         />
 

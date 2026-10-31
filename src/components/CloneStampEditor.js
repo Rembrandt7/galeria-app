@@ -11,7 +11,8 @@ import {
   SafeAreaView,
   BackHandler,
   NativeModules,
-   Image as RNImage,
+  Platform,
+  Image as RNImage,
 } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
@@ -741,7 +742,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingTop: Platform.OS === 'android' ? Math.max((StatusBar.currentHeight || 36) + 14, 50) : 52,
+    paddingBottom: 10,
     backgroundColor: '#0d111a',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
@@ -864,7 +866,8 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#1e293b',
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingTop: 10,
+    paddingBottom: Platform.OS === 'android' ? 52 : 34,
     gap: 9,
   },
   modeRow: {
