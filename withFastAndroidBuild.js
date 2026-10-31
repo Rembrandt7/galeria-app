@@ -113,6 +113,14 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         @Volatile
         private var activeReactContext: ReactApplicationContext? = null
 
+        fun getActiveActivity(): Activity? {
+            return try {
+                activeReactContext?.currentActivity
+            } catch (_: Exception) {
+                null
+            }
+        }
+
         fun emitBgRecordEvent(eventName: String, params: com.facebook.react.bridge.WritableMap) {
             try {
                 activeReactContext
@@ -3090,6 +3098,8 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
     private var windowManager: WindowManager? = null
     private var overlaySurfaceView: SurfaceView? = null
     private var overlayLayoutParams: WindowManager.LayoutParams? = null
+    private var inAppParentGroup: android.view.ViewGroup? = null
+    private var inAppLayoutParams: android.widget.FrameLayout.LayoutParams? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     private var cameraThread: HandlerThread? = null
@@ -3385,8 +3395,73 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         }
 
         if (!canOverlay) {
-            cameraHandler?.post {
-                startCameraAndRecorderSession(null)
+            mainHandler.post {
+                try {
+                    val actRoot = VideoEngineModule.getActiveActivity()
+                        ?.findViewById<android.view.ViewGroup>(android.R.id.content)
+                    if (actRoot != null) {
+                        val widthPx = if (showFloatingPreview) dpToPx(148) else 1
+                        val heightPx = if (showFloatingPreview) dpToPx(200) else 1
+                        val flp = android.widget.FrameLayout.LayoutParams(
+                            widthPx,
+                            heightPx,
+                            Gravity.TOP or Gravity.START
+                        ).apply {
+                            leftMargin = dpToPx(16)
+                            topMargin = dpToPx(96)
+                        }
+                        inAppLayoutParams = flp
+
+                        val sv = SurfaceView(this).apply {
+                            translationZ = 999f
+                            elevation = 100f
+                        }
+                        try {
+                            sv.holder.setFixedSize(videoWidth, videoHeight)
+                        } catch (_: Exception) {}
+                        sv.holder.addCallback(this)
+
+                        var initialX = 0
+                        var initialY = 0
+                        var touchX = 0f
+                        var touchY = 0f
+                        sv.setOnTouchListener { _: View, event: MotionEvent ->
+                            if (!floatingPreviewState) return@setOnTouchListener false
+                            val params = inAppLayoutParams ?: return@setOnTouchListener false
+                            when (event.actionMasked) {
+                                MotionEvent.ACTION_DOWN -> {
+                                    initialX = params.leftMargin
+                                    initialY = params.topMargin
+                                    touchX = event.rawX
+                                    touchY = event.rawY
+                                    true
+                                }
+                                MotionEvent.ACTION_MOVE -> {
+                                    params.leftMargin = (initialX + (event.rawX - touchX).toInt()).coerceAtLeast(0)
+                                    params.topMargin = (initialY + (event.rawY - touchY).toInt()).coerceAtLeast(dpToPx(48))
+                                    try {
+                                        sv.layoutParams = params
+                                    } catch (_: Exception) {}
+                                    true
+                                }
+                                else -> false
+                            }
+                        }
+
+                        overlaySurfaceView = sv
+                        inAppParentGroup = actRoot
+                        actRoot.addView(sv, flp)
+                        cameraHandler?.postDelayed({
+                            if (!sessionStarted && isRunning) {
+                                startCameraAndRecorderSession(previewHolderSurface)
+                            }
+                        }, 450L)
+                        return@post
+                    }
+                } catch (_: Exception) {}
+                cameraHandler?.post {
+                    startCameraAndRecorderSession(null)
+                }
             }
             return
         }
@@ -3476,11 +3551,18 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             val wm = windowManager
             val sv = overlaySurfaceView
             val lp = overlayLayoutParams
+            val flp = inAppLayoutParams
             if (wm != null && sv != null && lp != null && sv.isAttachedToWindow) {
                 lp.width = if (visible) dpToPx(148) else 1
                 lp.height = if (visible) dpToPx(200) else 1
                 try {
                     wm.updateViewLayout(sv, lp)
+                } catch (_: Exception) {}
+            } else if (sv != null && flp != null && sv.isAttachedToWindow) {
+                flp.width = if (visible) dpToPx(148) else 1
+                flp.height = if (visible) dpToPx(200) else 1
+                try {
+                    sv.layoutParams = flp
                 } catch (_: Exception) {}
             }
             emitStatusToJs()
@@ -3875,15 +3957,22 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         cameraThread = null
         cameraHandler = null
 
-        try {
-            val wm = windowManager
-            val sv = overlaySurfaceView
-            if (wm != null && sv != null && sv.isAttachedToWindow) {
-                wm.removeView(sv)
-            }
-        } catch (_: Exception) {}
-        overlaySurfaceView = null
-        windowManager = null
+        mainHandler.post {
+            try {
+                val wm = windowManager
+                val sv = overlaySurfaceView
+                val parentGroup = inAppParentGroup
+                if (wm != null && sv != null && sv.isAttachedToWindow) {
+                    wm.removeView(sv)
+                } else if (parentGroup != null && sv != null) {
+                    parentGroup.removeView(sv)
+                }
+            } catch (_: Exception) {}
+            overlaySurfaceView = null
+            windowManager = null
+            inAppParentGroup = null
+            inAppLayoutParams = null
+        }
 
         try {
             if (wakeLock?.isHeld == true) {

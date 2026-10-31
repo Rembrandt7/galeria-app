@@ -1199,7 +1199,10 @@ export default function App() {
               activeSegment={activeSegment}
               activeTab={activeTab}
               onSelectSegment={handleSelectSegment}
-              onOpenCamera={() => setCameraVisible((prev) => !prev)}
+              onOpenCamera={() => {
+                setCameraVisible(false);
+                setTimeout(() => setCameraVisible(true), 10);
+              }}
               onOpenExplorer={() => handleSelectTab('folder')}
               photosCount={activeTab === 'albums' || activeTab === 'folder' ? photosAlbumsCount : photosAssetsCount}
               filesCount={activeTab === 'albums' || activeTab === 'folder' ? filesAlbumsCount : filesAssetsCount}
@@ -1307,12 +1310,26 @@ export default function App() {
             onOpenBrowser={() => setBrowserVisible(true)}
             onOpenStore={() => setStoreVisible(true)}
             onOpenSettings={() => setSettingsVisible(true)}
-            onOpenCamera={() => setCameraVisible((prev) => !prev)}
+            onOpenCamera={() => {
+              setCameraVisible(false);
+              setTimeout(() => setCameraVisible(true), 10);
+            }}
             onFindDuplicates={() => setDupVisible(true)}
             onOpenModoGuardar={() => handleOpenModoGuardar(displayedAssets, 0, 'swipe')}
             trashCount={Object.keys(trashBin).length}
             hasUpdateAvailable={hasUpdateAvailable}
             currentVersionLabel={CURRENT_VERSION}
+          />
+
+          {/* Icono Flotante + Modal Nativo de Cámara y Grabación en 2do Plano */}
+          <CameraScreen
+            visible={cameraVisible}
+            onClose={() => setCameraVisible(false)}
+            onOpen={() => {
+              setCameraVisible(false);
+              setTimeout(() => setCameraVisible(true), 10);
+            }}
+            onVideoSaved={() => handleRefresh()}
           />
         </View>
 
@@ -1391,13 +1408,6 @@ export default function App() {
             setSharedIncomingUrl(url);
             setDownloaderVisible(true);
           }}
-        />
-
-        {/* Modal de Cámara y Grabación Discreta */}
-        <CameraScreen
-          visible={cameraVisible}
-          onClose={() => setCameraVisible(false)}
-          onVideoSaved={() => handleRefresh()}
         />
 
         {/* Modal para Descargar Videos desde Internet mediante enlace */}

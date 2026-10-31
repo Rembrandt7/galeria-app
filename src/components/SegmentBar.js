@@ -80,9 +80,10 @@ export default function SegmentBar({
                 key={`segment_${seg.key}`}
                 style={styles.cameraIconBtn}
                 onPress={seg.onPress}
+                hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
                 activeOpacity={0.78}
               >
-                <Ionicons name="videocam" size={16} color="#ffffff" />
+                <Ionicons name="videocam" size={17} color="#ffffff" />
               </TouchableOpacity>
             );
           }
@@ -175,12 +176,12 @@ const styles = StyleSheet.create({
     minHeight: 32,
   },
   cameraIconBtn: {
-    width: 36,
+    width: 40,
     height: 32,
     borderRadius: 10,
-    backgroundColor: 'rgba(220, 38, 38, 0.22)',
+    backgroundColor: 'rgba(2, 132, 199, 0.28)',
     borderWidth: 1,
-    borderColor: 'rgba(248, 113, 113, 0.55)',
+    borderColor: '#38bdf8',
     alignItems: 'center',
     justifyContent: 'center',
   },
