@@ -3224,7 +3224,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     return@execute
                 }
 
-                val tempFile = File(reactContext.cacheDir, "native_comp_${System.nanoTime()}.jpg")
+                val tempFile = File(reactContext.cacheDir, "native_comp_" + System.nanoTime() + ".jpg")
                 FileOutputStream(tempFile, false).use { fos ->
                     fos.write(chosenBytes)
                     fos.flush()
