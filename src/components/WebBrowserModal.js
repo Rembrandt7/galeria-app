@@ -22,6 +22,7 @@ const BASE_EMAIL_STORAGE_KEY = '@galeria_browser_base_email_v1';
 const TEMP_MAIL_SESSION_KEY = '@galeria_temp_mail_session_v1';
 
 const QUICK_SITES = [
+  { id: 'omnicreator', name: 'OmniCreator', url: 'https://omnicreator.app', icon: 'sparkles', color: '#8B5CF6' },
   { id: 'google', name: 'Google', url: 'https://www.google.com', icon: 'search', color: '#3B82F6' },
   { id: 'youtube', name: 'YouTube', url: 'https://m.youtube.com', icon: 'logo-youtube', color: '#EF4444' },
   { id: 'images', name: 'Imágenes', url: 'https://www.google.com/imghp', icon: 'images', color: '#10B981' },
@@ -39,7 +40,7 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
     screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
   const isFoldCompact = !isFoldExpanded && screenWidth <= 375;
 
-  const [queryOrUrl, setQueryOrUrl] = useState('');
+  const [queryOrUrl, setQueryOrUrl] = useState('https://omnicreator.app');
   const [history, setHistory] = useState([]);
   const [opening, setOpening] = useState(false);
   const [cleaningData, setCleaningData] = useState(false);
@@ -204,11 +205,11 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
       }
       setCleaningData(false);
       if (alsoLaunch) {
-        launchBrowser(queryOrUrl || 'https://www.google.com');
+        launchBrowser(queryOrUrl || 'https://omnicreator.app');
       } else {
         Alert.alert(
-          '✨ Identidad Web Limpia (Modo 1ª Vez)',
-          'Se borraron todas las Cookies, LocalStorage, Caché y Sesiones.\n\nLas páginas web ahora te detectarán como un visitante nuevo para usar pruebas o beneficios gratuitos.'
+          '✨ Identidad Web Limpia (Credenciales Protegidas)',
+          'Se limpiaron los datos y caché de sitios promocionales para entrar como visitante nuevo (Modo 1ª Vez), conservando intactas tus credenciales y sesiones de Google, X, Instagram y Facebook.'
         );
       }
     } catch (_e) {

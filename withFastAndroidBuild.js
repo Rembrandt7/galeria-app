@@ -349,41 +349,135 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    private val authDomainsToPreserve = listOf(
+        "https://accounts.google.com",
+        "https://www.google.com",
+        "https://google.com",
+        "https://x.com",
+        "https://twitter.com",
+        "https://api.x.com",
+        "https://www.instagram.com",
+        "https://instagram.com",
+        "https://www.facebook.com",
+        "https://m.facebook.com",
+        "https://facebook.com"
+    )
+
+    private val downloadedKeysSet = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private var activeBrowserStatusCallback: ((String, String) -> Unit)? = null
+
+    private fun normalizeMediaKeyNative(rawUrl: String): String {
+        val u = rawUrl.trim()
+        if (u.isEmpty()) return ""
+        val igMatch = Regex("instagram\\\\.com/(?:[^/?#]+/)?(?:p|reel|reels|tv)/([A-Za-z0-9_-]{5,25})", RegexOption.IGNORE_CASE).find(u)
+        if (igMatch != null) return "ig:" + igMatch.groupValues[1]
+        val twMatch = Regex("(?:x|twitter)\\\\.com/(?:[^/]+/status|i/web/status|i/status)/([0-9]+)", RegexOption.IGNORE_CASE).find(u)
+        if (twMatch != null) return "tw:" + twMatch.groupValues[1]
+        val ytMatch = Regex("(?:youtube\\\\.com/(?:watch\\\\?.*v=|shorts/)|youtu\\\\.be/)([A-Za-z0-9_-]{11})", RegexOption.IGNORE_CASE).find(u)
+        if (ytMatch != null) return "yt:" + ytMatch.groupValues[1]
+        val ttMatch = Regex("tiktok\\\\.com/.*/video/([0-9]+)", RegexOption.IGNORE_CASE).find(u)
+        if (ttMatch != null) return "tt:" + ttMatch.groupValues[1]
+        val fbMatch = Regex("(?:facebook\\\\.com/(?:reel/|watch/\\\\?v=|.*videos/)|story_fbid=)([0-9]{8,25})", RegexOption.IGNORE_CASE).find(u)
+        if (fbMatch != null) return "fb:" + fbMatch.groupValues[1]
+        val low = u.lowercase()
+        if (low.contains("cdninstagram.com") || low.contains("fbcdn.net") || low.contains("twimg.com")) {
+            return u.substringBefore("?").substringBefore("#")
+        }
+        return u.substringBefore("#").trimEnd('/')
+    }
+
+    private fun cleanCookiesPreservingAuth(onDone: (() -> Unit)? = null) {
+        try {
+            val cm = CookieManager.getInstance()
+            val savedAuthCookies = mutableMapOf<String, List<String>>()
+            for (dom in authDomainsToPreserve) {
+                val raw = try { cm.getCookie(dom) } catch (_: Exception) { null }
+                if (!raw.isNullOrBlank()) {
+                    val parts = raw.split(";").map { it.trim() }.filter { it.contains("=") }
+                    if (parts.isNotEmpty()) {
+                        savedAuthCookies[dom] = parts
+                    }
+                }
+            }
+            cm.removeAllCookies {
+                try {
+                    for ((dom, cookieList) in savedAuthCookies) {
+                        val host = Uri.parse(dom).host ?: ""
+                        val baseDom = if (host.startsWith("www.")) host.removePrefix("www.") else host
+                        for (kv in cookieList) {
+                            cm.setCookie(dom, kv + "; Domain=." + baseDom + "; Path=/; Secure")
+                            cm.setCookie(dom, kv + "; Path=/; Secure")
+                        }
+                    }
+                    cm.flush()
+                } catch (_: Exception) {}
+                onDone?.invoke()
+            }
+        } catch (_: Exception) {
+            onDone?.invoke()
+        }
+    }
+
+    @ReactMethod
+    fun syncDownloadedUrlsNative(urlsArray: com.facebook.react.bridge.ReadableArray, promise: Promise) {
+        try {
+            for (i in 0 until urlsArray.size()) {
+                val raw = urlsArray.getString(i) ?: continue
+                val k = normalizeMediaKeyNative(raw)
+                if (k.isNotEmpty()) {
+                    downloadedKeysSet.add(k)
+                }
+            }
+            promise.resolve(downloadedKeysSet.size)
+        } catch (_: Exception) {
+            promise.resolve(0)
+        }
+    }
+
+    @ReactMethod
+    fun notifyBrowserDownloadStatusNative(message: String, bgHex: String, promise: Promise) {
+        UiThreadUtil.runOnUiThread {
+            try {
+                activeBrowserStatusCallback?.invoke(message, bgHex)
+                promise.resolve(true)
+            } catch (_: Exception) {
+                promise.resolve(false)
+            }
+        }
+    }
+
+    inner class BrowserMediaBridge(
+        private val onMediaSelected: (mediaUrl: String, mediaType: String, thumbUrl: String, pageUrl: String) -> Unit
+    ) {
+        @android.webkit.JavascriptInterface
+        fun downloadMedia(mediaUrl: String, mediaType: String, thumbUrl: String, pageUrl: String) {
+            UiThreadUtil.runOnUiThread {
+                onMediaSelected(mediaUrl, mediaType, thumbUrl, pageUrl)
+            }
+        }
+    }
+
     @ReactMethod
     fun clearWebBrowserDataNative(promise: Promise) {
         UiThreadUtil.runOnUiThread {
             try {
-                try {
-                    val cm = CookieManager.getInstance()
-                    cm.removeAllCookies(null)
-                    cm.flush()
-                } catch (_: Exception) {}
-
-                try {
-                    android.webkit.WebStorage.getInstance().deleteAllData()
-                } catch (_: Exception) {}
-
-                try {
-                    android.webkit.WebViewDatabase.getInstance(reactContext).clearFormData()
-                    android.webkit.WebViewDatabase.getInstance(reactContext).clearHttpAuthUsernamePassword()
-                } catch (_: Exception) {}
-
-                val act = reactContext.currentActivity
-                if (act != null && !act.isFinishing) {
-                    try {
-                        val tempWv = WebView(act)
-                        tempWv.clearCache(true)
-                        tempWv.clearHistory()
-                        tempWv.clearFormData()
-                        tempWv.destroy()
-                    } catch (_: Exception) {}
+                cleanCookiesPreservingAuth {
+                    val act = reactContext.currentActivity
+                    if (act != null && !act.isFinishing) {
+                        try {
+                            val tempWv = WebView(act)
+                            tempWv.clearCache(true)
+                            tempWv.clearHistory()
+                            tempWv.destroy()
+                        } catch (_: Exception) {}
+                    }
+                    val res = Arguments.createMap().apply {
+                        putBoolean("success", true)
+                        putBoolean("preservedCredentials", true)
+                        putDouble("timestamp", System.currentTimeMillis().toDouble())
+                    }
+                    promise.resolve(res)
                 }
-
-                val res = Arguments.createMap().apply {
-                    putBoolean("success", true)
-                    putDouble("timestamp", System.currentTimeMillis().toDouble())
-                }
-                promise.resolve(res)
             } catch (e: Exception) {
                 promise.reject("CLEAR_WEB_ERROR", e.message ?: "Error al limpiar navegador", e)
             }
@@ -865,25 +959,21 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
             fun cleanExtractedUrl(raw: String): String {
                 var s = raw
-                    .replace("\\\\\\\\u0026", "&")
-                    .replace("\\\\\\\\u002F", "/")
-                    .replace("\\\\\\\\u002f", "/")
-                    .replace("\\\\\\\\u003D", "=")
-                    .replace("\\\\\\\\u003C", "<")
-                    .replace("\\\\\\\\/", "/")
-                    .replace("\\\\u0026", "&")
-                    .replace("\\\\u002F", "/")
-                    .replace("\\\\u002f", "/")
-                    .replace("\\\\u003D", "=")
-                    .replace("\\\\u003C", "<")
-                    .replace("\\\\/", "/")
-                    .replace("&amp;", "&")
-                    .trim()
-                    .trim('"', '\\'', '\\\\')
+                for (pass in 0..3) {
+                    s = s.replace(Regex("\\\\\\\\+u([0-9a-fA-F]{4})")) { mr ->
+                        mr.groupValues[1].toInt(16).toChar().toString()
+                    }
+                    s = s.replace(Regex("\\\\\\\\+/"), "/")
+                        .replace("&amp;", "&")
+                        .trim()
+                        .trim('"', '\\'', '\\\\')
+                }
+                s = s.replace("\\\\", "").trim()
                 if (s.contains("cdninstagram.com") || s.contains("fbcdn.net")) {
                     s = s.replace(Regex("bytestart=[0-9]+&?"), "")
                         .replace(Regex("byteend=[0-9]+&?"), "")
                         .replace("?&", "?")
+                        .replace(Regex("&&+"), "&")
                         .trimEnd('&', '?')
                 }
                 return s
@@ -1179,10 +1269,13 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun openInAppBrowserNative(initialUrl: String, promise: Promise) {
-        val startUrl = initialUrl.trim().ifEmpty { "https://www.google.com" }
+        val startUrl = initialUrl.trim().ifEmpty { "https://omnicreator.app" }
         val resolvedFlag = AtomicBoolean(false)
         var dialogRef: Dialog? = null
         var webViewRef: WebView? = null
+        var webContainerRef: FrameLayout? = null
+        var activePopupWebView: WebView? = null
+        var activePopupWrapper: View? = null
         var urlInputRef: EditText? = null
         var downloadBtnRef: TextView? = null
         var uaBtnRef: TextView? = null
@@ -1211,7 +1304,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
         fun normalizeInputUrl(raw: String): String {
             val trimmed = raw.trim()
-            if (trimmed.isEmpty()) return "https://www.google.com"
+            if (trimmed.isEmpty()) return "https://omnicreator.app"
             if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
             if (!trimmed.contains(" ") && trimmed.contains(".")) return "https://$trimmed"
             return "https://www.google.com/search?q=" + Uri.encode(trimmed)
@@ -1266,9 +1359,28 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
             return s
         }
 
+        fun closeActivePopup() {
+            UiThreadUtil.runOnUiThread {
+                try {
+                    CookieManager.getInstance().flush()
+                } catch (_: Exception) {}
+                try {
+                    activePopupWrapper?.let { webContainerRef?.removeView(it) }
+                } catch (_: Exception) {}
+                activePopupWrapper = null
+                try {
+                    activePopupWebView?.stopLoading()
+                    activePopupWebView?.destroy()
+                } catch (_: Exception) {}
+                activePopupWebView = null
+            }
+        }
+
         fun closeBrowser(action: String, targetResultUrl: String?) {
             if (!resolvedFlag.compareAndSet(false, true)) return
+            activeBrowserStatusCallback = null
             UiThreadUtil.runOnUiThread {
+                closeActivePopup()
                 try {
                     CookieManager.getInstance().flush()
                 } catch (_: Exception) {}
@@ -1282,6 +1394,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     webViewRef?.destroy()
                 } catch (_: Exception) {}
                 webViewRef = null
+                webContainerRef = null
                 val map = Arguments.createMap().apply {
                     putString("action", action)
                     putString("url", targetResultUrl ?: "")
@@ -1299,6 +1412,35 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     return@runOnUiThread
                 }
 
+                fun dp(value: Int): Int {
+                    val density = act.resources.displayMetrics.density
+                    return (value * density).toInt()
+                }
+
+                fun isUnfoldedFold(): Boolean {
+                    val cfg = act.resources.configuration
+                    val wDp = cfg.screenWidthDp
+                    val hDp = cfg.screenHeightDp.coerceAtLeast(1)
+                    return wDp >= 480 || (wDp.toFloat() / hDp.toFloat() >= 0.65f && wDp >= 420)
+                }
+
+                fun showTempBanner(msg: String, bgHex: String = "#064E3B") {
+                    UiThreadUtil.runOnUiThread {
+                        statusBannerRef?.text = msg
+                        try {
+                            statusBannerRef?.setBackgroundColor(Color.parseColor(bgHex))
+                        } catch (_: Exception) {}
+                        statusBannerRef?.visibility = android.view.View.VISIBLE
+                        mainHandler.postDelayed({
+                            statusBannerRef?.visibility = android.view.View.GONE
+                        }, 4200L)
+                    }
+                }
+
+                activeBrowserStatusCallback = { msg, bgHex ->
+                    showTempBanner(msg, bgHex.ifBlank { "#064E3B" })
+                }
+
                 val wv = WebView(act)
                 webViewRef = wv
 
@@ -1310,6 +1452,8 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     domStorageEnabled = true
                     databaseEnabled = true
                     javaScriptCanOpenWindowsAutomatically = true
+                    setSupportMultipleWindows(true)
+                    saveFormData = true
                     mediaPlaybackRequiresUserGesture = false
                     loadsImagesAutomatically = true
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -1319,6 +1463,103 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     displayZoomControls = false
                     userAgentString = userAgents[0].second
                 }
+
+                fun enqueueBackgroundDownload(finalUrl: String, mediaType: String, thumbUrl: String, pageUrl: String) {
+                    val normKey = normalizeMediaKeyNative(finalUrl)
+                    if (normKey.isNotEmpty()) {
+                        downloadedKeysSet.add(normKey)
+                    }
+                    val pageKey = normalizeMediaKeyNative(pageUrl)
+                    if (pageKey.isNotEmpty() && (pageUrl.contains("/reel/") || pageUrl.contains("/p/") || pageUrl.contains("/status/"))) {
+                        downloadedKeysSet.add(pageKey)
+                    }
+
+                    // Copiar enlace al portapapeles
+                    try {
+                        val cm = reactContext.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("Enlace Descarga", finalUrl))
+                    } catch (_: Exception) {}
+
+                    val cookies = try {
+                        CookieManager.getInstance().getCookie(finalUrl)
+                            ?: CookieManager.getInstance().getCookie(pageUrl)
+                            ?: ""
+                    } catch (_: Exception) { "" }
+
+                    val labelTipo = if (mediaType == "photo") "foto/imagen" else "video"
+                    showTempBanner("⏳ Enlace copiado al descargador · Descargando " + labelTipo + " en 2do plano...", "#065F46")
+
+                    try {
+                        val payload = Arguments.createMap().apply {
+                            putString("url", finalUrl)
+                            putString("mediaType", mediaType)
+                            putString("thumbnailUrl", thumbUrl)
+                            putString("pageUrl", pageUrl)
+                            putString("cookies", cookies)
+                            putString("userAgent", wv.settings.userAgentString ?: nativeCleanUa)
+                        }
+                        reactContext
+                            .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                            .emit("BrowserBackgroundDownload", payload)
+                    } catch (_: Exception) {}
+                }
+
+                fun handleMediaDownloadRequest(rawMediaUrl: String, mediaType: String, thumbUrl: String, pageUrl: String) {
+                    val cleanPage = pageUrl.ifBlank { wv.url ?: "" }
+                    val lowPage = cleanPage.lowercase()
+                    val resolvedTargetUrl = if (mediaType == "photo" && rawMediaUrl.startsWith("http")) {
+                        rawMediaUrl
+                    } else if (rawMediaUrl.startsWith("http") && !rawMediaUrl.startsWith("blob:")) {
+                        val lowRaw = rawMediaUrl.lowercase()
+                        val isGenericFeed = (lowRaw == "https://www.instagram.com/" || lowRaw == "https://www.instagram.com" ||
+                            lowRaw == "https://m.facebook.com/" || lowRaw == "https://www.facebook.com/" ||
+                            lowRaw == "https://x.com/home" || lowRaw == "https://x.com/")
+                        if (isGenericFeed && !detectedMediaUrl.isNullOrBlank()) {
+                            detectedMediaUrl!!
+                        } else {
+                            rawMediaUrl
+                        }
+                    } else if (!detectedMediaUrl.isNullOrBlank()) {
+                        detectedMediaUrl!!
+                    } else {
+                        cleanPage
+                    }
+
+                    if (resolvedTargetUrl.isBlank()) {
+                        showTempBanner("⚠️ Reproduce primero el video o selecciona una imagen válida", "#991B1B")
+                        return
+                    }
+
+                    val normKey = normalizeMediaKeyNative(resolvedTargetUrl)
+                    val pageKey = normalizeMediaKeyNative(cleanPage)
+                    val alreadyExists = (normKey.isNotEmpty() && downloadedKeysSet.contains(normKey)) ||
+                        ((lowPage.contains("/reel/") || lowPage.contains("/p/") || lowPage.contains("/status/")) &&
+                            pageKey.isNotEmpty() && downloadedKeysSet.contains(pageKey))
+
+                    if (alreadyExists) {
+                        try {
+                            android.app.AlertDialog.Builder(act)
+                                .setTitle("⚠️ Archivo ya existente")
+                                .setMessage("Este enlace o archivo ya lo descargaste anteriormente en tu galería.\n\n¿Deseas volver a descargarlo de todos modos?")
+                                .setNegativeButton("Cancelar", null)
+                                .setPositiveButton("Descargar de nuevo") { _, _ ->
+                                    enqueueBackgroundDownload(resolvedTargetUrl, mediaType, thumbUrl, cleanPage)
+                                }
+                                .show()
+                        } catch (_: Exception) {
+                            enqueueBackgroundDownload(resolvedTargetUrl, mediaType, thumbUrl, cleanPage)
+                        }
+                    } else {
+                        enqueueBackgroundDownload(resolvedTargetUrl, mediaType, thumbUrl, cleanPage)
+                    }
+                }
+
+                wv.addJavascriptInterface(
+                    BrowserMediaBridge { mediaUrl, mediaType, thumbUrl, pageUrl ->
+                        handleMediaDownloadRequest(mediaUrl, mediaType, thumbUrl, pageUrl)
+                    },
+                    "GaleriaBridge"
+                )
 
                 val stealthJs = """
                     (function() {
@@ -1357,17 +1598,342 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     })();
                 """.trimIndent()
 
-                wv.webChromeClient = WebChromeClient()
+                val floatingButtonsJs = """
+                    (function() {
+                      if (window.__rembMediaOverlayActive) return;
+                      window.__rembMediaOverlayActive = true;
+
+                      function resolveAbsUrl(href) {
+                        if (!href) return '';
+                        if (href.indexOf('http://') === 0 || href.indexOf('https://') === 0) return href;
+                        if (href.indexOf('//') === 0) return window.location.protocol + href;
+                        if (href.indexOf('/') === 0) return window.location.origin + href;
+                        return href;
+                      }
+
+                      function findPostPermalink(el) {
+                        var cur = el;
+                        var depth = 0;
+                        while (cur && cur !== document.body && depth < 12) {
+                          var links = cur.querySelectorAll ? cur.querySelectorAll('a[href]') : [];
+                          for (var i = 0; i < links.length; i++) {
+                            var h = links[i].getAttribute('href') || '';
+                            if (
+                              h.indexOf('/reel/') !== -1 ||
+                              h.indexOf('/reels/') !== -1 ||
+                              h.indexOf('/p/') !== -1 ||
+                              h.indexOf('/tv/') !== -1 ||
+                              h.indexOf('/videos/') !== -1 ||
+                              h.indexOf('/watch') !== -1 ||
+                              h.indexOf('/share/') !== -1 ||
+                              h.indexOf('/status/') !== -1 ||
+                              h.indexOf('/video/') !== -1
+                            ) {
+                              return resolveAbsUrl(h);
+                            }
+                          }
+                          cur = cur.parentElement;
+                          depth++;
+                        }
+                        return window.location.href;
+                      }
+
+                      function getBestImgUrl(img) {
+                        var srcset = img.getAttribute('srcset') || '';
+                        if (srcset) {
+                          var parts = srcset.split(',');
+                          var lastPart = parts[parts.length - 1].trim();
+                          var spaceIdx = lastPart.indexOf(' ');
+                          var candidate = spaceIdx > 0 ? lastPart.substring(0, spaceIdx).trim() : lastPart;
+                          if (candidate.indexOf('http') === 0) return candidate;
+                        }
+                        return img.currentSrc || img.src || '';
+                      }
+
+                      function findBestThumbForVideo(v) {
+                        if (v.poster && v.poster.indexOf('http') === 0) return v.poster;
+                        var parent = v.parentElement;
+                        for (var d = 0; d < 4 && parent; d++) {
+                          var im = parent.querySelector ? parent.querySelector('img') : null;
+                          if (im) {
+                            var u = getBestImgUrl(im);
+                            if (u && u.indexOf('http') === 0) return u;
+                          }
+                          parent = parent.parentElement;
+                        }
+                        return '';
+                      }
+
+                      function ensureOverlayLayer() {
+                        var layer = document.getElementById('remb-dl-floating-layer');
+                        if (!layer && document.body) {
+                          layer = document.createElement('div');
+                          layer.id = 'remb-dl-floating-layer';
+                          layer.style.cssText = 'position:absolute;top:0;left:0;width:0;height:0;overflow:visible;z-index:2147483647;pointer-events:none;';
+                          document.body.appendChild(layer);
+                        }
+                        return layer;
+                      }
+
+                      function scanAndPositionButtons() {
+                        try {
+                          var layer = ensureOverlayLayer();
+                          if (!layer) return;
+                          var scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
+                          var scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
+                          var vw = window.innerWidth || 360;
+                          var vh = window.innerHeight || 700;
+
+                          var items = [];
+                          var videos = document.querySelectorAll('video');
+                          var videoRects = [];
+
+                          for (var i = 0; i < videos.length; i++) {
+                            var v = videos[i];
+                            var r = v.getBoundingClientRect();
+                            if (r.width >= 90 && r.height >= 90 && r.bottom > 40 && r.top < vh - 20 && r.right > 40 && r.left < vw) {
+                              videoRects.push(r);
+                              var rawSrc = v.currentSrc || v.src || '';
+                              var targetUrl = (rawSrc.indexOf('http') === 0 && rawSrc.indexOf('blob:') !== 0)
+                                ? rawSrc
+                                : findPostPermalink(v);
+                              var thumb = findBestThumbForVideo(v);
+                              items.push({
+                                type: 'video',
+                                label: '⬇ Video',
+                                bg: 'rgba(109, 40, 217, 0.93)',
+                                border: '#A78BFA',
+                                top: Math.max(scrollY + 8, Math.round(r.top + scrollY + 10)),
+                                left: Math.max(8, Math.min(vw - 88, Math.round(r.right + scrollX - 88))),
+                                url: targetUrl,
+                                thumb: thumb
+                              });
+                            }
+                          }
+
+                          var imgs = document.querySelectorAll('img');
+                          for (var j = 0; j < imgs.length; j++) {
+                            var im = imgs[j];
+                            var ir = im.getBoundingClientRect();
+                            if (ir.width >= 115 && ir.height >= 115 && ir.bottom > 40 && ir.top < vh - 20 && ir.right > 40 && ir.left < vw) {
+                              var overlapsVideo = false;
+                              for (var k = 0; k < videoRects.length; k++) {
+                                var vr = videoRects[k];
+                                if (Math.abs(ir.top - vr.top) < 40 && Math.abs(ir.left - vr.left) < 40) {
+                                  overlapsVideo = true;
+                                  break;
+                                }
+                              }
+                              if (!overlapsVideo) {
+                                var imgUrl = getBestImgUrl(im);
+                                if (imgUrl && imgUrl.indexOf('http') === 0) {
+                                  items.push({
+                                    type: 'photo',
+                                    label: '⬇ Foto',
+                                    bg: 'rgba(5, 150, 105, 0.93)',
+                                    border: '#34D399',
+                                    top: Math.max(scrollY + 8, Math.round(ir.top + scrollY + 10)),
+                                    left: Math.max(8, Math.min(vw - 84, Math.round(ir.right + scrollX - 84))),
+                                    url: imgUrl,
+                                    thumb: imgUrl
+                                  });
+                                }
+                              }
+                            }
+                          }
+
+                          while (layer.children.length > items.length) {
+                            layer.removeChild(layer.lastChild);
+                          }
+
+                          for (var m = 0; m < items.length; m++) {
+                            var it = items[m];
+                            var btn = layer.children[m];
+                            if (!btn) {
+                              btn = document.createElement('button');
+                              btn.type = 'button';
+                              layer.appendChild(btn);
+                            }
+                            btn.style.cssText =
+                              'position:absolute;top:' + it.top + 'px;left:' + it.left + 'px;' +
+                              'z-index:2147483647;pointer-events:auto;display:flex;align-items:center;justify-content:center;' +
+                              'padding:6px 11px;border-radius:18px;font-family:sans-serif;font-size:12px;font-weight:800;' +
+                              'color:#FFFFFF;background:' + it.bg + ';border:1.5px solid ' + it.border + ';' +
+                              'box-shadow:0 3px 10px rgba(0,0,0,0.55);cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;';
+                            if (btn.getAttribute('data-busy') !== '1') {
+                              btn.textContent = it.label;
+                            }
+                            btn.setAttribute('data-url', it.url);
+                            btn.setAttribute('data-type', it.type);
+                            btn.setAttribute('data-thumb', it.thumb || '');
+                            btn.onclick = function(ev) {
+                              ev.preventDefault();
+                              ev.stopPropagation();
+                              var b = ev.currentTarget;
+                              var u = b.getAttribute('data-url') || '';
+                              var t = b.getAttribute('data-type') || 'video';
+                              var th = b.getAttribute('data-thumb') || '';
+                              b.setAttribute('data-busy', '1');
+                              b.textContent = '⏳ 2do plano';
+                              b.style.background = 'rgba(16, 185, 129, 0.96)';
+                              setTimeout(function() {
+                                b.setAttribute('data-busy', '0');
+                              }, 2200);
+                              if (window.GaleriaBridge && window.GaleriaBridge.downloadMedia) {
+                                window.GaleriaBridge.downloadMedia(u, t, th, window.location.href);
+                              }
+                            };
+                          }
+                        } catch (e) {}
+                      }
+
+                      setInterval(scanAndPositionButtons, 650);
+                      window.addEventListener('scroll', scanAndPositionButtons, { passive: true });
+                      window.addEventListener('touchend', function() { setTimeout(scanAndPositionButtons, 250); }, { passive: true });
+                      scanAndPositionButtons();
+                    })();
+                """.trimIndent()
+
+                wv.webChromeClient = object : WebChromeClient() {
+                    override fun onCreateWindow(
+                        view: WebView?,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: android.os.Message?
+                    ): Boolean {
+                        val container = webContainerRef ?: return false
+                        closeActivePopup()
+
+                        val popupWv = WebView(act)
+                        activePopupWebView = popupWv
+
+                        CookieManager.getInstance().setAcceptCookie(true)
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(popupWv, true)
+
+                        popupWv.settings.apply {
+                            javaScriptEnabled = true
+                            domStorageEnabled = true
+                            databaseEnabled = true
+                            javaScriptCanOpenWindowsAutomatically = true
+                            setSupportMultipleWindows(true)
+                            saveFormData = true
+                            mediaPlaybackRequiresUserGesture = false
+                            loadsImagesAutomatically = true
+                            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                            useWideViewPort = true
+                            loadWithOverviewMode = true
+                            userAgentString = wv.settings.userAgentString
+                        }
+
+                        val popupWrapper = LinearLayout(act).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setBackgroundColor(Color.parseColor("#0B0B14"))
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        }
+                        activePopupWrapper = popupWrapper
+
+                        val popupHeader = LinearLayout(act).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                            setBackgroundColor(Color.parseColor("#1E293B"))
+                            setPadding(dp(12), dp(8), dp(12), dp(8))
+                        }
+
+                        val popupTitle = TextView(act).apply {
+                            text = "🔒 Ventana de acceso / autenticación (Google · X)"
+                            setTextColor(Color.parseColor("#E2E8F0"))
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                            typeface = Typeface.DEFAULT_BOLD
+                            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                        }
+
+                        val popupCloseBtn = TextView(act).apply {
+                            text = "✕ Volver"
+                            setTextColor(Color.WHITE)
+                            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                            typeface = Typeface.DEFAULT_BOLD
+                            setPadding(dp(10), dp(5), dp(10), dp(5))
+                            background = GradientDrawable().apply {
+                                cornerRadius = dp(8).toFloat()
+                                setColor(Color.parseColor("#EF4444"))
+                            }
+                            setOnClickListener {
+                                closeActivePopup()
+                            }
+                        }
+
+                        popupHeader.addView(popupTitle)
+                        popupHeader.addView(popupCloseBtn)
+                        popupWrapper.addView(popupHeader)
+                        popupWrapper.addView(
+                            popupWv,
+                            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+                        )
+                        container.addView(popupWrapper)
+
+                        popupWv.webChromeClient = object : WebChromeClient() {
+                            override fun onCloseWindow(window: WebView?) {
+                                super.onCloseWindow(window)
+                                closeActivePopup()
+                            }
+                        }
+
+                        popupWv.webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(v: WebView?, req: WebResourceRequest?): Boolean {
+                                val u = req?.url?.toString() ?: return false
+                                if (u.startsWith("http://") || u.startsWith("https://")) {
+                                    return false
+                                }
+                                val fb = extractIntentFallbackUrl(u)
+                                if (!fb.isNullOrBlank()) {
+                                    v?.loadUrl(fb)
+                                    return true
+                                }
+                                return true
+                            }
+
+                            override fun onPageStarted(v: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                                super.onPageStarted(v, url, favicon)
+                                try {
+                                    v?.evaluateJavascript(stealthJs, null)
+                                } catch (_: Exception) {}
+                            }
+
+                            override fun onPageFinished(v: WebView?, url: String?) {
+                                super.onPageFinished(v, url)
+                                try {
+                                    v?.evaluateJavascript(stealthJs, null)
+                                    CookieManager.getInstance().flush()
+                                } catch (_: Exception) {}
+                            }
+                        }
+
+                        val transport = resultMsg?.obj as? WebView.WebViewTransport
+                        if (transport != null) {
+                            transport.webView = popupWv
+                            resultMsg.sendToTarget()
+                            return true
+                        }
+                        closeActivePopup()
+                        return false
+                    }
+
+                    override fun onCloseWindow(window: WebView?) {
+                        super.onCloseWindow(window)
+                        closeActivePopup()
+                    }
+                }
+
                 wv.webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                         val u = request?.url?.toString() ?: return false
                         if (u.startsWith("http://") || u.startsWith("https://")) {
                             val lowerU = u.lowercase()
                             if (blockExternalApps && (lowerU.contains("play.google.com/store/apps") || lowerU.contains("apps.apple.com"))) {
-                                UiThreadUtil.runOnUiThread {
-                                    statusBannerRef?.text = "🚫 Bloqueado desvío a tienda de apps (Modo 1ª Vez)"
-                                    statusBannerRef?.visibility = android.view.View.VISIBLE
-                                }
+                                showTempBanner("🚫 Bloqueado desvío a tienda de apps (Modo 1ª Vez)", "#7F1D1D")
                                 return true
                             }
                             urlInputRef?.setText(u)
@@ -1387,10 +1953,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                 act.startActivity(extIntent)
                             } catch (_: Exception) {}
                         } else {
-                            UiThreadUtil.runOnUiThread {
-                                statusBannerRef?.text = "🚫 Bloqueado intento de abrir App instalada (Modo 1ª Vez)"
-                                statusBannerRef?.visibility = android.view.View.VISIBLE
-                            }
+                            showTempBanner("🚫 Bloqueado intento de abrir App instalada (Modo 1ª Vez)", "#064E3B")
                         }
                         return true
                     }
@@ -1412,6 +1975,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         }
                         try {
                             view?.evaluateJavascript(stealthJs, null)
+                            view?.evaluateJavascript(floatingButtonsJs, null)
                             CookieManager.getInstance().flush()
                         } catch (_: Exception) {}
                     }
@@ -1426,9 +1990,9 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         ) {
                             detectedMediaUrl = cleanDetectedStreamUrl(reqUrl)
                             UiThreadUtil.runOnUiThread {
-                                downloadBtnRef?.text = "⬇ ¡Video Detectado! (Bajar)"
+                                downloadBtnRef?.text = "⬇ ¡Video Detectado! (2do plano)"
                                 downloadBtnRef?.background = GradientDrawable().apply {
-                                    cornerRadius = 18f
+                                    cornerRadius = dp(10).toFloat()
                                     setColor(Color.parseColor("#10B981"))
                                 }
                             }
@@ -1449,18 +2013,6 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
-                }
-
-                fun dp(value: Int): Int {
-                    val density = act.resources.displayMetrics.density
-                    return (value * density).toInt()
-                }
-
-                fun isUnfoldedFold(): Boolean {
-                    val cfg = act.resources.configuration
-                    val wDp = cfg.screenWidthDp
-                    val hDp = cfg.screenHeightDp.coerceAtLeast(1)
-                    return wDp >= 480 || (wDp.toFloat() / hDp.toFloat() >= 0.65f && wDp >= 420)
                 }
 
                 // Renglón 1: Barra de dirección con margen superior seguro (>= 48dp para no traslapar reloj/batería)
@@ -1502,13 +2054,19 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
 
                 val backBtn = makeNavBtn("◀", "#252538") {
-                    if (wv.canGoBack()) wv.goBack()
+                    val pop = activePopupWebView
+                    if (pop != null) {
+                        if (pop.canGoBack()) pop.goBack() else closeActivePopup()
+                    } else if (wv.canGoBack()) {
+                        wv.goBack()
+                    }
                 }
                 val fwdBtn = makeNavBtn("▶", "#252538") {
                     if (wv.canGoForward()) wv.goForward()
                 }
                 val reloadBtn = makeNavBtn("↻", "#252538") {
-                    wv.reload()
+                    val pop = activePopupWebView
+                    if (pop != null) pop.reload() else wv.reload()
                 }
 
                 val urlInput = EditText(act).apply {
@@ -1531,6 +2089,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     setOnEditorActionListener { v, actionId, _ ->
                         if (actionId == EditorInfo.IME_ACTION_GO || actionId == EditorInfo.IME_ACTION_DONE || actionId == EditorInfo.IME_ACTION_SEARCH) {
                             detectedMediaUrl = null
+                            closeActivePopup()
                             val target = normalizeInputUrl(v.text?.toString() ?: "")
                             wv.loadUrl(target)
                             true
@@ -1543,6 +2102,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 val goBtn = makeNavBtn("Ir", "#3B82F6") {
                     detectedMediaUrl = null
+                    closeActivePopup()
                     val target = normalizeInputUrl(urlInput.text?.toString() ?: "")
                     wv.loadUrl(target)
                 }
@@ -1586,33 +2146,39 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 statusBannerRef = statusBanner
 
-                fun showTempBanner(msg: String) {
-                    statusBannerRef?.text = msg
-                    statusBannerRef?.visibility = android.view.View.VISIBLE
-                    mainHandler.postDelayed({
-                        statusBannerRef?.visibility = android.view.View.GONE
-                    }, 3500L)
-                }
-
                 val cleanFirstTimeBtn = makeNavBtn("🧹 Limpiar 1ª Vez", "#059669", true) {
+                    val clearSiteJs = """
+                        (function() {
+                          try { localStorage.clear(); } catch (e) {}
+                          try { sessionStorage.clear(); } catch (e) {}
+                          try {
+                            if (window.indexedDB && indexedDB.databases) {
+                              indexedDB.databases().then(function(dbs) {
+                                dbs.forEach(function(db) { indexedDB.deleteDatabase(db.name); });
+                              });
+                            }
+                          } catch (e) {}
+                          try {
+                            var cookies = document.cookie.split(';');
+                            for (var i = 0; i < cookies.length; i++) {
+                              var eq = cookies[i].indexOf('=');
+                              var name = eq > -1 ? cookies[i].substr(0, eq).trim() : cookies[i].trim();
+                              document.cookie = name + '=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';
+                            }
+                          } catch (e) {}
+                        })();
+                    """.trimIndent()
                     try {
-                        val cm = CookieManager.getInstance()
-                        cm.removeAllCookies(null)
-                        cm.flush()
-                    } catch (_: Exception) {}
-                    try {
-                        android.webkit.WebStorage.getInstance().deleteAllData()
-                    } catch (_: Exception) {}
-                    try {
-                        wv.evaluateJavascript("try{localStorage.clear();sessionStorage.clear();}catch(e){}", null)
+                        wv.evaluateJavascript(clearSiteJs, null)
                         wv.clearCache(true)
                         wv.clearHistory()
-                        wv.clearFormData()
                     } catch (_: Exception) {}
-                    val basePair = userAgents[currentUaIndex]
-                    wv.settings.userAgentString = basePair.second
-                    showTempBanner("✨ Cookies, caché y sesión limpiadas (entrando como 1ª vez)")
-                    wv.reload()
+                    cleanCookiesPreservingAuth {
+                        val basePair = userAgents[currentUaIndex]
+                        wv.settings.userAgentString = basePair.second
+                        showTempBanner("✨ Datos de la página limpiados (Tus cuentas y credenciales siguen activas)")
+                        wv.reload()
+                    }
                 }
 
                 val uaSwitchBtn = makeNavBtn(userAgents[0].first, "#1E293B", true) {
@@ -1641,7 +2207,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 blockAppsBtnRef = blockAppsBtn
 
-                val dlBtn = makeNavBtn("⬇ Video", "#6D28D9", true) {
+                val dlBtn = makeNavBtn("⬇ Descargar (2do plano)", "#6D28D9", true) {
                     val currentPageUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
                     val lowPage = currentPageUrl.lowercase()
                     val isKnownPlatformPost = (lowPage.contains("instagram.com/") && (lowPage.contains("/reel") || lowPage.contains("/p/") || lowPage.contains("/tv/") || lowPage.contains("/share/") || lowPage.contains("/stories/"))) ||
@@ -1658,7 +2224,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     } else {
                         currentPageUrl
                     }
-                    closeBrowser("download", bestUrl)
+                    handleMediaDownloadRequest(bestUrl, "video", "", currentPageUrl)
                 }
                 downloadBtnRef = dlBtn
 
@@ -1667,10 +2233,20 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 toolsBar.addView(blockAppsBtn)
                 toolsBar.addView(dlBtn)
 
-                val webParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    0,
-                    1f
+                val webContainer = FrameLayout(act).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        0,
+                        1f
+                    )
+                }
+                webContainerRef = webContainer
+                webContainer.addView(
+                    wv,
+                    FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
                 )
 
                 // Espaciador inferior seguro (>= 48dp) para no traslapar la barra de navegación de Android
@@ -1700,7 +2276,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 root.addView(navBar)
                 root.addView(toolsScroll)
                 root.addView(statusBanner)
-                root.addView(wv, webParams)
+                root.addView(webContainer)
                 root.addView(bottomSafeSpacer)
 
                 dlg.setContentView(root)

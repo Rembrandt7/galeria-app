@@ -17,6 +17,8 @@ import {
   PanResponder,
   Platform,
   NativeModules,
+  Image,
+  DeviceEventEmitter,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
@@ -24,6 +26,7 @@ import {
   videoDownloadService,
   detectPlatform,
   extractUrlFromText,
+  normalizeUrlForDuplicateCheck,
   DOWNLOAD_ALBUM_NAME,
   DOWNLOAD_FOLDER_URI,
 } from '../services/videoDownloadService';
@@ -103,10 +106,18 @@ export default function VideoDownloaderModal({
     }
   }, [visible]);
 
-  // Guardar cambios de la hilera en almacenamiento local
+  // Guardar cambios de la hilera en almacenamiento local y sincronizar enlaces con el navegador nativo
   useEffect(() => {
     if (!loadedFromStorageRef.current) return;
     videoDownloadService.saveStoredDownloadItems(downloadItems);
+    try {
+      const completedUrls = downloadItems
+        .filter((it) => it && it.url && (it.status === 'completed' || it.status === 'downloading'))
+        .map((it) => it.url);
+      if (NativeModules?.VideoEngineModule?.syncDownloadedUrlsNative) {
+        NativeModules.VideoEngineModule.syncDownloadedUrlsNative(completedUrls).catch(() => {});
+      }
+    } catch (_e) {}
   }, [downloadItems]);
 
   const extractedUrl = extractUrlFromText(urlInput);
@@ -124,12 +135,28 @@ export default function VideoDownloaderModal({
   };
 
   // Ejecutar la descarga de una fila en la hilera
-  const startDownloadForItem = async (itemId, cleanUrl, platformInfo, interactive = false) => {
+  const startDownloadForItem = async (
+    itemId,
+    cleanUrl,
+    platformInfo,
+    interactive = false,
+    extraOpts = {}
+  ) => {
+    const {
+      mediaType = null,
+      thumbnailUrl = null,
+      cookies = null,
+      userAgent = null,
+      fromBrowserBackground = false,
+    } = extraOpts;
+
     setFloatingDismissed(false);
     updateItemById(itemId, {
       status: 'downloading',
       statusText: interactive
         ? 'Abriendo ventana con sesión para capturar historia/video…'
+        : mediaType === 'photo'
+        ? 'Descargando foto en 2do plano…'
         : 'Analizando enlace y preparando descarga…',
       percent: 0.04,
       writtenBytes: 0,
@@ -140,6 +167,10 @@ export default function VideoDownloaderModal({
     try {
       const result = await videoDownloadService.downloadVideoFromUrl(cleanUrl, {
         interactive,
+        mediaType,
+        thumbnailUrl,
+        cookies,
+        userAgent,
         onStatus: (msg) => {
           updateItemById(itemId, { statusText: msg });
         },
@@ -180,6 +211,11 @@ export default function VideoDownloaderModal({
           } catch (_eVault) {}
         }
 
+        const resolvedThumb =
+          finalAsset?.uri || result.thumbnail || thumbnailUrl || null;
+        const resolvedMediaType =
+          result.mediaType || finalAsset?.mediaType || mediaType || 'video';
+
         updateItemById(itemId, {
           status: 'completed',
           statusText: `Guardado en carpeta "${finalAlbumName}"`,
@@ -187,6 +223,8 @@ export default function VideoDownloaderModal({
           filename: result.filename,
           title: result.title || result.filename,
           platform: result.platform || platformInfo,
+          mediaType: resolvedMediaType,
+          thumbnail: resolvedThumb,
           sizeBytes: result.sizeBytes || 0,
           albumName: finalAlbumName,
           folderUri: finalFolderUri,
@@ -194,6 +232,16 @@ export default function VideoDownloaderModal({
           errorMessage: null,
           date: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         });
+
+        if (fromBrowserBackground && NativeModules?.VideoEngineModule?.notifyBrowserDownloadStatusNative) {
+          const tipoTxt = resolvedMediaType === 'photo' ? 'Foto guardada' : 'Video guardado';
+          NativeModules.VideoEngineModule
+            .notifyBrowserDownloadStatusNative(
+              `✅ ¡${tipoTxt} en 2do plano en "${finalAlbumName}"!`,
+              '#065F46'
+            )
+            .catch(() => {});
+        }
 
         if (onVideoDownloaded) {
           onVideoDownloaded(result);
@@ -209,40 +257,38 @@ export default function VideoDownloaderModal({
         });
       } else {
         const msg =
-          err?.message || 'No se pudo descargar el video desde este enlace.';
+          err?.message || 'No se pudo descargar el archivo desde este enlace.';
         updateItemById(itemId, {
           status: 'error',
           statusText: 'Error en la descarga',
           errorMessage: msg,
         });
+        if (fromBrowserBackground && NativeModules?.VideoEngineModule?.notifyBrowserDownloadStatusNative) {
+          NativeModules.VideoEngineModule
+            .notifyBrowserDownloadStatusNative(`❌ Error al descargar: ${msg}`, '#991B1B')
+            .catch(() => {});
+        }
       }
     }
   };
 
-  const enqueueAndStartUrl = (rawText, interactive = false) => {
-    const allMatches = String(rawText || '').match(/https?:\/\/[^\s"'<>]+/gi) || [];
-    const uniqueUrls = Array.from(new Set(allMatches.map((u) => u.trim()).filter(Boolean)));
-    const firstFallback = extractUrlFromText(rawText);
-    const urlsToProcess =
-      uniqueUrls.length > 0
-        ? uniqueUrls
-        : firstFallback && /^https?:\/\//i.test(firstFallback)
-        ? [firstFallback]
-        : [];
+  const executeEnqueueUrls = (urlsToProcess, interactive = false, extraOpts = {}) => {
+    const {
+      mediaType = null,
+      thumbnailUrl = null,
+      cookies = null,
+      userAgent = null,
+      fromBrowserBackground = false,
+    } = extraOpts;
 
-    if (urlsToProcess.length === 0) {
-      Alert.alert(
-        'Enlace inválido',
-        'Por favor pega o comparte uno o varios enlaces válidos de video (que empiecen con http:// o https://).'
-      );
-      return;
+    if (!fromBrowserBackground) {
+      Keyboard.dismiss();
     }
-
-    Keyboard.dismiss();
     const createdItems = [];
 
     urlsToProcess.forEach((cleanUrl, idx) => {
       const platformInfo = detectPlatform(cleanUrl);
+      const isPhotoItem = mediaType === 'photo' || platformInfo?.isPhoto;
       const newId = `dl_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`;
       const shortUrlTitle = cleanUrl.replace(/^https?:\/\/(www\.)?/i, '').slice(0, 42);
 
@@ -252,8 +298,14 @@ export default function VideoDownloaderModal({
         title: `${platformInfo.name}: ${shortUrlTitle}`,
         filename: null,
         platform: platformInfo,
+        mediaType: isPhotoItem ? 'photo' : 'video',
+        thumbnail: thumbnailUrl || (isPhotoItem ? cleanUrl : null),
         status: 'downloading',
-        statusText: interactive ? 'Abriendo captura con sesión…' : 'En cola / Iniciando descarga…',
+        statusText: interactive
+          ? 'Abriendo captura con sesión…'
+          : isPhotoItem
+          ? 'En cola / Descargando foto…'
+          : 'En cola / Iniciando descarga…',
         percent: 0.04,
         writtenBytes: 0,
         totalBytes: 0,
@@ -268,15 +320,109 @@ export default function VideoDownloaderModal({
     });
 
     setDownloadItems((prev) => [...createdItems.map((c) => c.newItem), ...prev]);
-    setUrlInput('');
+    if (fromBrowserBackground && urlsToProcess[0]) {
+      // Copiar el enlace en la caja del descargador para que quede listo y registrado
+      setUrlInput(urlsToProcess[0]);
+    } else {
+      setUrlInput('');
+    }
     setFilterStatus('all');
 
     createdItems.forEach(({ newItem, platformInfo }, idx) => {
       setTimeout(() => {
-        startDownloadForItem(newItem.id, newItem.url, platformInfo, interactive && idx === 0);
+        startDownloadForItem(
+          newItem.id,
+          newItem.url,
+          platformInfo,
+          interactive && idx === 0,
+          {
+            mediaType: newItem.mediaType,
+            thumbnailUrl: newItem.thumbnail,
+            cookies,
+            userAgent,
+            fromBrowserBackground,
+          }
+        );
       }, idx * 450);
     });
   };
+
+  const enqueueAndStartUrl = (rawText, interactive = false, extraOpts = {}) => {
+    const allMatches = String(rawText || '').match(/https?:\/\/[^\s"'<>]+/gi) || [];
+    const uniqueUrls = Array.from(new Set(allMatches.map((u) => u.trim()).filter(Boolean)));
+    const firstFallback = extractUrlFromText(rawText);
+    const urlsToProcess =
+      uniqueUrls.length > 0
+        ? uniqueUrls
+        : firstFallback && /^https?:\/\//i.test(firstFallback)
+        ? [firstFallback]
+        : [];
+
+    if (urlsToProcess.length === 0) {
+      if (!extraOpts.fromBrowserBackground) {
+        Alert.alert(
+          'Enlace inválido',
+          'Por favor pega o comparte uno o varios enlaces válidos de video o foto (que empiecen con http:// o https://).'
+        );
+      }
+      return;
+    }
+
+    // Verificar si el enlace ya fue descargado previamente (en el navegador nativo ya se muestra el aviso antes de emitir)
+    if (!extraOpts.fromBrowserBackground && !extraOpts.skipDuplicateCheck) {
+      const existingSet = new Set(
+        downloadItems
+          .filter((it) => it && it.url && it.status === 'completed')
+          .map((it) => normalizeUrlForDuplicateCheck(it.url))
+          .filter(Boolean)
+      );
+      const hasDuplicate = urlsToProcess.some((u) => {
+        const key = normalizeUrlForDuplicateCheck(u);
+        return key && existingSet.has(key);
+      });
+
+      if (hasDuplicate) {
+        Alert.alert(
+          '⚠️ Archivo ya existente',
+          'Este enlace ya lo descargaste anteriormente en tu galería.\n\n¿Deseas volver a descargarlo de todos modos?',
+          [
+            { text: 'Cancelar', style: 'cancel' },
+            {
+              text: 'Descargar de nuevo',
+              onPress: () =>
+                executeEnqueueUrls(urlsToProcess, interactive, {
+                  ...extraOpts,
+                  skipDuplicateCheck: true,
+                }),
+            },
+          ]
+        );
+        return;
+      }
+    }
+
+    executeEnqueueUrls(urlsToProcess, interactive, extraOpts);
+  };
+
+  // Escuchar descargas en 2do plano disparadas desde los botones flotantes (⬇ Foto / ⬇ Video) dentro del Navegador
+  const enqueueBgRef = useRef(enqueueAndStartUrl);
+  enqueueBgRef.current = enqueueAndStartUrl;
+
+  useEffect(() => {
+    const sub = DeviceEventEmitter.addListener('BrowserBackgroundDownload', (payload) => {
+      if (!payload || !payload.url) return;
+      enqueueBgRef.current(payload.url, false, {
+        fromBrowserBackground: true,
+        mediaType: payload.mediaType || null,
+        thumbnailUrl: payload.thumbnailUrl || null,
+        cookies: payload.cookies || null,
+        userAgent: payload.userAgent || null,
+      });
+    });
+    return () => {
+      sub.remove();
+    };
+  }, []);
 
   // Si el usuario compartió un enlace desde otra app (Facebook, Instagram, TikTok, X, YouTube, etc.),
   // iniciar la descarga automáticamente en cuanto llega
@@ -850,24 +996,80 @@ export default function VideoDownloaderModal({
                 Math.max(0, Math.min(1, item.percent || 0)) * 100
               );
 
+              const thumbUri = item.asset?.uri || item.thumbnail || null;
+              const isPhotoItem =
+                item.mediaType === 'photo' ||
+                item.asset?.mediaType === 'photo' ||
+                item.platform?.isPhoto;
+
               return (
                 <View
                   key={item.id}
                   style={[styles.queueRowCard, { borderLeftColor: borderColor }]}
                 >
-                  {/* Fila superior de la tarjeta: Número de fila, Plataforma, Estado y Botones para Mover (Subir/Bajar/Quitar) */}
+                  {/* Fila superior de la tarjeta: Miniatura, Número de fila, Plataforma, Estado y Botones para Mover */}
                   <View style={styles.rowTopHeader}>
+                    <TouchableOpacity
+                      activeOpacity={0.85}
+                      disabled={!item.asset?.uri || !onPlayDownloadedAsset}
+                      onPress={() => {
+                        if (item.asset?.uri && onPlayDownloadedAsset) {
+                          onPlayDownloadedAsset(item.asset);
+                        }
+                      }}
+                      style={{
+                        width: 52,
+                        height: 52,
+                        borderRadius: 10,
+                        backgroundColor: '#1e293b',
+                        overflow: 'hidden',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        borderWidth: 1,
+                        borderColor: 'rgba(255,255,255,0.12)',
+                      }}
+                    >
+                      {thumbUri ? (
+                        <Image
+                          source={{ uri: thumbUri }}
+                          style={{ width: '100%', height: '100%' }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <Ionicons
+                          name={isPhotoItem ? 'image-outline' : item.platform?.icon || 'videocam'}
+                          size={22}
+                          color={item.platform?.color || '#38bdf8'}
+                        />
+                      )}
+                      <View
+                        style={{
+                          position: 'absolute',
+                          bottom: 2,
+                          right: 2,
+                          backgroundColor: 'rgba(15, 23, 42, 0.85)',
+                          paddingHorizontal: 4,
+                          paddingVertical: 1,
+                          borderRadius: 5,
+                        }}
+                      >
+                        <Text style={{ fontSize: 9, color: '#ffffff', fontWeight: '800' }}>
+                          {isPhotoItem ? '🖼️' : '🎥'}
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+
                     <View style={styles.rowPlatformGroup}>
                       <View style={styles.rowOrderBadge}>
                         <Text style={styles.rowOrderBadgeText}>#{idx + 1}</Text>
                       </View>
                       <Ionicons
-                        name={item.platform?.icon || 'videocam'}
-                        size={18}
+                        name={isPhotoItem ? 'image' : item.platform?.icon || 'videocam'}
+                        size={17}
                         color={item.platform?.color || '#38bdf8'}
                       />
-                      <Text style={styles.rowTitleText} numberOfLines={1}>
-                        {item.filename || item.title || 'Video'}
+                      <Text style={styles.rowTitleText} numberOfLines={2}>
+                        {item.filename || item.title || (isPhotoItem ? 'Foto' : 'Video')}
                       </Text>
                     </View>
 
@@ -1027,8 +1229,14 @@ export default function VideoDownloaderModal({
                             style={[styles.rowSmallBtn, styles.rowBtnPlay]}
                             onPress={() => onPlayDownloadedAsset(item.asset)}
                           >
-                            <Ionicons name="play-circle" size={16} color="#ffffff" />
-                            <Text style={styles.rowSmallBtnText}>Reproducir</Text>
+                            <Ionicons
+                              name={isPhotoItem ? 'eye-outline' : 'play-circle'}
+                              size={16}
+                              color="#ffffff"
+                            />
+                            <Text style={styles.rowSmallBtnText}>
+                              {isPhotoItem ? 'Ver foto' : 'Reproducir'}
+                            </Text>
                           </TouchableOpacity>
                         )}
 

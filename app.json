@@ -2,7 +2,7 @@
   "expo": {
     "name": "Mi Galería",
     "slug": "galeria-app",
-    "version": "1.7.2",
+    "version": "1.7.3",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "com.rembrant.galeriaapp",
-      "versionCode": 64,
+      "versionCode": 65,
       "requestLegacyExternalStorage": true,
       "adaptiveIcon": {
         "backgroundColor": "#0f172a",

@@ -33,11 +33,41 @@ export function extractUrlFromText(text) {
 }
 
 /**
+ * Normaliza un enlace para detectar si el archivo/enlace ya fue descargado previamente.
+ */
+export function normalizeUrlForDuplicateCheck(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return '';
+  const igMatch = trimmed.match(/instagram\.com\/(?:[^/?#]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{5,25})/i);
+  if (igMatch && igMatch[1]) return `ig:${igMatch[1]}`;
+  const twMatch = trimmed.match(/(?:twitter\.com|x\.com)\/(?:[^/]+\/status|i\/web\/status|i\/status)\/(\d+)/i);
+  if (twMatch && twMatch[1]) return `tw:${twMatch[1]}`;
+  const ytMatch = trimmed.match(/(?:youtube\.com\/(?:watch\?.*v=|shorts\/|embed\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/i);
+  if (ytMatch && ytMatch[1]) return `yt:${ytMatch[1]}`;
+  const ttMatch = trimmed.match(/tiktok\.com\/(?:@[^/]+\/(?:video|photo)\/|v\/)(\d+)/i);
+  if (ttMatch && ttMatch[1]) return `tt:${ttMatch[1]}`;
+  const fbMatch = trimmed.match(/(?:\/reel\/|\/videos\/|[?&]v=|story_fbid=)(\d{8,25})/i);
+  if (fbMatch && fbMatch[1]) return `fb:${fbMatch[1]}`;
+  if (/cdninstagram\.com|fbcdn\.net|twimg\.com|pinimg\.com/i.test(trimmed)) {
+    return trimmed.split('?')[0].split('#')[0].toLowerCase();
+  }
+  return trimmed.split('#')[0].replace(/\/+$/, '').toLowerCase();
+}
+
+/**
  * Detecta la plataforma del enlace para mostrar icono y etiqueta en la interfaz.
  */
 export function detectPlatform(url) {
   const lower = (url || '').toLowerCase();
   if (!lower.startsWith('http')) return { id: 'unknown', name: 'Enlace web', icon: 'link-outline', color: '#3B82F6' };
+  if (
+    /\.(jpg|jpeg|png|webp|gif|heic|avif)(\?|#|$)/i.test(lower) ||
+    lower.includes('pbs.twimg.com/media/') ||
+    /[?&]format=(jpg|jpeg|png|webp)/i.test(lower)
+  ) {
+    return { id: 'direct_photo', name: 'Foto / Imagen', icon: 'image', color: '#10B981', isPhoto: true };
+  }
   if (lower.includes('tiktok.com')) return { id: 'tiktok', name: 'TikTok', icon: 'musical-notes', color: '#00F2FE' };
   if (lower.includes('instagram.com') || lower.includes('instagr.am'))
     return { id: 'instagram', name: 'Instagram', icon: 'logo-instagram', color: '#E1306C' };
@@ -53,31 +83,76 @@ export function detectPlatform(url) {
     return { id: 'pinterest', name: 'Pinterest', icon: 'logo-pinterest', color: '#E60023' };
   if (/\.(mp4|mov|webm|mkv|m4v|3gp)(\?|#|$)/i.test(lower))
     return { id: 'direct', name: 'Archivo MP4 directo', icon: 'videocam', color: '#10B981' };
-  return { id: 'web', name: 'Video Web', icon: 'globe-outline', color: '#8B5CF6' };
+  return { id: 'web', name: 'Multimedia Web', icon: 'globe-outline', color: '#8B5CF6' };
 }
 
 /**
- * Decodifica secuencias escapadas simples o doblemente escapadas en JSON o HTML (\u0025, \\u0026, &amp;, \/, \\/...)
- * y elimina rangos parciales bytestart/byteend de CDNs de Instagram/Facebook.
+ * Decodifica secuencias escapadas simples, dobles o triples en JSON o HTML (\u0025, \\u0026, \\\u0026, &amp;, \/, \\/...)
+ * elimina cualquier barra invertida residual (que causa HTTP 404 en CDNs) y limpia rangos parciales bytestart/byteend.
  */
 function unescapeUrl(raw) {
   if (!raw || typeof raw !== 'string') return '';
-  let s = raw
-    .replace(/\\\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/\\\\\//g, '/')
-    .replace(/\\\//g, '/')
-    .replace(/&amp;/g, '&')
-    .trim()
-    .replace(/^["'\\]+|["'\\]+$/g, '');
+  let s = raw.trim();
+  for (let pass = 0; pass < 4; pass++) {
+    s = s
+      .replace(/\\+u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .replace(/\\+\//g, '/')
+      .replace(/&amp;/gi, '&')
+      .replace(/^["'\\]+|["'\\]+$/g, '');
+  }
+  s = s.replace(/\\/g, '').trim();
   if (/cdninstagram\.com|fbcdn\.net/i.test(s)) {
     s = s
       .replace(/bytestart=\d+&?/gi, '')
       .replace(/byteend=\d+&?/gi, '')
       .replace(/\?&/g, '?')
+      .replace(/&&+/g, '&')
       .replace(/[?&]+$/, '');
   }
   return s;
+}
+
+/**
+ * Verifica rápidamente que un URL candidato no devuelva HTTP 404 / 403 / 410 antes de elegirlo.
+ */
+async function isReachableMediaUrl(candidateUrl, signal, referer = '') {
+  if (!candidateUrl || !candidateUrl.startsWith('http')) return false;
+  if (/ddinstagram\.com\/videos|kkinstagram\.com\/videos|eeinstagram\.com\/videos/i.test(candidateUrl)) {
+    return false;
+  }
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const onParentAbort = () => ctrl.abort();
+    if (signal) signal.addEventListener('abort', onParentAbort, { once: true });
+
+    const headers = {
+      'User-Agent': DESKTOP_USER_AGENT,
+      Accept: '*/*',
+      Range: 'bytes=0-1023',
+    };
+    if (referer) headers.Referer = referer;
+
+    const res = await fetch(candidateUrl, {
+      method: 'GET',
+      headers,
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', onParentAbort);
+
+    if (res.status === 404 || res.status === 410 || res.status === 403 || res.status >= 500) {
+      return false;
+    }
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('text/html')) {
+      return false;
+    }
+    return true;
+  } catch (_e) {
+    if (signal?.aborted) throw new Error('CANCELLED');
+    return true;
+  }
 }
 
 /**
@@ -701,6 +776,18 @@ function extractInstagramShortcode(rawUrl, html = '') {
 function extractInstagramVideoFromHtml(html, defaultTitle = 'instagram_video', defaultSource = 'Instagram HD') {
   if (!html || typeof html !== 'string') return null;
 
+  // 0. Si es una página /embed/captioned/, intentar parsear contextJSON de forma nativa primero
+  const ctxMatch = html.match(/"contextJSON"\s*:\s*("(?:[^"\\]|\\.)*")/i);
+  if (ctxMatch && ctxMatch[1]) {
+    try {
+      const unescapedJsonStr = JSON.parse(ctxMatch[1]);
+      if (typeof unescapedJsonStr === 'string') {
+        const directFromCtx = extractInstagramVideoFromHtml(unescapedJsonStr, defaultTitle, 'Instagram Embed HD');
+        if (directFromCtx) return directFromCtx;
+      }
+    } catch (_e) {}
+  }
+
   const igPatterns = [
     {
       regex: /"video_versions"\s*:\s*\[\s*\{[^}]*?"url"\s*:\s*"(https?:[^"]+)"/gi,
@@ -750,12 +837,51 @@ function extractInstagramVideoFromHtml(html, defaultTitle = 'instagram_video', d
           !clean.startsWith('blob:') &&
           !/\.(?:jpg|jpeg|png|webp|gif|svg|js|css)(?:\?|#|$)/i.test(clean) &&
           !/mime=audio|audio_only|\/m69\/|\/m366\/|\/t42\.1790-2\//i.test(clean) &&
-          !clean.includes('static.cdninstagram.com')
+          !clean.includes('static.cdninstagram.com') &&
+          !/ddinstagram\.com\/videos|kkinstagram\.com\/videos|eeinstagram\.com\/videos/i.test(clean)
+        ) {
+          const thumbMatch =
+            html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["'](https?:[^"']+)["']/i) ||
+            html.match(/"display_url"\s*:\s*"(https?:[^"]+)"/i);
+          return {
+            downloadUrl: clean,
+            title: defaultTitle,
+            thumbnail: thumbMatch && thumbMatch[1] ? unescapeUrl(thumbMatch[1]) : null,
+            source: item.label || defaultSource,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function extractPhotoFromHtml(html, defaultTitle = 'foto_descargada', defaultSource = 'Foto HD') {
+  if (!html || typeof html !== 'string') return null;
+  const photoPatterns = [
+    /"display_url"\s*:\s*"(https?:[^"]+)"/gi,
+    /\\+"display_url\\+"\s*:\s*\\+"(https?:[^"'\s<>]+?)\\+"/gi,
+    /<meta[^>]+property=["']og:image(?::secure_url)?["'][^>]+content=["'](https?:[^"']+)["']/gi,
+    /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:image(?::secure_url)?["']/gi,
+  ];
+  for (const regex of photoPatterns) {
+    const matches = html.matchAll(regex);
+    for (const match of matches) {
+      if (match && match[1]) {
+        const clean = unescapeUrl(match[1]);
+        if (
+          clean.startsWith('http') &&
+          !clean.includes('static.cdninstagram.com') &&
+          !clean.includes('static.xx.fbcdn.net') &&
+          !clean.includes('/rsrc.php/')
         ) {
           return {
             downloadUrl: clean,
             title: defaultTitle,
-            source: item.label || defaultSource,
+            thumbnail: clean,
+            source: defaultSource,
+            isPhoto: true,
+            mediaType: 'photo',
           };
         }
       }
@@ -862,7 +988,9 @@ async function resolveInstagram(url, signal) {
           `instagram_${shortcode}`,
           'Instagram Embed HD'
         );
-        if (foundEmbed) return foundEmbed;
+        if (foundEmbed && (await isReachableMediaUrl(foundEmbed.downloadUrl, signal, 'https://www.instagram.com/'))) {
+          return foundEmbed;
+        }
       } catch (_e) {
         if (signal?.aborted) throw new Error('CANCELLED');
       }
@@ -870,7 +998,9 @@ async function resolveInstagram(url, signal) {
 
     // Etapa 2: API GraphQL pública de Instagram (funciona incluso cuando el autor desactiva el embed)
     const foundGql = await resolveInstagramViaGraphQL(shortcode, signal);
-    if (foundGql) return foundGql;
+    if (foundGql && (await isReachableMediaUrl(foundGql.downloadUrl, signal, 'https://www.instagram.com/'))) {
+      return foundGql;
+    }
 
     // Etapa 3: Proxies OpenGraph directos (ddinstagram / kkinstagram / eeinstagram) con User-Agent de Bot de Telegram
     const telegramBotUA = 'TelegramBot (like TwitterBot)';
@@ -879,7 +1009,9 @@ async function resolveInstagram(url, signal) {
       try {
         const page = await fetchCleanHtmlPage(`${proxyDomain}/reel/${shortcode}/`, telegramBotUA, signal);
         const foundProxy = extractInstagramVideoFromHtml(page.html, `instagram_${shortcode}`, 'Instagram HD');
-        if (foundProxy) return foundProxy;
+        if (foundProxy && (await isReachableMediaUrl(foundProxy.downloadUrl, signal, 'https://www.instagram.com/'))) {
+          return foundProxy;
+        }
       } catch (_e) {
         if (signal?.aborted) throw new Error('CANCELLED');
       }
@@ -1149,15 +1281,60 @@ async function resolveFromWebPageHtml(url, signal) {
 
 export const videoDownloadService = {
   /**
-   * Resuelve cualquier enlace de internet a un URL directo de video MP4/multimedia.
+   * Resuelve cualquier enlace de internet a un URL directo de video MP4/multimedia o foto/imagen.
    */
-  async resolveVideoUrl(rawInput, signal, { interactive = false } = {}) {
+  async resolveVideoUrl(rawInput, signal, { interactive = false, mediaType = null, thumbnailUrl = null } = {}) {
     const url = extractUrlFromText(rawInput);
     if (!url || !/^https?:\/\//i.test(url)) {
       throw new Error('Por favor ingresa un enlace válido que comience con http:// o https://');
     }
 
     const platform = detectPlatform(url);
+
+    // Si es una foto directa o viene desde el botón "⬇ Foto" en el navegador
+    if (
+      mediaType === 'photo' ||
+      platform.id === 'direct_photo' ||
+      /\.(jpg|jpeg|png|webp|gif|heic|avif)(\?|#|$)/i.test(url)
+    ) {
+      // Si el enlace ya apunta directamente a una imagen CDN o archivo de imagen
+      if (
+        platform.id === 'direct_photo' ||
+        /cdninstagram\.com|fbcdn\.net|pbs\.twimg\.com|pinimg\.com/i.test(url) ||
+        !/instagram\.com\/(?:p|reel)\/|facebook\.com\/(?:photo|share|watch)/i.test(url)
+      ) {
+        return {
+          downloadUrl: unescapeUrl(url),
+          title: url.split('/').pop().split('?')[0] || 'foto_descargada.jpg',
+          thumbnail: thumbnailUrl || unescapeUrl(url),
+          platform: { ...platform, isPhoto: true },
+          source: `${platform.name || 'Web'} Foto HD`,
+          isPhoto: true,
+          mediaType: 'photo',
+        };
+      }
+      // Si es una publicación de foto de Instagram/Facebook (/p/...), extraer la imagen HD
+      try {
+        const page = await fetchCleanHtmlPage(url, DESKTOP_USER_AGENT, signal);
+        const photoFound = extractPhotoFromHtml(page.html, `${platform.id}_foto`, `${platform.name} Foto HD`);
+        if (photoFound) {
+          return { ...photoFound, platform: { ...platform, isPhoto: true } };
+        }
+      } catch (_e) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+      }
+      if (thumbnailUrl && /^https?:\/\//i.test(thumbnailUrl)) {
+        return {
+          downloadUrl: unescapeUrl(thumbnailUrl),
+          title: `${platform.id}_foto.jpg`,
+          thumbnail: unescapeUrl(thumbnailUrl),
+          platform: { ...platform, isPhoto: true },
+          source: `${platform.name} Foto`,
+          isPhoto: true,
+          mediaType: 'photo',
+        };
+      }
+    }
 
     // Si el usuario solicitó captura interactiva con sesión (para Historias de Facebook/Instagram o sitios con login)
     if (interactive && NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative) {
@@ -1168,6 +1345,7 @@ export const videoDownloadService = {
           cookies: sniffed.cookies || '',
           userAgent: sniffed.userAgent || USER_AGENT,
           title: `${platform.id}_historia`,
+          thumbnail: thumbnailUrl || null,
           platform,
           source: `${platform.name} (Sesión)`,
         };
@@ -1179,6 +1357,7 @@ export const videoDownloadService = {
       return {
         downloadUrl: url,
         title: url.split('/').pop().split('?')[0] || 'video.mp4',
+        thumbnail: thumbnailUrl || null,
         platform,
         source: 'Enlace Directo',
       };
@@ -1189,7 +1368,7 @@ export const videoDownloadService = {
     if (platform.id === 'facebook') {
       try {
         const res = await resolveFacebook(url, signal);
-        return { ...res, platform };
+        return { ...res, thumbnail: res.thumbnail || thumbnailUrl || null, platform };
       } catch (e) {
         if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
         specificError = e?.message;
@@ -1199,9 +1378,19 @@ export const videoDownloadService = {
     if (platform.id === 'instagram') {
       try {
         const res = await resolveInstagram(url, signal);
-        return { ...res, platform };
+        return { ...res, thumbnail: res.thumbnail || thumbnailUrl || null, platform };
       } catch (e) {
         if (signal?.aborted || e?.message === 'CANCELLED') throw new Error('CANCELLED');
+        // Si es una publicación de foto en Instagram (/p/...), intentar extraer la foto HD
+        try {
+          const shortcode = extractInstagramShortcode(url);
+          const embedTarget = shortcode ? `https://www.instagram.com/p/${shortcode}/embed/captioned/` : url;
+          const page = await fetchCleanHtmlPage(embedTarget, DESKTOP_USER_AGENT, signal);
+          const photoFound = extractPhotoFromHtml(page.html, `instagram_${shortcode || 'foto'}`, 'Instagram Foto HD');
+          if (photoFound) {
+            return { ...photoFound, platform: { ...platform, isPhoto: true } };
+          }
+        } catch (_pe) {}
         specificError = e?.message;
       }
     }
@@ -1295,9 +1484,21 @@ export const videoDownloadService = {
   },
 
   /**
-   * Descarga el video desde su URL con soporte completo para PAUSAR, REANUDAR y CANCELAR.
+   * Descarga el video o foto desde su URL con soporte completo para PAUSAR, REANUDAR y CANCELAR.
    */
-  async downloadVideoFromUrl(rawInput, { onStatus, onProgress, onController, interactive = false } = {}) {
+  async downloadVideoFromUrl(
+    rawInput,
+    {
+      onStatus,
+      onProgress,
+      onController,
+      interactive = false,
+      mediaType = null,
+      thumbnailUrl = null,
+      cookies: passedCookies = null,
+      userAgent: passedUserAgent = null,
+    } = {}
+  ) {
     const abortController = new AbortController();
     let isCancelled = false;
     let isPaused = false;
@@ -1367,12 +1568,16 @@ export const videoDownloadService = {
       onStatus(
         interactive
           ? 'Abriendo extractor con sesión…'
+          : mediaType === 'photo'
+          ? 'Analizando enlace y preparando foto…'
           : 'Analizando enlace y buscando video…'
       );
     }
 
     const resolved = await videoDownloadService.resolveVideoUrl(rawInput, abortController.signal, {
       interactive,
+      mediaType,
+      thumbnailUrl,
     });
     if (isCancelled) throw new Error('CANCELLED');
 
@@ -1384,8 +1589,20 @@ export const videoDownloadService = {
     }
 
     const { downloadUrl, title, platform, source, cookies, userAgent } = resolved;
+    const isPhotoDownload =
+      mediaType === 'photo' ||
+      resolved.isPhoto ||
+      resolved.mediaType === 'photo' ||
+      platform?.isPhoto ||
+      /\.(jpg|jpeg|png|webp|gif|heic|avif)(\?|#|$)/i.test(downloadUrl);
 
-    if (onStatus) onStatus(`Descargando video (${source || platform.name})…`);
+    if (onStatus) {
+      onStatus(
+        isPhotoDownload
+          ? `Descargando foto (${source || platform?.name || 'Web'})…`
+          : `Descargando video (${source || platform?.name || 'Web'})…`
+      );
+    }
 
     const now = new Date();
     const y = now.getFullYear();
@@ -1395,8 +1612,12 @@ export const videoDownloadService = {
     const min = String(now.getMinutes()).padStart(2, '0');
     const s = String(now.getSeconds()).padStart(2, '0');
 
-    const safePrefix = (platform?.id || 'VID').toUpperCase();
-    const filename = `VID_${y}${m}${d}_${h}${min}${s}_${safePrefix}.mp4`;
+    const safePrefix = (platform?.id || (isPhotoDownload ? 'IMG' : 'VID')).toUpperCase().replace(/[^A-Z0-9]/g, '');
+    const extMatch = downloadUrl.match(/\.(png|webp|gif)(\?|#|$)/i);
+    const photoExt = extMatch && extMatch[1] ? extMatch[1].toLowerCase() : 'jpg';
+    const filename = isPhotoDownload
+      ? `IMG_${y}${m}${d}_${h}${min}${s}_${safePrefix}.${photoExt}`
+      : `VID_${y}${m}${d}_${h}${min}${s}_${safePrefix}.mp4`;
     targetPath = `${FileSystem.cacheDirectory}${filename}`;
 
     try {
@@ -1405,72 +1626,134 @@ export const videoDownloadService = {
       // ignorar
     }
 
-    let cookieHeader = cookies || '';
+    let currentDownloadUrl = unescapeUrl(downloadUrl);
+    let cookieHeader = passedCookies || cookies || '';
     if (!cookieHeader && NativeModules?.VideoEngineModule?.getCookiesForUrlNative) {
       try {
-        cookieHeader = (await NativeModules.VideoEngineModule.getCookiesForUrlNative(downloadUrl)) || '';
+        cookieHeader = (await NativeModules.VideoEngineModule.getCookiesForUrlNative(currentDownloadUrl)) || '';
       } catch (_e) {}
     }
 
-    const requestHeaders = {
-      'User-Agent': userAgent || DESKTOP_USER_AGENT,
-      Accept: '*/*',
+    const buildHeadersForUrl = (u, ua, ck) => {
+      const h = {
+        'User-Agent': ua || passedUserAgent || userAgent || DESKTOP_USER_AGENT,
+        Accept: '*/*',
+      };
+      if (ck) h.Cookie = ck;
+      if (/instagram\.com|cdninstagram\.com/i.test(u) || platform?.id === 'instagram') {
+        h.Referer = 'https://www.instagram.com/';
+      } else if (/facebook\.com|fbcdn\.net/i.test(u) || platform?.id === 'facebook') {
+        h.Referer = 'https://www.facebook.com/';
+      } else if (/twitter\.com|x\.com|twimg\.com/i.test(u) || platform?.id === 'twitter') {
+        h.Referer = 'https://x.com/';
+      } else if (/tiktok\.com|tikwm\.com/i.test(u) || platform?.id === 'tiktok') {
+        h.Referer = 'https://www.tiktok.com/';
+      }
+      return h;
     };
-    if (cookieHeader) {
-      requestHeaders.Cookie = cookieHeader;
-    }
 
-    downloadResumable = FileSystem.createDownloadResumable(
-      downloadUrl,
-      targetPath,
-      {
-        headers: requestHeaders,
-      },
-      (dp) => {
-        if (onProgress && !isCancelled) {
-          const written = dp.totalBytesWritten || 0;
-          const total = dp.totalBytesExpectedToWrite || 0;
-          const percent = total > 0 ? Math.min(1, written / total) : 0;
-          onProgress({
-            writtenBytes: written,
-            totalBytes: total,
-            percent,
-          });
+    const runDownloadAttempt = async (attemptUrl, attemptHeaders) => {
+      await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+      downloadResumable = FileSystem.createDownloadResumable(
+        attemptUrl,
+        targetPath,
+        { headers: attemptHeaders },
+        (dp) => {
+          if (onProgress && !isCancelled) {
+            const written = dp.totalBytesWritten || 0;
+            const total = dp.totalBytesExpectedToWrite || 0;
+            const percent = total > 0 ? Math.min(1, written / total) : 0;
+            onProgress({
+              writtenBytes: written,
+              totalBytes: total,
+              percent,
+            });
+          }
         }
-      }
-    );
+      );
 
-    let result = null;
-    let isResuming = false;
+      let resAttempt = null;
+      let isResuming = false;
+      while (!isCancelled) {
+        try {
+          resAttempt = isResuming
+            ? await downloadResumable.resumeAsync()
+            : await downloadResumable.downloadAsync();
+        } catch (err) {
+          if (isCancelled) throw new Error('CANCELLED');
+          if (!isPaused) throw err;
+        }
 
-    while (!isCancelled) {
-      try {
-        result = isResuming
-          ? await downloadResumable.resumeAsync()
-          : await downloadResumable.downloadAsync();
-      } catch (err) {
-        if (isCancelled) throw new Error('CANCELLED');
-        if (!isPaused) throw err;
-      }
-
-      if (isCancelled) {
-        await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
-        throw new Error('CANCELLED');
-      }
-
-      if (isPaused && pauseWaitPromise) {
-        if (onStatus) onStatus('Descarga en pausa');
-        await pauseWaitPromise;
         if (isCancelled) {
           await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
           throw new Error('CANCELLED');
         }
-        if (onStatus) onStatus(`Descargando video (${source || platform.name})…`);
-        isResuming = true;
-        continue;
-      }
 
-      break;
+        if (isPaused && pauseWaitPromise) {
+          if (onStatus) onStatus('Descarga en pausa');
+          await pauseWaitPromise;
+          if (isCancelled) {
+            await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
+            throw new Error('CANCELLED');
+          }
+          if (onStatus) {
+            onStatus(
+              isPhotoDownload
+                ? `Descargando foto (${source || platform?.name})…`
+                : `Descargando video (${source || platform?.name})…`
+            );
+          }
+          isResuming = true;
+          continue;
+        }
+        break;
+      }
+      return resAttempt;
+    };
+
+    let result = await runDownloadAttempt(
+      currentDownloadUrl,
+      buildHeadersForUrl(currentDownloadUrl, passedUserAgent || userAgent, cookieHeader)
+    );
+
+    const minValidBytes = isPhotoDownload ? 1024 : 10240;
+    let fileInfo = result?.uri ? await FileSystem.getInfoAsync(result.uri) : { exists: false, size: 0 };
+
+    // Si el primer enlace devolvió HTTP 404 / 403 o archivo vacío, reintentar automáticamente con el extractor WebView nativo en vivo
+    if (
+      !isCancelled &&
+      (!result ||
+        !result.uri ||
+        (result.status && result.status >= 400) ||
+        !fileInfo.exists ||
+        (fileInfo.size && fileInfo.size < minValidBytes)) &&
+      NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative &&
+      !isPhotoDownload
+    ) {
+      try {
+        if (onStatus) {
+          onStatus('Re-sincronizando enlace fresco del servidor (evitando 404)…');
+        }
+        const rawPageUrl = extractUrlFromText(rawInput);
+        const shortcode = extractInstagramShortcode(rawPageUrl);
+        const fallbackTarget = shortcode
+          ? `https://www.instagram.com/reel/${shortcode}/`
+          : rawPageUrl;
+        const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(
+          fallbackTarget,
+          false
+        );
+        if (sniffed && sniffed.downloadUrl) {
+          const freshUrl = unescapeUrl(sniffed.downloadUrl);
+          const freshCookies = sniffed.cookies || cookieHeader;
+          const freshUa = sniffed.userAgent || USER_AGENT;
+          result = await runDownloadAttempt(
+            freshUrl,
+            buildHeadersForUrl(freshUrl, freshUa, freshCookies)
+          );
+          fileInfo = result?.uri ? await FileSystem.getInfoAsync(result.uri) : { exists: false, size: 0 };
+        }
+      } catch (_fallbackErr) {}
     }
 
     if (!result || !result.uri) {
@@ -1480,13 +1763,18 @@ export const videoDownloadService = {
 
     if (result.status && result.status >= 400) {
       await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
-      throw new Error(`El servidor rechazó la descarga (código HTTP ${result.status}).`);
+      throw new Error(
+        `El enlace expiró o requiere sesión activa (HTTP ${result.status}). Usa "Capturar con Sesión" o descárgalo desde el Navegador.`
+      );
     }
 
-    const fileInfo = await FileSystem.getInfoAsync(result.uri);
-    if (!fileInfo.exists || (fileInfo.size && fileInfo.size < 10240)) {
+    if (!fileInfo.exists || (fileInfo.size && fileInfo.size < minValidBytes)) {
       await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
-      throw new Error('El archivo descargado no es un video válido o el enlace requiere iniciar sesión.');
+      throw new Error(
+        isPhotoDownload
+          ? 'La imagen descargada no es válida o requiere iniciar sesión.'
+          : 'El archivo descargado no es un video válido o el enlace requiere iniciar sesión.'
+      );
     }
 
     if (isCancelled) {
@@ -1499,6 +1787,7 @@ export const videoDownloadService = {
     let savedAsset = null;
     let folderUri = DOWNLOAD_FOLDER_URI;
     let savedPhysically = false;
+    const finalMediaType = isPhotoDownload ? 'photo' : 'video';
 
     // 1. Asegurar que exista la carpeta propia "Videos Descargados" y registrarla en Mi Carpeta
     try {
@@ -1519,7 +1808,7 @@ export const videoDownloadService = {
           id: destUri || `${folderUri}/${filename}`,
           uri: destUri || `${folderUri}/${filename}`,
           filename,
-          mediaType: 'video',
+          mediaType: finalMediaType,
           fileSize: fileInfo.size || 0,
           creationTime: Date.now(),
         };
@@ -1532,7 +1821,7 @@ export const videoDownloadService = {
           id: destFileUri,
           uri: destFileUri,
           filename,
-          mediaType: 'video',
+          mediaType: finalMediaType,
           fileSize: fileInfo.size || 0,
           creationTime: Date.now(),
         };
@@ -1550,7 +1839,7 @@ export const videoDownloadService = {
           await MediaLibrary.requestPermissionsAsync().catch(() => {});
         }
         const asset = await MediaLibrary.createAssetAsync(result.uri);
-        if (asset) savedAsset = asset;
+        if (asset) savedAsset = { ...asset, mediaType: finalMediaType };
         let album = await MediaLibrary.getAlbumAsync(DOWNLOAD_ALBUM_NAME);
         if (!album) {
           await MediaLibrary.createAlbumAsync(DOWNLOAD_ALBUM_NAME, asset, false);
@@ -1568,11 +1857,16 @@ export const videoDownloadService = {
       // ignorar
     }
 
+    const finalThumbnail =
+      savedAsset?.uri || resolved.thumbnail || thumbnailUrl || (isPhotoDownload ? downloadUrl : null);
+
     return {
       success: true,
       filename,
       title: title || filename,
       platform,
+      mediaType: finalMediaType,
+      thumbnail: finalThumbnail,
       sizeBytes: fileInfo.size || 0,
       asset: savedAsset,
       albumName: DOWNLOAD_ALBUM_NAME,
@@ -1609,6 +1903,8 @@ export const videoDownloadService = {
         title: it.title,
         filename: it.filename,
         platform: it.platform,
+        mediaType: it.mediaType || it.asset?.mediaType || 'video',
+        thumbnail: it.thumbnail || it.asset?.uri || null,
         status: it.status,
         percent: it.percent || 0,
         writtenBytes: it.writtenBytes || 0,
