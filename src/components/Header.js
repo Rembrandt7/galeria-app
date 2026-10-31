@@ -43,6 +43,7 @@ export default function Header({
   onOpenSettings,
   onToggleSearch,
   onOpenVisibilityManager,
+  onOpenFaceCheck,
   hasUpdateAvailable = false,
   // Configuración de Sistema y Columnas desplegable al lado de Actualizar
   gridConfig = {
@@ -228,6 +229,22 @@ export default function Header({
               activeOpacity={0.7}
             >
               <Ionicons name="add" size={25} color="#ffffff" />
+            </TouchableOpacity>
+          )}
+
+          {onOpenFaceCheck && (
+            <TouchableOpacity
+              onPress={onOpenFaceCheck}
+              style={[
+                styles.galaxyIconBtn,
+                {
+                  backgroundColor: 'rgba(16, 185, 129, 0.22)',
+                  borderColor: 'rgba(52, 211, 153, 0.55)',
+                },
+              ]}
+              activeOpacity={0.75}
+            >
+              <Ionicons name="happy-outline" size={20} color="#34d399" />
             </TouchableOpacity>
           )}
 

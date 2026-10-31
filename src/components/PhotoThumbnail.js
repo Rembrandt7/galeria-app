@@ -17,6 +17,7 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
   size,
   onPress,
   onLongPress,
+  onToggleFavorite,
   isFavorite = false,
   isCover = false,
   selectable = false,
@@ -88,11 +89,26 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
         </View>
       )}
 
-      {/* Favorite Heart Badge */}
-      {isFavorite && (
-        <View style={styles.favoriteBadge}>
-          <Ionicons name="heart" size={14} color={theme.colors.favorite} />
-        </View>
+      {/* Favorite Heart Badge (Tappable if onToggleFavorite is provided) */}
+      {onToggleFavorite ? (
+        <TouchableOpacity
+          style={styles.favoriteBadge}
+          onPress={() => onToggleFavorite(asset)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          activeOpacity={0.75}
+        >
+          <Ionicons
+            name={isFavorite ? 'heart' : 'heart-outline'}
+            size={14}
+            color={isFavorite ? theme.colors.favorite : 'rgba(255, 255, 255, 0.72)'}
+          />
+        </TouchableOpacity>
+      ) : (
+        isFavorite && (
+          <View style={styles.favoriteBadge}>
+            <Ionicons name="heart" size={14} color={theme.colors.favorite} />
+          </View>
+        )
       )}
 
       {/* Folder Cover Badge */}

@@ -62,6 +62,7 @@ export default function FolderBrowser({
   onAddMultipleFolders,
   onRemoveFolder,
   onSelectPhoto,
+  onToggleFavorite,
   favorites = {},
   customCovers = {},
   gridConfig = {
@@ -1224,6 +1225,7 @@ export default function FolderBrowser({
         size={dynamicPhotoSize}
         onPress={handlePressPhoto}
         onLongPress={handleLongPressPhoto}
+        onToggleFavorite={onToggleFavorite}
         isFavorite={Boolean(favorites[item.id])}
         isCover={Boolean(currentFolderCoverUri && item.uri === currentFolderCoverUri)}
         selectable={isSelecting}
@@ -1234,6 +1236,7 @@ export default function FolderBrowser({
       favorites,
       handlePressPhoto,
       handleLongPressPhoto,
+      onToggleFavorite,
       isSelecting,
       selectedIds,
       dynamicPhotoSize,
@@ -1568,23 +1571,28 @@ export default function FolderBrowser({
                   ]}
                   onPress={() => handleOpenSubfolder({ ...sub, name: displayLabel })}
                   onLongPress={() => {
+                    const alertOptions = [
+                      { text: 'Cancelar', style: 'cancel' },
+                      {
+                        text: '📁 Abrir subcarpeta',
+                        onPress: () => handleOpenSubfolder({ ...sub, name: displayLabel }),
+                      },
+                    ];
+                    if (onAssignFolderToSegment) {
+                      alertOptions.push({
+                        text: '📂 Mover a Archivos (Privado)',
+                        onPress: () => onAssignFolderToSegment(sub.uri, 'files', displayLabel),
+                      });
+                    }
+                    alertOptions.push({
+                      text: isHidden ? '👁️ Mostrar subcarpeta' : '🙈 Ocultar de la vista',
+                      style: isHidden ? 'default' : 'destructive',
+                      onPress: () => handleToggleSubfolderVisibility(sub),
+                    });
                     Alert.alert(
                       displayLabel,
-                      isHidden
-                        ? 'Esta subcarpeta está oculta. ¿Deseas volver a mostrarla?'
-                        : '¿Qué deseas hacer con esta subcarpeta?',
-                      [
-                        { text: 'Cancelar', style: 'cancel' },
-                        {
-                          text: 'Abrir subcarpeta',
-                          onPress: () => handleOpenSubfolder({ ...sub, name: displayLabel }),
-                        },
-                        {
-                          text: isHidden ? 'Mostrar subcarpeta' : 'Ocultar de la vista',
-                          style: isHidden ? 'default' : 'destructive',
-                          onPress: () => handleToggleSubfolderVisibility(sub),
-                        },
-                      ]
+                      'Elige qué deseas hacer con esta carpeta:',
+                      alertOptions
                     );
                   }}
                   activeOpacity={0.82}
@@ -2492,6 +2500,28 @@ export default function FolderBrowser({
               </TouchableOpacity>
             </View>
             <View style={styles.selectionActionsRow}>
+              {onToggleFavorite && selectedAssets.length > 0 && (
+                <TouchableOpacity
+                  style={[
+                    styles.selActionBtn,
+                    {
+                      backgroundColor: 'rgba(244, 63, 94, 0.18)',
+                      borderColor: '#f43f5e',
+                    },
+                  ]}
+                  onPress={async () => {
+                    for (const item of selectedAssets) {
+                      await onToggleFavorite(item);
+                    }
+                    clearSelection();
+                  }}
+                >
+                  <Ionicons name="heart" size={15} color="#fb7185" />
+                  <Text style={[styles.selActionText, { color: '#fecdd3' }]}>
+                    Favorito ({selectedCount})
+                  </Text>
+                </TouchableOpacity>
+              )}
               {onSetFolderCover && selectedAssets.length === 1 && (
                 <TouchableOpacity
                   style={[

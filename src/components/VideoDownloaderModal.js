@@ -52,11 +52,14 @@ export default function VideoDownloaderModal({
   onPlayDownloadedAsset,
   initialSharedUrl,
   onClearSharedUrl,
+  onOpenBrowser,
+  lastBrowserUrl,
 }) {
   const [urlInput, setUrlInput] = useState('');
   const [downloadItems, setDownloadItems] = useState([]);
   const [filterStatus, setFilterStatus] = useState('all'); // 'all' | 'active' | 'completed' | 'error'
   const [floatingDismissed, setFloatingDismissed] = useState(false);
+  const [floatingExpandedFilter, setFloatingExpandedFilter] = useState(null); // null | 'completed' | 'error'
   const [saveToVault, setSaveToVault] = useState(false);
 
   // Controladores activos por ID de descarga para pausar/reanudar/cancelar individualmente
@@ -106,7 +109,7 @@ export default function VideoDownloaderModal({
     }
   }, [visible]);
 
-  // Guardar cambios de la hilera en almacenamiento local y sincronizar enlaces con el navegador nativo
+  // Guardar cambios de la hilera en almacenamiento local y sincronizar enlaces y contadores (🟢 / 🔴) con el navegador nativo
   useEffect(() => {
     if (!loadedFromStorageRef.current) return;
     videoDownloadService.saveStoredDownloadItems(downloadItems);
@@ -116,6 +119,23 @@ export default function VideoDownloaderModal({
         .map((it) => it.url);
       if (NativeModules?.VideoEngineModule?.syncDownloadedUrlsNative) {
         NativeModules.VideoEngineModule.syncDownloadedUrlsNative(completedUrls).catch(() => {});
+      }
+      if (NativeModules?.VideoEngineModule?.syncBrowserDownloadsSummaryNative) {
+        const compCount = downloadItems.filter((it) => it?.status === 'completed').length;
+        const errCount = downloadItems.filter((it) => it?.status === 'error' || it?.status === 'cancelled').length;
+        const actCount = downloadItems.filter((it) => it?.status === 'downloading' || it?.status === 'paused').length;
+        const summaryList = downloadItems.slice(0, 25).map((it) => ({
+          id: it.id,
+          url: it.url || '',
+          title: it.title || it.filename || 'Video',
+          status: it.status,
+          mediaType: it.mediaType || it.asset?.mediaType || 'video',
+          localUri: it.asset?.uri || '',
+          errorMessage: it.errorMessage || '',
+        }));
+        NativeModules.VideoEngineModule
+          .syncBrowserDownloadsSummaryNative(compCount, errCount, actCount, JSON.stringify(summaryList))
+          .catch(() => {});
       }
     } catch (_e) {}
   }, [downloadItems]);
@@ -567,67 +587,248 @@ export default function VideoDownloaderModal({
         )
       : 0;
 
-  // Si el modal está cerrado pero hay descargas activas (o recién terminadas no descartadas),
-  // mostrar una barra flotante que el usuario puede MOVER con el dedo por la pantalla
+  // Si el modal está cerrado pero hay descargas activas, completadas o fallidas no descartadas,
+  // mostrar la bolita/pestaña flotante con contadores en VERDE (descargados) y ROJO (fallidos) para verlos sin entrar a la pantalla completa
   if (!visible) {
-    if (floatingDismissed || (activeItems.length === 0 && errorItems.length === 0)) {
+    if (
+      floatingDismissed ||
+      (activeItems.length === 0 && completedItems.length === 0 && errorItems.length === 0)
+    ) {
       return null;
     }
+
+    const previewItems =
+      floatingExpandedFilter === 'completed'
+        ? completedItems.slice(0, 6)
+        : floatingExpandedFilter === 'error'
+        ? errorItems.slice(0, 6)
+        : [];
 
     return (
       <Animated.View
         style={[
           styles.floatingMovableWidget,
           {
+            flexDirection: 'column',
+            alignItems: 'stretch',
             transform: [{ translateX: floatPan.x }, { translateY: floatPan.y }],
           },
         ]}
         {...floatingPanResponder.panHandlers}
       >
-        <View style={styles.floatingDragHandle}>
-          <Ionicons name="move-outline" size={15} color="#94a3b8" />
-        </View>
-
-        <View style={styles.floatingInfoCol}>
-          <Text style={styles.floatingTitle} numberOfLines={1}>
-            {activeItems.length > 0
-              ? `Descargando (${activeItems.length}) • ${avgActivePercent}%`
-              : 'Estado de descargas'}
-          </Text>
-          <View style={styles.floatingBadgesRow}>
-            {completedItems.length > 0 && (
-              <Text style={styles.floatingBadgeOk}>✅ {completedItems.length} listos</Text>
-            )}
-            {errorItems.length > 0 && (
-              <Text style={styles.floatingBadgeErr}>❌ {errorItems.length} con error</Text>
-            )}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <View style={styles.floatingDragHandle}>
+            <Ionicons name="move-outline" size={15} color="#94a3b8" />
           </View>
-          {activeItems.length > 0 && (
-            <View style={styles.floatingProgressBg}>
-              <View
-                style={[styles.floatingProgressFill, { width: `${avgActivePercent}%` }]}
-              />
-            </View>
+
+          <TouchableOpacity
+            style={styles.floatingInfoCol}
+            activeOpacity={0.85}
+            onPress={() => {
+              if (onReopen) onReopen();
+            }}
+          >
+            <Text style={styles.floatingTitle} numberOfLines={1}>
+              {activeItems.length > 0
+                ? `⬇ Descargando (${activeItems.length}) • ${avgActivePercent}%`
+                : '⬇ Descargas'}
+            </Text>
+            {activeItems.length > 0 && (
+              <View style={styles.floatingProgressBg}>
+                <View
+                  style={[styles.floatingProgressFill, { width: `${avgActivePercent}%` }]}
+                />
+              </View>
+            )}
+          </TouchableOpacity>
+
+          {/* Bolita Verde: Videos Descargados (toca para verlos sin abrir toda la pantalla) */}
+          <TouchableOpacity
+            onPress={() =>
+              setFloatingExpandedFilter((prev) =>
+                prev === 'completed' ? null : 'completed'
+              )
+            }
+            style={{
+              backgroundColor:
+                floatingExpandedFilter === 'completed' ? '#059669' : 'rgba(16, 185, 129, 0.22)',
+              borderWidth: 1.5,
+              borderColor: '#10b981',
+              borderRadius: 14,
+              paddingHorizontal: 9,
+              paddingVertical: 5,
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={{ color: '#a7f3d0', fontSize: 11.5, fontWeight: '900' }}>
+              🟢 {completedItems.length}
+            </Text>
+          </TouchableOpacity>
+
+          {/* Bolita Roja: Videos Fallidos (toca para verlos/reintentar sin abrir toda la pantalla) */}
+          <TouchableOpacity
+            onPress={() =>
+              setFloatingExpandedFilter((prev) => (prev === 'error' ? null : 'error'))
+            }
+            style={{
+              backgroundColor:
+                floatingExpandedFilter === 'error' ? '#dc2626' : 'rgba(239, 68, 68, 0.22)',
+              borderWidth: 1.5,
+              borderColor: '#ef4444',
+              borderRadius: 14,
+              paddingHorizontal: 9,
+              paddingVertical: 5,
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={{ color: '#fecaca', fontSize: 11.5, fontWeight: '900' }}>
+              🔴 {errorItems.length}
+            </Text>
+          </TouchableOpacity>
+
+          {onReopen && (
+            <TouchableOpacity
+              onPress={onReopen}
+              style={styles.floatingOpenBtn}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.floatingOpenBtnText}>Ir</Text>
+            </TouchableOpacity>
+          )}
+
+          {activeItems.length === 0 && (
+            <TouchableOpacity
+              onPress={() => {
+                setFloatingExpandedFilter(null);
+                setFloatingDismissed(true);
+              }}
+              style={styles.floatingCloseBtn}
+            >
+              <Ionicons name="close" size={16} color="#94a3b8" />
+            </TouchableOpacity>
           )}
         </View>
 
-        {onReopen && (
-          <TouchableOpacity
-            onPress={onReopen}
-            style={styles.floatingOpenBtn}
-            activeOpacity={0.8}
+        {/* Vista rápida emergente de videos descargados (🟢) o fallidos (🔴) sin entrar a la pantalla */}
+        {floatingExpandedFilter && (
+          <View
+            style={{
+              marginTop: 8,
+              paddingTop: 8,
+              borderTopWidth: 1,
+              borderTopColor: 'rgba(255,255,255,0.12)',
+              gap: 6,
+            }}
           >
-            <Text style={styles.floatingOpenBtnText}>Ver lista</Text>
-          </TouchableOpacity>
-        )}
+            <View
+              style={{
+                flexDirection: 'row',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
+              <Text
+                style={{
+                  color: floatingExpandedFilter === 'completed' ? '#6ee7b7' : '#fca5a5',
+                  fontSize: 11.5,
+                  fontWeight: '800',
+                }}
+              >
+                {floatingExpandedFilter === 'completed'
+                  ? `🟢 Descargados listos para ver (${completedItems.length})`
+                  : `🔴 Descargas fallidas (${errorItems.length})`}
+              </Text>
+              <TouchableOpacity onPress={() => setFloatingExpandedFilter(null)}>
+                <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700' }}>
+                  Ocultar ▲
+                </Text>
+              </TouchableOpacity>
+            </View>
 
-        {activeItems.length === 0 && (
-          <TouchableOpacity
-            onPress={() => setFloatingDismissed(true)}
-            style={styles.floatingCloseBtn}
-          >
-            <Ionicons name="close" size={16} color="#94a3b8" />
-          </TouchableOpacity>
+            {previewItems.length === 0 ? (
+              <Text style={{ color: '#94a3b8', fontSize: 11, paddingVertical: 4 }}>
+                {floatingExpandedFilter === 'completed'
+                  ? 'Aún no hay videos descargados.'
+                  : 'No hay descargas con error.'}
+              </Text>
+            ) : (
+              previewItems.map((it) => (
+                <View
+                  key={it.id}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+                    paddingHorizontal: 10,
+                    paddingVertical: 7,
+                    borderRadius: 10,
+                    borderWidth: 1,
+                    borderColor:
+                      floatingExpandedFilter === 'completed'
+                        ? 'rgba(16, 185, 129, 0.35)'
+                        : 'rgba(239, 68, 68, 0.35)',
+                    gap: 8,
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={{ color: '#f8fafc', fontSize: 11.5, fontWeight: '700' }}
+                      numberOfLines={1}
+                    >
+                      {it.title || it.filename || 'Video'}
+                    </Text>
+                    {floatingExpandedFilter === 'error' && it.errorMessage ? (
+                      <Text
+                        style={{ color: '#fca5a5', fontSize: 10 }}
+                        numberOfLines={1}
+                      >
+                        {it.errorMessage}
+                      </Text>
+                    ) : null}
+                  </View>
+
+                  {floatingExpandedFilter === 'completed' && it.asset?.uri && onPlayDownloadedAsset ? (
+                    <TouchableOpacity
+                      onPress={() => onPlayDownloadedAsset(it.asset)}
+                      style={{
+                        backgroundColor: '#059669',
+                        paddingHorizontal: 10,
+                        paddingVertical: 5,
+                        borderRadius: 8,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      <Ionicons name="play" size={12} color="#ffffff" />
+                      <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '800' }}>
+                        Ver
+                      </Text>
+                    </TouchableOpacity>
+                  ) : floatingExpandedFilter === 'error' ? (
+                    <TouchableOpacity
+                      onPress={() => handleRetryItem(it)}
+                      style={{
+                        backgroundColor: '#2563eb',
+                        paddingHorizontal: 10,
+                        paddingVertical: 5,
+                        borderRadius: 8,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                      }}
+                    >
+                      <Ionicons name="refresh" size={12} color="#ffffff" />
+                      <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '800' }}>
+                        Reintentar
+                      </Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+              ))
+            )}
+          </View>
         )}
       </Animated.View>
     );
@@ -1296,6 +1497,45 @@ export default function VideoDownloaderModal({
             })
           )}
         </ScrollView>
+
+        {/* Círculo flotante del Navegador para regresar directamente al Explorador Web */}
+        {onOpenBrowser && (
+          <TouchableOpacity
+            style={{
+              position: 'absolute',
+              right: 16,
+              bottom: Platform.OS === 'android' ? 56 : 36,
+              width: 64,
+              height: 64,
+              borderRadius: 32,
+              backgroundColor: '#2563eb',
+              borderWidth: 2,
+              borderColor: '#60a5fa',
+              alignItems: 'center',
+              justifyContent: 'center',
+              elevation: 12,
+              shadowColor: '#000',
+              shadowOpacity: 0.45,
+              shadowRadius: 8,
+              shadowOffset: { width: 0, height: 4 },
+            }}
+            activeOpacity={0.85}
+            onPress={() => onOpenBrowser(lastBrowserUrl || 'https://www.google.com')}
+          >
+            <Ionicons name="Compass" size={26} color="#ffffff" style={{ display: 'none' }} />
+            <Ionicons name="globe-outline" size={26} color="#ffffff" />
+            <Text
+              style={{
+                color: '#ffffff',
+                fontSize: 9.5,
+                fontWeight: '900',
+                marginTop: 1,
+              }}
+            >
+              Navegador
+            </Text>
+          </TouchableOpacity>
+        )}
       </SafeAreaView>
     </Modal>
   );

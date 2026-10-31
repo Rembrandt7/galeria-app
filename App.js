@@ -47,6 +47,7 @@ import VideoDownloaderModal from './src/components/VideoDownloaderModal';
 import TiendaRembModal from './src/components/TiendaRembModal';
 import ModoGuardarModal from './src/components/ModoGuardarModal';
 import { WebBrowserModal } from './src/components/WebBrowserModal';
+import FaceCheckModal from './src/components/FaceCheckModal';
 
 export default function App() {
   const [hasPermission, setHasPermission] = useState(null);
@@ -87,6 +88,9 @@ export default function App() {
   const [cameraVisible, setCameraVisible] = useState(false);
   const [downloaderVisible, setDownloaderVisible] = useState(false);
   const [browserVisible, setBrowserVisible] = useState(false);
+  const [faceCheckVisible, setFaceCheckVisible] = useState(false);
+  const [lastBrowserUrl, setLastBrowserUrl] = useState('https://www.google.com');
+  const [browserAutoOpenUrl, setBrowserAutoOpenUrl] = useState(null);
   const [sharedIncomingUrl, setSharedIncomingUrl] = useState(null);
   const [storeVisible, setStoreVisible] = useState(false);
   const [albumSearchVisible, setAlbumSearchVisible] = useState(false);
@@ -407,7 +411,11 @@ export default function App() {
           'file:///storage/emulated/0/Download',
           'file:///storage/emulated/0/Telegram',
         ]);
-        const visibleSet = new Set();
+        const visibleSet = new Set([
+          'file:///storage/emulated/0/DCIM',
+          'file:///storage/emulated/0/DCIM/Camera',
+          'file:///storage/emulated/0/Pictures',
+        ]);
         const allItems = [...(albums || []), ...(savedFolders || [])];
         for (const item of allItems) {
           if (!item?.uri || item.isFavoritesCard || item.isVariosCard) continue;
@@ -1359,6 +1367,7 @@ export default function App() {
               : null
           }
           onPickFolder={handlePickFolder}
+          onOpenFaceCheck={() => setFaceCheckVisible(true)}
           onFindDuplicates={() => setDupVisible(true)}
           onToggleSearch={
             activeTab === 'albums' && !selectedAlbum
@@ -1538,6 +1547,7 @@ export default function App() {
               onRemoveFolder={handleRemoveFolder}
               onSelectPhoto={handleOpenViewer}
               favorites={favorites}
+              onToggleFavorite={handleToggleFavorite}
               customCovers={customCovers}
               gridConfig={gridConfig}
               onSetFolderCover={handleSetFolderCover}
@@ -1604,6 +1614,7 @@ export default function App() {
             <PhotoGrid
               assets={displayedAssets}
               favorites={favorites}
+              onToggleFavorite={handleToggleFavorite}
               onSelectPhoto={handleOpenViewer}
               defaultColumns={gridConfig?.photoColumns || 0}
               onSetFolderCover={selectedAlbum ? handleSetFolderCover : null}
@@ -1759,10 +1770,36 @@ export default function App() {
         <WebBrowserModal
           visible={browserVisible}
           onClose={() => setBrowserVisible(false)}
+          autoOpenUrl={browserAutoOpenUrl}
+          onClearAutoOpenUrl={() => setBrowserAutoOpenUrl(null)}
+          onUpdateLastUrl={(u) => {
+            if (u) setLastBrowserUrl(u);
+          }}
+          onOpenDownloads={(currentUrl) => {
+            if (currentUrl) setLastBrowserUrl(currentUrl);
+            setBrowserVisible(false);
+            setDownloaderVisible(true);
+          }}
           onDownloadVideoUrl={(url) => {
             setBrowserVisible(false);
             setSharedIncomingUrl(url);
             setDownloaderVisible(true);
+          }}
+        />
+
+        {/* CheckRemb · FaceCheck ID: Buscador Biométrico de Rostros */}
+        <FaceCheckModal
+          visible={faceCheckVisible}
+          onClose={() => setFaceCheckVisible(false)}
+          onOpenBrowserUrl={(url) => {
+            setFaceCheckVisible(false);
+            setLastBrowserUrl(url);
+            setBrowserAutoOpenUrl(url);
+          }}
+          onOpenAsset={(asset) => {
+            if (!asset?.uri) return;
+            setFaceCheckVisible(false);
+            handleOpenViewer(asset, [asset]);
           }}
         />
 
@@ -1773,6 +1810,12 @@ export default function App() {
           onClearSharedUrl={() => setSharedIncomingUrl(null)}
           onClose={() => setDownloaderVisible(false)}
           onReopen={() => setDownloaderVisible(true)}
+          lastBrowserUrl={lastBrowserUrl}
+          onOpenBrowser={(targetUrl) => {
+            const urlToOpen = targetUrl || lastBrowserUrl || 'https://www.google.com';
+            setDownloaderVisible(false);
+            setBrowserAutoOpenUrl(urlToOpen);
+          }}
           onVideoDownloaded={async () => {
             const updated = await folderService.getSavedFolders();
             setSavedFolders(updated);

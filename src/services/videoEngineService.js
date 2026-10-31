@@ -258,6 +258,8 @@ export const videoEngineService = {
                 ? 'intro'
                 : rawReason === 'outro'
                 ? 'outro'
+                : rawReason === 'boring'
+                ? 'boring'
                 : 'static';
             const label =
               reason === 'black'
@@ -266,6 +268,8 @@ export const videoEngineService = {
                 ? 'Intro'
                 : reason === 'outro'
                 ? 'Cierre'
+                : reason === 'boring'
+                ? 'Poco interesante'
                 : 'Sin movimiento';
             return {
               id: `smart_rem_${idx}_${Math.round(s.startMs || 0)}`,
@@ -283,6 +287,7 @@ export const videoEngineService = {
         savedDurationSec: (rawRes?.savedDurationMs || 0) / 1000,
         blackRemovedSec: (rawRes?.blackRemovedMs || 0) / 1000,
         staticRemovedSec: (rawRes?.staticRemovedMs || 0) / 1000,
+        boringRemovedSec: (rawRes?.boringRemovedMs || 0) / 1000,
         introRemovedSec: (rawRes?.introRemovedMs || 0) / 1000,
         keepSegments,
         removedSegments,

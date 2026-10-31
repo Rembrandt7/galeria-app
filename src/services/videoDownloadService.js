@@ -210,6 +210,115 @@ async function resolveTwitter(url, signal) {
   const statusId = match[2] || match[1];
   const user = (match[2] ? match[1] : 'i') || 'i';
 
+  // Helper para filtrar intros/bumpers publicitarios cuando una publicación tiene varios clips
+  const pickBestVideoIgnoreIntro = (items, urlField = 'url') => {
+    if (!Array.isArray(items) || items.length === 0) return null;
+    if (items.length === 1) return items[0];
+    const nonIntro = items.filter((it) => {
+      const u = String(it?.[urlField] || '');
+      const dur = Number(it?.duration_millis || it?.duration || 0);
+      if (/preroll|bumper|intro|sponsor|ad_video/i.test(u)) return false;
+      return true;
+    });
+    const pool = nonIntro.length > 0 ? nonIntro : items;
+    // Si el primer clip es muy corto (<5s) y el segundo es más largo (>6s), ignorar el primer clip (intro)
+    if (pool.length >= 2) {
+      const d0 = Number(pool[0]?.duration_millis || (pool[0]?.duration ? pool[0].duration * 1000 : 0));
+      const d1 = Number(pool[1]?.duration_millis || (pool[1]?.duration ? pool[1].duration * 1000 : 0));
+      if (d0 > 0 && d0 <= 5500 && d1 > d0 * 1.5) {
+        return pool[1];
+      }
+    }
+    return pool[0];
+  };
+
+  // Intento 0 (Prioritario con Sesión del Explorador): GraphQL de X.com usando las cookies del Explorador Web (auth_token + ct0)
+  if (NativeModules?.VideoEngineModule?.getCookiesForUrlNative) {
+    try {
+      const xCookies = (await NativeModules.VideoEngineModule.getCookiesForUrlNative('https://x.com')) || '';
+      const ct0Match = xCookies.match(/(?:^|;\s*)ct0=([^;]+)/);
+      const authMatch = xCookies.match(/(?:^|;\s*)auth_token=([^;]+)/);
+      if (ct0Match && ct0Match[1] && authMatch && authMatch[1]) {
+        const ct0 = ct0Match[1].trim();
+        const bearer = 'AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA';
+        const variables = JSON.stringify({
+          tweetId: String(statusId),
+          withCommunity: false,
+          includePromotedContent: false,
+          withVoice: false,
+        });
+        const features = JSON.stringify({
+          creator_subscriptions_tweet_preview_api_enabled: true,
+          premium_content_api_read_enabled: false,
+          communities_web_enable_tweet_community_results_fetch: true,
+          c9s_tweet_anatomy_moderator_badge_enabled: true,
+          articles_preview_enabled: true,
+          responsive_web_edit_tweet_api_enabled: true,
+          graphql_is_translatable_rweb_tweet_is_translatable_enabled: true,
+          view_counts_everywhere_api_enabled: true,
+          longform_notetweets_consumption_enabled: true,
+          responsive_web_twitter_article_tweet_consumption_enabled: true,
+          tweet_awards_web_tipping_enabled: false,
+          creator_subscriptions_quote_tweet_preview_enabled: false,
+          freedom_of_speech_not_reach_fetch_enabled: true,
+          standardized_nudges_misinfo: true,
+          tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled: true,
+          rweb_video_timestamps_enabled: true,
+          longform_notetweets_rich_text_read_enabled: true,
+          longform_notetweets_inline_media_enabled: true,
+          responsive_web_enhance_cards_enabled: false,
+        });
+        const gqlUrl = `https://x.com/i/api/graphql/0hWvDhmW8YQ-S_ib3azIrw/TweetResultByRestId?variables=${encodeURIComponent(variables)}&features=${encodeURIComponent(features)}`;
+        const gqlRes = await fetch(gqlUrl, {
+          headers: {
+            Authorization: `Bearer ${bearer}`,
+            'x-csrf-token': ct0,
+            'x-twitter-active-user': 'yes',
+            'x-twitter-auth-type': 'OAuth2Session',
+            'x-twitter-client-language': 'es',
+            Cookie: xCookies,
+            'User-Agent': DESKTOP_USER_AGENT,
+            Accept: 'application/json',
+            Referer: `https://x.com/${user}/status/${statusId}`,
+          },
+          signal,
+        });
+        if (gqlRes.ok) {
+          const gqlText = await gqlRes.text();
+          // Extraer todas las variantes MP4 directas de video.twimg.com y elegir la de mayor resolución/bitrate
+          const mp4Regex = /"url"\s*:\s*"(https?:\\?\/\\?\/video\.twimg\.com[^"]+\.mp4[^"]*)"/gi;
+          const foundMp4s = [];
+          let m;
+          while ((m = mp4Regex.exec(gqlText)) !== null) {
+            const cleanMp4 = unescapeUrl(m[1]);
+            if (cleanMp4 && !/preroll|bumper|ad_video/i.test(cleanMp4)) {
+              foundMp4s.push(cleanMp4);
+            }
+          }
+          if (foundMp4s.length > 0) {
+            // Ordenar por resolución en la URL (ej. /1280x720/ o /720x1280/)
+            foundMp4s.sort((a, b) => {
+              const resA = a.match(/\/(\d+)x(\d+)\//);
+              const resB = b.match(/\/(\d+)x(\d+)\//);
+              const pxA = resA ? Number(resA[1]) * Number(resA[2]) : 0;
+              const pxB = resB ? Number(resB[1]) * Number(resB[2]) : 0;
+              return pxB - pxA;
+            });
+            return {
+              downloadUrl: foundMp4s[0],
+              cookies: xCookies,
+              userAgent: DESKTOP_USER_AGENT,
+              title: `x_${statusId}`,
+              source: 'X / Twitter (Sesión)',
+            };
+          }
+        }
+      }
+    } catch (_gqlErr) {
+      if (signal?.aborted) throw _gqlErr;
+    }
+  }
+
   // Intento 1: api.vxtwitter.com
   try {
     const vxRes = await fetch(`https://api.vxtwitter.com/${user}/status/${statusId}`, {
@@ -218,8 +327,8 @@ async function resolveTwitter(url, signal) {
     });
     if (vxRes.ok) {
       const data = await vxRes.json();
-      const mediaList = data.media_extended || [];
-      const videoItem = mediaList.find((m) => m.type === 'video' || m.type === 'gif');
+      const mediaList = (data.media_extended || []).filter((m) => m.type === 'video' || m.type === 'gif');
+      const videoItem = pickBestVideoIgnoreIntro(mediaList, 'url');
       if (videoItem && videoItem.url) {
         return {
           downloadUrl: videoItem.url,
@@ -229,7 +338,7 @@ async function resolveTwitter(url, signal) {
         };
       }
       if (Array.isArray(data.mediaURLs) && data.mediaURLs.length > 0) {
-        const mp4Url = data.mediaURLs.find((u) => /\.mp4/i.test(u));
+        const mp4Url = data.mediaURLs.find((u) => /\.mp4/i.test(u) && !/preroll|intro/i.test(u));
         if (mp4Url) {
           return {
             downloadUrl: mp4Url,
@@ -252,11 +361,12 @@ async function resolveTwitter(url, signal) {
     if (fxRes.ok) {
       const data = await fxRes.json();
       const videos = data?.tweet?.media?.videos || data?.tweet?.media?.all?.filter((m) => m.type === 'video' || m.type === 'gif') || [];
-      if (videos.length > 0 && videos[0].url) {
+      const bestVid = pickBestVideoIgnoreIntro(videos, 'url');
+      if (bestVid && bestVid.url) {
         return {
-          downloadUrl: videos[0].url,
+          downloadUrl: bestVid.url,
           title: data?.tweet?.text ? data.tweet.text.slice(0, 50) : `twitter_${statusId}`,
-          thumbnail: videos[0].thumbnail_url || null,
+          thumbnail: bestVid.thumbnail_url || null,
           source: 'X / Twitter',
         };
       }
@@ -329,6 +439,27 @@ async function resolveTwitter(url, signal) {
     }
   } catch (e) {
     if (signal?.aborted) throw e;
+  }
+
+  // Intento 5: Sniffer WebView Nativo con las cookies de sesión iniciada en el Explorador
+  if (NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative) {
+    try {
+      const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(
+        `https://x.com/${user}/status/${statusId}`,
+        false
+      );
+      if (sniffed && sniffed.downloadUrl) {
+        return {
+          downloadUrl: unescapeUrl(sniffed.downloadUrl),
+          cookies: sniffed.cookies || '',
+          userAgent: sniffed.userAgent || DESKTOP_USER_AGENT,
+          title: `x_${statusId}`,
+          source: 'X / Twitter (Explorador)',
+        };
+      }
+    } catch (_eSniff) {
+      if (signal?.aborted) throw _eSniff;
+    }
   }
 
   throw new Error('No se encontró video en esta publicación de X/Twitter');
@@ -1780,6 +1911,54 @@ export const videoDownloadService = {
     if (isCancelled) {
       await FileSystem.deleteAsync(targetPath, { idempotent: true }).catch(() => {});
       throw new Error('CANCELLED');
+    }
+
+    // 0. Si es un video y tiene un Intro al principio, ignorar/recortar el intro automáticamente para dejar el video original limpio
+    if (
+      !isPhotoDownload &&
+      NativeModules?.VideoEngineModule?.analyzeSmartTrimNative &&
+      NativeModules?.VideoEngineModule?.trimSegments
+    ) {
+      try {
+        if (onStatus) onStatus('Verificando si el video tiene intro para omitirlo…');
+        const smartRes = await NativeModules.VideoEngineModule.analyzeSmartTrimNative(
+          result.uri,
+          false,
+          false,
+          true,
+          1.0
+        );
+        const removed = Array.isArray(smartRes?.removedSegments) ? smartRes.removedSegments : [];
+        const keep = Array.isArray(smartRes?.keepSegments) ? smartRes.keepSegments : [];
+        const hasIntro = removed.some(
+          (r) => String(r?.reason) === 'intro' && (r?.startMs || 0) <= 500
+        );
+        if (hasIntro && keep.length >= 1) {
+          if (onStatus) onStatus('Omitiendo intro detectado y conservando video original…');
+          const cleanTempUri = `${FileSystem.cacheDirectory}clean_${filename}`;
+          await FileSystem.deleteAsync(cleanTempUri, { idempotent: true }).catch(() => {});
+          const trimRes = await NativeModules.VideoEngineModule.trimSegments(
+            result.uri,
+            cleanTempUri,
+            keep.map((k) => ({
+              startMs: Math.max(0, Math.round(k.startMs || 0)),
+              endMs: Math.max(200, Math.round(k.endMs || 0)),
+            }))
+          );
+          const trimmedUri = trimRes?.outputPath || cleanTempUri;
+          const trimmedInfo = await FileSystem.getInfoAsync(trimmedUri).catch(() => ({ exists: false, size: 0 }));
+          if (trimmedInfo?.exists && trimmedInfo.size >= minValidBytes) {
+            await FileSystem.deleteAsync(result.uri, { idempotent: true }).catch(() => {});
+            result = { ...result, uri: trimmedUri };
+            fileInfo = trimmedInfo;
+            targetPath = trimmedUri;
+          } else {
+            await FileSystem.deleteAsync(cleanTempUri, { idempotent: true }).catch(() => {});
+          }
+        }
+      } catch (_introErr) {
+        // Si falla el análisis de intro, conservar el video descargado íntegro
+      }
     }
 
     if (onStatus) onStatus(`Guardando en carpeta "${DOWNLOAD_ALBUM_NAME}"…`);

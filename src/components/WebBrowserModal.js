@@ -13,11 +13,13 @@ import {
   Platform,
   Alert,
   useWindowDimensions,
+  DeviceEventEmitter,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const HISTORY_STORAGE_KEY = '@galeria_browser_history_v1';
+const BOOKMARKS_STORAGE_KEY = '@galeria_web_bookmarks_v1';
 const BASE_EMAIL_STORAGE_KEY = '@galeria_browser_base_email_v1';
 const TEMP_MAIL_SESSION_KEY = '@galeria_temp_mail_session_v1';
 
@@ -34,7 +36,15 @@ const QUICK_SITES = [
   { id: 'pexels', name: 'Pexels HD', url: 'https://www.pexels.com/es-es/', icon: 'camera', color: '#14B8A6' },
 ];
 
-export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
+export const WebBrowserModal = ({
+  visible,
+  onClose,
+  onDownloadVideoUrl,
+  onOpenDownloads,
+  onUpdateLastUrl,
+  autoOpenUrl,
+  onClearAutoOpenUrl,
+}) => {
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const isFoldExpanded =
     screenWidth >= 480 || (screenWidth / Math.max(screenHeight, 1) >= 0.65 && screenWidth >= 420);
@@ -42,6 +52,8 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
 
   const [queryOrUrl, setQueryOrUrl] = useState('https://omnicreator.app');
   const [history, setHistory] = useState([]);
+  const [bookmarks, setBookmarks] = useState([]);
+  const [newBookmarkName, setNewBookmarkName] = useState('');
   const [opening, setOpening] = useState(false);
   const [cleaningData, setCleaningData] = useState(false);
   const [baseEmail, setBaseEmail] = useState('');
@@ -51,9 +63,62 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
   const [loadingTempMail, setLoadingTempMail] = useState(false);
   const [checkingInbox, setCheckingInbox] = useState(false);
 
+  const loadBookmarks = async () => {
+    try {
+      const raw = await AsyncStorage.getItem(BOOKMARKS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) setBookmarks(parsed);
+      }
+    } catch (_) {}
+  };
+
+  const addBookmark = async (urlStr, customTitle = '') => {
+    try {
+      const cleanUrl = normalizeTargetUrl(urlStr);
+      if (!cleanUrl) return;
+      let label = (customTitle || '').trim();
+      if (!label) {
+        try {
+          const host = cleanUrl.replace(/^https?:\/\/(www\.)?/i, '').split('/')[0];
+          label = host || cleanUrl.slice(0, 24);
+        } catch (_) {
+          label = cleanUrl.slice(0, 24);
+        }
+      }
+      setBookmarks((prev) => {
+        const filtered = prev.filter((b) => b.url !== cleanUrl);
+        const next = [{ id: `bm_${Date.now()}`, title: label, url: cleanUrl }, ...filtered].slice(0, 40);
+        AsyncStorage.setItem(BOOKMARKS_STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+        return next;
+      });
+    } catch (_) {}
+  };
+
+  const removeBookmark = async (urlStr) => {
+    setBookmarks((prev) => {
+      const next = prev.filter((b) => b.url !== urlStr);
+      AsyncStorage.setItem(BOOKMARKS_STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    loadBookmarks();
+    const sub = DeviceEventEmitter.addListener('BrowserBookmarkAdded', (payload) => {
+      if (payload?.url) {
+        addBookmark(payload.url, payload.title || '');
+      }
+    });
+    return () => {
+      sub.remove();
+    };
+  }, []);
+
   useEffect(() => {
     if (visible) {
       loadHistory();
+      loadBookmarks();
       AsyncStorage.getItem(BASE_EMAIL_STORAGE_KEY)
         .then((saved) => {
           if (saved) setBaseEmail(saved);
@@ -69,6 +134,14 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
         .catch(() => {});
     }
   }, [visible]);
+
+  useEffect(() => {
+    if (autoOpenUrl && typeof autoOpenUrl === 'string') {
+      const target = autoOpenUrl;
+      if (onClearAutoOpenUrl) onClearAutoOpenUrl();
+      launchBrowser(target);
+    }
+  }, [autoOpenUrl]);
 
   const handleCreateDisposableEmail = async () => {
     setLoadingTempMail(true);
@@ -278,6 +351,7 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
   const launchBrowser = async (targetInput) => {
     const finalUrl = normalizeTargetUrl(targetInput);
     await saveToHistory(finalUrl);
+    if (onUpdateLastUrl) onUpdateLastUrl(finalUrl);
     setOpening(true);
     try {
       if (NativeModules.VideoEngineModule?.openInAppBrowserNative) {
@@ -285,6 +359,13 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
         setOpening(false);
         if (res?.url && res.url.startsWith('http')) {
           saveToHistory(res.url);
+          if (onUpdateLastUrl) onUpdateLastUrl(res.url);
+        }
+        if (res?.action === 'open_downloads') {
+          if (onOpenDownloads) {
+            onOpenDownloads(res?.url || finalUrl);
+          }
+          return;
         }
         if (res?.action === 'download' && res?.url) {
           if (onDownloadVideoUrl) {
@@ -662,6 +743,114 @@ export const WebBrowserModal = ({ visible, onClose, onDownloadVideoUrl }) => {
                   </View>
                 )}
               </View>
+            </View>
+
+            {/* ⭐ MIS FAVORITOS EN EL EXPLORADOR */}
+            <View
+              style={{
+                backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                borderRadius: 16,
+                padding: 12,
+                borderWidth: 1,
+                borderColor: 'rgba(245, 158, 11, 0.35)',
+                marginBottom: 14,
+                gap: 8,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="star" size={17} color="#FBBF24" />
+                  <Text style={{ color: '#FEF3C7', fontSize: 13, fontWeight: '800' }}>
+                    MIS FAVORITOS ({bookmarks.length})
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={{
+                    backgroundColor: '#B45309',
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 8,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 4,
+                  }}
+                  onPress={() => {
+                    addBookmark(queryOrUrl, newBookmarkName);
+                    setNewBookmarkName('');
+                    Alert.alert('⭐ Guardado en Favoritos', 'Se agregó esta página a tus Favoritos del Explorador.');
+                  }}
+                >
+                  <Ionicons name="add-circle-outline" size={14} color="#FFF" />
+                  <Text style={{ color: '#FFF', fontSize: 11, fontWeight: '800' }}>
+                    + Guardar actual
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                <TextInput
+                  style={{
+                    flex: 1,
+                    backgroundColor: '#0F172A',
+                    color: '#FFFFFF',
+                    fontSize: 12,
+                    paddingHorizontal: 10,
+                    paddingVertical: 6,
+                    borderRadius: 8,
+                    borderWidth: 1,
+                    borderColor: 'rgba(255,255,255,0.12)',
+                  }}
+                  placeholder="Nombre opcional para el favorito (ej. Mi Canal)..."
+                  placeholderTextColor="#64748B"
+                  value={newBookmarkName}
+                  onChangeText={setNewBookmarkName}
+                />
+              </View>
+
+              {bookmarks.length === 0 ? (
+                <Text style={{ color: '#FDE68A', fontSize: 11, opacity: 0.85 }}>
+                  Guarda aquí tus páginas favoritas o toca &quot;⭐ +Favorito&quot; arriba mientras navegas.
+                </Text>
+              ) : (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 2 }}>
+                  {bookmarks.map((bm) => (
+                    <View
+                      key={bm.id || bm.url}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        backgroundColor: '#1E293B',
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: 'rgba(251, 191, 36, 0.4)',
+                        paddingLeft: 10,
+                        paddingRight: 6,
+                        paddingVertical: 6,
+                        gap: 6,
+                      }}
+                    >
+                      <TouchableOpacity
+                        style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}
+                        onPress={() => launchBrowser(bm.url)}
+                      >
+                        <Ionicons name="star" size={12} color="#FBBF24" />
+                        <Text
+                          style={{ color: '#F8FAFC', fontSize: 12, fontWeight: '700', maxWidth: 150 }}
+                          numberOfLines={1}
+                        >
+                          {bm.title}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => removeBookmark(bm.url)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="close-circle" size={15} color="#94A3B8" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
 
             {/* Quick Sites Grid */}

@@ -286,6 +286,11 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
     private val downloadedKeysSet = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private var activeBrowserStatusCallback: ((String, String) -> Unit)? = null
+    private var activeBrowserSummaryCallback: ((Int, Int, Int, String) -> Unit)? = null
+    @Volatile private var lastBrowserCompletedCount: Int = 0
+    @Volatile private var lastBrowserErrorCount: Int = 0
+    @Volatile private var lastBrowserActiveCount: Int = 0
+    @Volatile private var lastBrowserItemsJson: String = "[]"
 
     private fun normalizeMediaKeyNative(rawUrl: String): String {
         val u = rawUrl.trim()
@@ -367,13 +372,43 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun syncBrowserDownloadsSummaryNative(
+        completedCount: Int,
+        errorCount: Int,
+        activeCount: Int,
+        itemsJson: String,
+        promise: Promise
+    ) {
+        lastBrowserCompletedCount = completedCount
+        lastBrowserErrorCount = errorCount
+        lastBrowserActiveCount = activeCount
+        lastBrowserItemsJson = itemsJson
+        UiThreadUtil.runOnUiThread {
+            try {
+                activeBrowserSummaryCallback?.invoke(completedCount, errorCount, activeCount, itemsJson)
+                promise.resolve(true)
+            } catch (_: Exception) {
+                promise.resolve(false)
+            }
+        }
+    }
+
     inner class BrowserMediaBridge(
-        private val onMediaSelected: (mediaUrl: String, mediaType: String, thumbUrl: String, pageUrl: String) -> Unit
+        private val onMediaSelected: (mediaUrl: String, mediaType: String, thumbUrl: String, pageUrl: String) -> Unit,
+        private val onStreamDetected: ((streamUrl: String) -> Unit)? = null
     ) {
         @android.webkit.JavascriptInterface
         fun downloadMedia(mediaUrl: String, mediaType: String, thumbUrl: String, pageUrl: String) {
             UiThreadUtil.runOnUiThread {
                 onMediaSelected(mediaUrl, mediaType, thumbUrl, pageUrl)
+            }
+        }
+
+        @android.webkit.JavascriptInterface
+        fun onStreamSniffed(streamUrl: String) {
+            UiThreadUtil.runOnUiThread {
+                onStreamDetected?.invoke(streamUrl)
             }
         }
     }
@@ -699,11 +734,54 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    private fun getMergedCookiesForUrl(rawUrl: String): String {
+        val cm = try { CookieManager.getInstance() } catch (_: Exception) { null } ?: return ""
+        try { cm.flush() } catch (_: Exception) {}
+        val low = rawUrl.lowercase()
+        val candidateUrls = mutableListOf(rawUrl)
+        if (low.contains("x.com") || low.contains("twitter.com") || low.contains("twimg.com") || low.contains("t.co")) {
+            candidateUrls.add("https://x.com")
+            candidateUrls.add("https://twitter.com")
+            candidateUrls.add("https://api.x.com")
+            candidateUrls.add("https://mobile.twitter.com")
+        } else if (low.contains("instagram.com") || low.contains("instagr.am") || low.contains("cdninstagram.com")) {
+            candidateUrls.add("https://www.instagram.com")
+            candidateUrls.add("https://instagram.com")
+            candidateUrls.add("https://i.instagram.com")
+        } else if (low.contains("facebook.com") || low.contains("fb.watch") || low.contains("fb.com") || low.contains("fbcdn.net")) {
+            candidateUrls.add("https://www.facebook.com")
+            candidateUrls.add("https://m.facebook.com")
+            candidateUrls.add("https://facebook.com")
+        } else if (low.contains("tiktok.com")) {
+            candidateUrls.add("https://www.tiktok.com")
+            candidateUrls.add("https://m.tiktok.com")
+        }
+        val mergedMap = LinkedHashMap<String, String>()
+        for (u in candidateUrls) {
+            val rawCookie = try { cm.getCookie(u) } catch (_: Exception) { null }
+            if (!rawCookie.isNullOrBlank()) {
+                val parts = rawCookie.split(";")
+                for (p in parts) {
+                    val trimmed = p.trim()
+                    val eqIdx = trimmed.indexOf('=')
+                    if (eqIdx > 0) {
+                        val k = trimmed.substring(0, eqIdx).trim()
+                        val v = trimmed.substring(eqIdx + 1).trim()
+                        if (k.isNotEmpty() && v.isNotEmpty() && !mergedMap.containsKey(k)) {
+                            mergedMap[k] = v
+                        }
+                    }
+                }
+            }
+        }
+        if (mergedMap.isEmpty()) return ""
+        return mergedMap.entries.joinToString("; ") { it.key + "=" + it.value }
+    }
+
     @ReactMethod
     fun getCookiesForUrlNative(targetUrl: String, promise: Promise) {
         try {
-            val cookie = CookieManager.getInstance().getCookie(targetUrl) ?: ""
-            promise.resolve(cookie)
+            promise.resolve(getMergedCookiesForUrl(targetUrl))
         } catch (e: Exception) {
             promise.resolve("")
         }
@@ -757,14 +835,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 while (redirects < 8) {
                     val urlObj = URL(currentUrl)
-                    val savedCookies = try {
-                        cookieMgr?.getCookie(currentUrl)
-                            ?: if (currentUrl.contains("facebook.com") || currentUrl.contains("fb.watch")) {
-                                cookieMgr?.getCookie("https://www.facebook.com")
-                            } else if (currentUrl.contains("instagram.com") || currentUrl.contains("instagr.am")) {
-                                cookieMgr?.getCookie("https://www.instagram.com")
-                            } else null
-                    } catch (_: Exception) { null }
+                    val savedCookies = getMergedCookiesForUrl(currentUrl)
 
                     val conn = (urlObj.openConnection() as HttpURLConnection).apply {
                         instanceFollowRedirects = false
@@ -922,9 +993,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     try {
                         CookieManager.getInstance().flush()
                     } catch (_: Exception) {}
-                    val cookies = try {
-                        CookieManager.getInstance().getCookie(targetUrl) ?: ""
-                    } catch (_: Exception) { "" }
+                    val cookies = getMergedCookiesForUrl(targetUrl)
                     try {
                         webView?.stopLoading()
                         webView?.loadUrl("about:blank")
@@ -1302,6 +1371,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         fun closeBrowser(action: String, targetResultUrl: String?) {
             if (!resolvedFlag.compareAndSet(false, true)) return
             activeBrowserStatusCallback = null
+            activeBrowserSummaryCallback = null
             UiThreadUtil.runOnUiThread {
                 closeActivePopup()
                 try {
@@ -1403,11 +1473,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         cm?.setPrimaryClip(android.content.ClipData.newPlainText("Enlace Descarga", finalUrl))
                     } catch (_: Exception) {}
 
-                    val cookies = try {
-                        CookieManager.getInstance().getCookie(finalUrl)
-                            ?: CookieManager.getInstance().getCookie(pageUrl)
-                            ?: ""
-                    } catch (_: Exception) { "" }
+                    val cookies = getMergedCookiesForUrl(finalUrl).ifBlank { getMergedCookiesForUrl(pageUrl) }
 
                     val labelTipo = if (mediaType == "photo") "foto/imagen" else "video"
                     showTempBanner("⏳ Enlace copiado al descargador · Descargando " + labelTipo + " en 2do plano...", "#065F46")
@@ -1478,9 +1544,20 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
 
                 wv.addJavascriptInterface(
-                    BrowserMediaBridge { mediaUrl, mediaType, thumbUrl, pageUrl ->
-                        handleMediaDownloadRequest(mediaUrl, mediaType, thumbUrl, pageUrl)
-                    },
+                    BrowserMediaBridge(
+                        onMediaSelected = { mediaUrl, mediaType, thumbUrl, pageUrl ->
+                            handleMediaDownloadRequest(mediaUrl, mediaType, thumbUrl, pageUrl)
+                        },
+                        onStreamDetected = { streamUrl ->
+                            if (streamUrl.startsWith("http") && !streamUrl.startsWith("blob:")) {
+                                val cleaned = cleanDetectedStreamUrl(streamUrl)
+                                val cur = detectedMediaUrl ?: ""
+                                if (cur.isEmpty() || !cur.contains(".mp4") || cleaned.contains(".mp4")) {
+                                    detectedMediaUrl = cleaned
+                                }
+                            }
+                        }
+                    ),
                     "GaleriaBridge"
                 )
 
@@ -1489,6 +1566,65 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                       try {
                         Object.defineProperty(navigator, 'webdriver', { get: function() { return false; }, configurable: true });
                         if (!window.chrome) { window.chrome = { runtime: {} }; }
+                        if (!window.__rembNetHooked) {
+                          window.__rembNetHooked = true;
+                          window.__rembMediaMap = window.__rembMediaMap || {};
+                          window.__rembLatestMp4 = window.__rembLatestMp4 || '';
+                          function inspectJsonText(txt) {
+                            try {
+                              if (!txt || txt.length < 30) return;
+                              if (txt.indexOf('video.twimg.com') === -1 && txt.indexOf('video_versions') === -1 && txt.indexOf('playable_url') === -1 && txt.indexOf('browser_native_hd_url') === -1) return;
+                              var mp4Regex = /https?:\\\\?\\/\\\\?\\/video\\.twimg\\.com[^"'\\s<>\\\\]+\\.mp4[^"'\\s<>\\\\]*/gi;
+                              var matches = txt.match(mp4Regex);
+                              if (matches && matches.length > 0) {
+                                var bestUrl = '';
+                                var bestScore = -1;
+                                for (var i = 0; i < matches.length; i++) {
+                                  var u = matches[i].replace(/\\\\\\//g, '/').replace(/\\\\u0026/g, '&');
+                                  var resMatch = u.match(/\\/(\\d{2,4})x(\\d{2,4})\\//);
+                                  var score = resMatch ? (parseInt(resMatch[1], 10) * parseInt(resMatch[2], 10)) : 1000;
+                                  if (score > bestScore) {
+                                    bestScore = score;
+                                    bestUrl = u;
+                                  }
+                                }
+                                if (bestUrl) {
+                                  window.__rembLatestMp4 = bestUrl;
+                                  var idMatch = txt.match(/"rest_id"\\s*:\\s*"(\\d{10,25})"/);
+                                  if (idMatch && idMatch[1]) {
+                                    window.__rembMediaMap[idMatch[1]] = bestUrl;
+                                  }
+                                  if (window.GaleriaBridge && window.GaleriaBridge.onStreamSniffed) {
+                                    window.GaleriaBridge.onStreamSniffed(bestUrl);
+                                  }
+                                }
+                              }
+                            } catch (e) {}
+                          }
+                          var origFetch = window.fetch;
+                          if (origFetch) {
+                            window.fetch = function() {
+                              return origFetch.apply(this, arguments).then(function(resp) {
+                                try {
+                                  var clone = resp.clone();
+                                  clone.text().then(inspectJsonText).catch(function(){});
+                                } catch (e) {}
+                                return resp;
+                              });
+                            };
+                          }
+                          var origSend = XMLHttpRequest.prototype.send;
+                          XMLHttpRequest.prototype.send = function() {
+                            this.addEventListener('load', function() {
+                              try {
+                                if (!this.responseType || this.responseType === 'text') {
+                                  inspectJsonText(this.responseText);
+                                }
+                              } catch (e) {}
+                            });
+                            return origSend.apply(this, arguments);
+                          };
+                        }
                         if (navigator.userAgentData && navigator.userAgentData.brands) {
                           var cleanBrands = navigator.userAgentData.brands.map(function(b) {
                             if (b && b.brand && b.brand.indexOf('WebView') !== -1) {
@@ -1535,9 +1671,20 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                       }
 
                       function findPostPermalink(el) {
+                        var article = el && el.closest ? el.closest('article') : null;
+                        if (article) {
+                          var aLinks = article.querySelectorAll('a[href*="/status/"], a[href*="/reel/"], a[href*="/p/"], a[href*="/videos/"], a[href*="/watch"]');
+                          for (var aIdx = 0; aIdx < aLinks.length; aIdx++) {
+                            var ah = aLinks[aIdx].getAttribute('href') || '';
+                            if (ah) {
+                              var cleanAh = resolveAbsUrl(ah).replace(/\\/(?:photo|video)\\/\\d+.*$/i, '');
+                              return cleanAh;
+                            }
+                          }
+                        }
                         var cur = el;
                         var depth = 0;
-                        while (cur && cur !== document.body && depth < 12) {
+                        while (cur && cur !== document.body && depth < 30) {
                           var links = cur.querySelectorAll ? cur.querySelectorAll('a[href]') : [];
                           for (var i = 0; i < links.length; i++) {
                             var h = links[i].getAttribute('href') || '';
@@ -1552,7 +1699,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                               h.indexOf('/status/') !== -1 ||
                               h.indexOf('/video/') !== -1
                             ) {
-                              return resolveAbsUrl(h);
+                              return resolveAbsUrl(h).replace(/\\/(?:photo|video)\\/\\d+.*$/i, '');
                             }
                           }
                           cur = cur.parentElement;
@@ -1617,9 +1764,19 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             if (r.width >= 90 && r.height >= 90 && r.bottom > 40 && r.top < vh - 20 && r.right > 40 && r.left < vw) {
                               videoRects.push(r);
                               var rawSrc = v.currentSrc || v.src || '';
-                              var targetUrl = (rawSrc.indexOf('http') === 0 && rawSrc.indexOf('blob:') !== 0)
+                              var permalinkUrl = findPostPermalink(v);
+                              var mappedMp4 = '';
+                              if (window.__rembMediaMap && permalinkUrl) {
+                                var stMatch = permalinkUrl.match(/\\/status\\/(\\d+)/);
+                                if (stMatch && stMatch[1] && window.__rembMediaMap[stMatch[1]]) {
+                                  mappedMp4 = window.__rembMediaMap[stMatch[1]];
+                                }
+                              }
+                              var targetUrl = mappedMp4
+                                ? mappedMp4
+                                : (rawSrc.indexOf('http') === 0 && rawSrc.indexOf('blob:') !== 0 && rawSrc.indexOf('.m3u8') === -1)
                                 ? rawSrc
-                                : findPostPermalink(v);
+                                : permalinkUrl;
                               var thumb = findBestThumbForVideo(v);
                               items.push({
                                 type: 'video',
@@ -1911,7 +2068,12 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             (lower.contains(".mp4") || lower.contains(".m3u8") || lower.contains("videoplayback") || lower.contains("mime=video")) &&
                             !lower.contains(".jpg") && !lower.contains(".png") && !lower.contains(".js")
                         ) {
-                            detectedMediaUrl = cleanDetectedStreamUrl(reqUrl)
+                            val candidate = cleanDetectedStreamUrl(reqUrl)
+                            val cur = detectedMediaUrl ?: ""
+                            // No sobrescribir un MP4 directo ya capturado con una lista HLS .m3u8
+                            if (cur.isEmpty() || !cur.contains(".mp4") || candidate.contains(".mp4")) {
+                                detectedMediaUrl = candidate
+                            }
                             UiThreadUtil.runOnUiThread {
                                 downloadBtnRef?.text = "⬇ ¡Video Detectado! (2do plano)"
                                 downloadBtnRef?.background = GradientDrawable().apply {
@@ -2151,6 +2313,24 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
                 downloadBtnRef = dlBtn
 
+                val favBtn = makeNavBtn("⭐ +Favorito", "#D97706", true) {
+                    val curUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
+                    val curTitle = wv.title ?: curUrl
+                    if (curUrl.startsWith("http")) {
+                        try {
+                            val bmMap = Arguments.createMap().apply {
+                                putString("url", curUrl)
+                                putString("title", curTitle)
+                            }
+                            reactContext
+                                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                                .emit("BrowserBookmarkAdded", bmMap)
+                            showTempBanner("⭐ Agregado a tus Favoritos del Explorador", "#92400E")
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                toolsBar.addView(favBtn)
                 toolsBar.addView(cleanFirstTimeBtn)
                 toolsBar.addView(uaSwitchBtn)
                 toolsBar.addView(blockAppsBtn)
@@ -2171,6 +2351,384 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                 )
+
+                // Panel de vista previa rápida dentro del navegador (para ver videos descargados en verde y fallidos en rojo sin salir del navegador)
+                val quickPreviewOverlay = FrameLayout(act).apply {
+                    visibility = View.GONE
+                    setBackgroundColor(Color.parseColor("#D9060913"))
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    isClickable = true
+                    isFocusable = true
+                }
+
+                val quickPreviewCard = LinearLayout(act).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(14), dp(14), dp(14), dp(14))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(18).toFloat()
+                        setColor(Color.parseColor("#111827"))
+                        setStroke(dp(1), Color.parseColor("#374151"))
+                    }
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM
+                    ).apply {
+                        setMargins(dp(12), dp(48), dp(12), dp(72))
+                    }
+                }
+
+                val previewHeaderRow = LinearLayout(act).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                val previewTitleTv = TextView(act).apply {
+                    text = "📥 Descargas en el Navegador"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val goFullDownloadsBtn = TextView(act).apply {
+                    text = "📂 Ir a Descargas"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(10), dp(6), dp(10), dp(6))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(10).toFloat()
+                        setColor(Color.parseColor("#2563EB"))
+                    }
+                    setOnClickListener {
+                        closeBrowser("open_downloads", wv.url ?: "")
+                    }
+                }
+                val closePreviewBtn = TextView(act).apply {
+                    text = "✕"
+                    setTextColor(Color.parseColor("#9CA3AF"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(10), dp(4), dp(6), dp(4))
+                    setOnClickListener {
+                        quickPreviewOverlay.visibility = View.GONE
+                    }
+                }
+                previewHeaderRow.addView(previewTitleTv)
+                previewHeaderRow.addView(goFullDownloadsBtn)
+                previewHeaderRow.addView(closePreviewBtn)
+                quickPreviewCard.addView(previewHeaderRow)
+
+                val inlinePlayerBox = FrameLayout(act).apply {
+                    visibility = View.GONE
+                    setPadding(0, dp(8), 0, dp(8))
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        dp(220)
+                    )
+                }
+                quickPreviewCard.addView(inlinePlayerBox)
+
+                val previewListScroll = android.widget.ScrollView(act).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        dp(240)
+                    ).apply {
+                        topMargin = dp(8)
+                    }
+                }
+                val previewListContainer = LinearLayout(act).apply {
+                    orientation = LinearLayout.VERTICAL
+                }
+                previewListScroll.addView(previewListContainer)
+                quickPreviewCard.addView(previewListScroll)
+                quickPreviewOverlay.addView(quickPreviewCard)
+                quickPreviewOverlay.setOnClickListener {
+                    inlinePlayerBox.removeAllViews()
+                    inlinePlayerBox.visibility = View.GONE
+                    quickPreviewOverlay.visibility = View.GONE
+                }
+                quickPreviewCard.setOnClickListener { /* evitar cierre al tocar dentro */ }
+
+                fun playLocalMediaInBrowser(localUri: String, mediaType: String) {
+                    UiThreadUtil.runOnUiThread {
+                        try {
+                            inlinePlayerBox.removeAllViews()
+                            inlinePlayerBox.visibility = View.VISIBLE
+                            val cleanPath = cleanFilePath(localUri)
+                            if (mediaType == "photo") {
+                                val iv = android.widget.ImageView(act).apply {
+                                    scaleType = android.widget.ImageView.ScaleType.FIT_CENTER
+                                    setImageURI(Uri.fromFile(File(cleanPath)))
+                                    layoutParams = FrameLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT
+                                    )
+                                }
+                                inlinePlayerBox.addView(iv)
+                            } else {
+                                val vv = android.widget.VideoView(act).apply {
+                                    layoutParams = FrameLayout.LayoutParams(
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        ViewGroup.LayoutParams.MATCH_PARENT,
+                                        Gravity.CENTER
+                                    )
+                                    setVideoPath(cleanPath)
+                                    val mc = android.widget.MediaController(act)
+                                    mc.setAnchorView(this)
+                                    setMediaController(mc)
+                                    setOnPreparedListener { mp ->
+                                        mp.isLooping = true
+                                        start()
+                                    }
+                                }
+                                inlinePlayerBox.addView(vv)
+                            }
+                        } catch (_: Exception) {
+                            showTempBanner("⚠️ No se pudo abrir la vista previa del archivo", "#991B1B")
+                        }
+                    }
+                }
+
+                fun rebuildPreviewItemsList(itemsJsonStr: String) {
+                    previewListContainer.removeAllViews()
+                    try {
+                        val arr = org.json.JSONArray(itemsJsonStr.ifBlank { "[]" })
+                        if (arr.length() == 0) {
+                            val emptyTv = TextView(act).apply {
+                                text = "Aún no hay descargas registradas en esta sesión. Toca el botón ⬇ sobre cualquier video para descargarlo."
+                                setTextColor(Color.parseColor("#9CA3AF"))
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                                setPadding(dp(8), dp(16), dp(8), dp(16))
+                            }
+                            previewListContainer.addView(emptyTv)
+                            return
+                        }
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i) ?: continue
+                            val status = obj.optString("status", "")
+                            val title = obj.optString("title", "Video")
+                            val localUri = obj.optString("localUri", "")
+                            val mediaType = obj.optString("mediaType", "video")
+                            val errMsg = obj.optString("errorMessage", "")
+                            val itemUrl = obj.optString("url", "")
+                            val isOk = status == "completed"
+                            val isErr = status == "error" || status == "cancelled"
+
+                            val row = LinearLayout(act).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(dp(10), dp(8), dp(10), dp(8))
+                                background = GradientDrawable().apply {
+                                    cornerRadius = dp(12).toFloat()
+                                    setColor(
+                                        if (isOk) Color.parseColor("#064E3B")
+                                        else if (isErr) Color.parseColor("#7F1D1D")
+                                        else Color.parseColor("#1E293B")
+                                    )
+                                    setStroke(
+                                        dp(1),
+                                        if (isOk) Color.parseColor("#10B981")
+                                        else if (isErr) Color.parseColor("#EF4444")
+                                        else Color.parseColor("#38BDF8")
+                                    )
+                                }
+                                layoutParams = LinearLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.WRAP_CONTENT
+                                ).apply {
+                                    bottomMargin = dp(6)
+                                }
+                            }
+
+                            val textCol = LinearLayout(act).apply {
+                                orientation = LinearLayout.VERTICAL
+                                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                            }
+                            val nameTv = TextView(act).apply {
+                                val badge = if (isOk) "🟢 " else if (isErr) "🔴 " else "⏳ "
+                                text = badge + title
+                                setTextColor(Color.WHITE)
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                                typeface = Typeface.DEFAULT_BOLD
+                                maxLines = 1
+                            }
+                            val subTv = TextView(act).apply {
+                                text = if (isOk) "Descargado — toca Ver para reproducir aquí"
+                                else if (isErr) (errMsg.ifBlank { "Error al descargar — toca Reintentar" })
+                                else "Descargando en 2do plano..."
+                                setTextColor(if (isOk) Color.parseColor("#A7F3D0") else if (isErr) Color.parseColor("#FECACA") else Color.parseColor("#BAE6FD"))
+                                setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
+                                maxLines = 2
+                            }
+                            textCol.addView(nameTv)
+                            textCol.addView(subTv)
+                            row.addView(textCol)
+
+                            if (isOk && localUri.isNotBlank()) {
+                                val playBtn = TextView(act).apply {
+                                    text = "▶ Ver"
+                                    setTextColor(Color.parseColor("#064E3B"))
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                                    typeface = Typeface.DEFAULT_BOLD
+                                    setPadding(dp(10), dp(5), dp(10), dp(5))
+                                    background = GradientDrawable().apply {
+                                        cornerRadius = dp(8).toFloat()
+                                        setColor(Color.parseColor("#34D399"))
+                                    }
+                                    setOnClickListener {
+                                        playLocalMediaInBrowser(localUri, mediaType)
+                                    }
+                                }
+                                row.addView(playBtn)
+                            } else if (isErr && itemUrl.isNotBlank()) {
+                                val retryBtn = TextView(act).apply {
+                                    text = "🔄 Reintentar"
+                                    setTextColor(Color.WHITE)
+                                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                                    typeface = Typeface.DEFAULT_BOLD
+                                    setPadding(dp(9), dp(5), dp(9), dp(5))
+                                    background = GradientDrawable().apply {
+                                        cornerRadius = dp(8).toFloat()
+                                        setColor(Color.parseColor("#EF4444"))
+                                    }
+                                    setOnClickListener {
+                                        enqueueBackgroundDownload(itemUrl, mediaType, "", itemUrl)
+                                        quickPreviewOverlay.visibility = View.GONE
+                                    }
+                                }
+                                row.addView(retryBtn)
+                            }
+                            previewListContainer.addView(row)
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                // Pestaña / Bolita Flotante de Descargas dentro del Navegador (muestra en verde descargados y en rojo fallidos + botón para ir a Descargas)
+                val floatingDownloadsPill = LinearLayout(act).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(10), dp(7), dp(10), dp(7))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(24).toFloat()
+                        setColor(Color.parseColor("#EB0F172A"))
+                        setStroke(dp(2), Color.parseColor("#38BDF8"))
+                    }
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        Gravity.BOTTOM or Gravity.END
+                    ).apply {
+                        setMargins(dp(10), dp(10), dp(12), dp(14))
+                    }
+                }
+
+                val pillGoDownloadsTv = TextView(act).apply {
+                    text = "⬇ Descargas"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11.5f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(4), dp(2), dp(6), dp(2))
+                    setOnClickListener {
+                        closeBrowser("open_downloads", wv.url ?: "")
+                    }
+                }
+
+                val pillGreenBadgeTv = TextView(act).apply {
+                    text = "🟢 " + lastBrowserCompletedCount
+                    setTextColor(Color.parseColor("#ECFDF5"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(7), dp(3), dp(7), dp(3))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(12).toFloat()
+                        setColor(Color.parseColor("#059669"))
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        leftMargin = dp(4)
+                    }
+                    setOnClickListener {
+                        rebuildPreviewItemsList(lastBrowserItemsJson)
+                        quickPreviewOverlay.visibility =
+                            if (quickPreviewOverlay.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                    }
+                }
+
+                val pillRedBadgeTv = TextView(act).apply {
+                    text = "🔴 " + lastBrowserErrorCount
+                    setTextColor(Color.parseColor("#FEF2F2"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    setPadding(dp(7), dp(3), dp(7), dp(3))
+                    background = GradientDrawable().apply {
+                        cornerRadius = dp(12).toFloat()
+                        setColor(Color.parseColor("#DC2626"))
+                    }
+                    layoutParams = LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        leftMargin = dp(4)
+                    }
+                    setOnClickListener {
+                        rebuildPreviewItemsList(lastBrowserItemsJson)
+                        quickPreviewOverlay.visibility =
+                            if (quickPreviewOverlay.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+                    }
+                }
+
+                floatingDownloadsPill.addView(pillGoDownloadsTv)
+                floatingDownloadsPill.addView(pillGreenBadgeTv)
+                floatingDownloadsPill.addView(pillRedBadgeTv)
+
+                // Permitir arrastrar la pestaña flotante de descargas por la pantalla
+                var dX = 0f
+                var dY = 0f
+                var downRawX = 0f
+                var downRawY = 0f
+                floatingDownloadsPill.setOnTouchListener { v, event ->
+                    when (event.actionMasked) {
+                        android.view.MotionEvent.ACTION_DOWN -> {
+                            dX = v.x - event.rawX
+                            dY = v.y - event.rawY
+                            downRawX = event.rawX
+                            downRawY = event.rawY
+                            false
+                        }
+                        android.view.MotionEvent.ACTION_MOVE -> {
+                            val moveX = kotlin.math.abs(event.rawX - downRawX)
+                            val moveY = kotlin.math.abs(event.rawY - downRawY)
+                            if (moveX > dp(6) || moveY > dp(6)) {
+                                v.animate()
+                                    .x((event.rawX + dX).coerceIn(0f, (webContainer.width - v.width).coerceAtLeast(0).toFloat()))
+                                    .y((event.rawY + dY).coerceIn(0f, (webContainer.height - v.height).coerceAtLeast(0).toFloat()))
+                                    .setDuration(0)
+                                    .start()
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        else -> false
+                    }
+                }
+
+                activeBrowserSummaryCallback = { compCount, errCount, actCount, itemsJson ->
+                    pillGoDownloadsTv.text = if (actCount > 0) "⏳ Descargas ($actCount)" else "⬇ Descargas"
+                    pillGreenBadgeTv.text = "🟢 $compCount"
+                    pillRedBadgeTv.text = "🔴 $errCount"
+                    if (quickPreviewOverlay.visibility == View.VISIBLE) {
+                        rebuildPreviewItemsList(itemsJson)
+                    }
+                }
+
+                webContainer.addView(floatingDownloadsPill)
+                webContainer.addView(quickPreviewOverlay)
 
                 // Espaciador inferior seguro (>= 48dp) para no traslapar la barra de navegación de Android
                 val bottomSafeSpacer = LinearLayout(act).apply {
@@ -2457,12 +3015,14 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         try {
             if (!dir.exists() || !dir.isDirectory) return
             val filesToRescan = ArrayList<String>()
+            var removedAnyNoMedia = false
             fun walkRemoveNoMedia(d: File, depth: Int) {
                 if (!d.exists() || !d.isDirectory) return
                 try {
                     val nm = File(d, ".nomedia")
                     if (nm.exists()) {
                         nm.delete()
+                        removedAnyNoMedia = true
                         filesToRescan.add(nm.absolutePath)
                     }
                 } catch (_: Exception) {}
@@ -2477,7 +3037,55 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
             }
             walkRemoveNoMedia(dir, 0)
-            if (filesToRescan.isNotEmpty()) {
+
+            // Restaurar en MediaStore.Files cualquier archivo de esta carpeta que haya quedado con MEDIA_TYPE_NONE (0) para que sea visible en todas las demás galerías
+            try {
+                val filesUri = android.provider.MediaStore.Files.getContentUri("external")
+                val cleanPrefix = dir.absolutePath.trimEnd('/')
+                val imgWhere = android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=? AND " +
+                    android.provider.MediaStore.Files.FileColumns.DATA + " LIKE ? AND (" +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.jpg' OR " +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.jpeg' OR " +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.png' OR " +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.webp' OR " +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.heic')"
+                val imgCv = android.content.ContentValues().apply {
+                    put(
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE,
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE
+                    )
+                }
+                val restoredImgs = reactContext.contentResolver.update(
+                    filesUri,
+                    imgCv,
+                    imgWhere,
+                    arrayOf(android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_NONE.toString(), "$cleanPrefix/%")
+                )
+
+                val vidWhere = android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=? AND " +
+                    android.provider.MediaStore.Files.FileColumns.DATA + " LIKE ? AND (" +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.mp4' OR " +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.mov' OR " +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.mkv' OR " +
+                    "LOWER(" + android.provider.MediaStore.Files.FileColumns.DATA + ") LIKE '%.webm')"
+                val vidCv = android.content.ContentValues().apply {
+                    put(
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE,
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO
+                    )
+                }
+                val restoredVids = reactContext.contentResolver.update(
+                    filesUri,
+                    vidCv,
+                    vidWhere,
+                    arrayOf(android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_NONE.toString(), "$cleanPrefix/%")
+                )
+                if (restoredImgs > 0 || restoredVids > 0) {
+                    removedAnyNoMedia = true
+                }
+            } catch (_: Exception) {}
+
+            if (removedAnyNoMedia && filesToRescan.isNotEmpty()) {
                 try {
                     MediaScannerConnection.scanFile(
                         reactContext,
@@ -2561,7 +3169,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     if (!isDefaultFixed) {
                         reg.removeAll { it.equals(clean, ignoreCase = true) }
                         val vDir = File(clean)
-                        if (vDir.exists() && File(vDir, ".nomedia").exists()) {
+                        if (vDir.exists() && vDir.isDirectory) {
                             removeNoMediaFromDir(vDir, 2)
                         }
                     }
@@ -3156,6 +3764,44 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }
                 }
 
+                // 3) Detectar partes poco interesantes / baja acción ("boring") para Edición Rápida IA (Modo Highlights)
+                if (durationMs >= 4500L && targetSamples >= 10) {
+                    val activeMotions = ArrayList<Double>()
+                    for (i in 1 until targetSamples) {
+                        if (labels[i] == "keep" && sceneDiff[i] > 0.0) {
+                            activeMotions.add(sceneDiff[i])
+                        }
+                    }
+                    if (activeMotions.size >= 6) {
+                        activeMotions.sort()
+                        val medianMotion = activeMotions[activeMotions.size / 2]
+                        val p75Motion = activeMotions[(activeMotions.size * 3) / 4]
+                        val refMotion = maxOf(medianMotion, p75Motion * 0.65)
+                        val boringThreshold = (refMotion * 0.42 * sens).coerceIn(motionDiffLimit * 1.15, 9.5)
+                        val minConsecutiveSamples = maxOf(3, (1400.0 / stepMs).toInt())
+
+                        var runStart = -1
+                        for (i in 1 until targetSamples) {
+                            val isLowAction = labels[i] == "keep" && sceneDiff[i] <= boringThreshold
+                            if (isLowAction) {
+                                if (runStart == -1) runStart = i
+                            } else {
+                                if (runStart != -1 && (i - runStart) >= minConsecutiveSamples) {
+                                    for (k in runStart until i) {
+                                        labels[k] = "boring"
+                                    }
+                                }
+                                runStart = -1
+                            }
+                        }
+                        if (runStart != -1 && (targetSamples - runStart) >= minConsecutiveSamples) {
+                            for (k in runStart until targetSamples) {
+                                labels[k] = "boring"
+                            }
+                        }
+                    }
+                }
+
                 data class RawBlock(var type: String, var startMs: Double, var endMs: Double)
                 val blocks = mutableListOf<RawBlock>()
                 for (i in 0 until targetSamples) {
@@ -3192,6 +3838,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 var blackRemovedMs = 0.0
                 var staticRemovedMs = 0.0
                 var introRemovedMs = 0.0
+                var boringRemovedMs = 0.0
 
                 for (b in mergedBlocks) {
                     val len = (b.endMs - b.startMs).coerceAtLeast(0.0)
@@ -3205,6 +3852,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         when (b.type) {
                             "black" -> blackRemovedMs += len
                             "intro", "outro" -> introRemovedMs += len
+                            "boring" -> boringRemovedMs += len
                             else -> staticRemovedMs += len
                         }
                         removedArr.pushMap(Arguments.createMap().apply {
@@ -3226,6 +3874,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     putDouble("blackRemovedMs", blackRemovedMs)
                     putDouble("staticRemovedMs", staticRemovedMs)
                     putDouble("introRemovedMs", introRemovedMs)
+                    putDouble("boringRemovedMs", boringRemovedMs)
                     putArray("keepSegments", keepArr)
                     putArray("removedSegments", removedArr)
                 }
@@ -3559,6 +4208,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 val out = Arguments.createArray()
                 for ((k, item) in mergedByDir) {
+                    if (item.count <= 0) continue
                     val pinnedOrder = when (k) {
                         bpKey -> 1
                         spKey -> 2
@@ -3928,7 +4578,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         }
                     }
 
-                    if (mediaCount > 0 || subCount > 0) {
+                    if (mediaCount > 0) {
                         val sdUri = "file://" + sd.absolutePath
                         val subMap = Arguments.createMap().apply {
                             putString("id", sdUri)
@@ -3955,6 +4605,200 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 promise.resolve(result)
             } catch (e: Exception) {
                 promise.reject("LIST_DIR_FAST_ERROR", e.message ?: "Error al listar carpeta rápido", e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun detectFacesAndEmbedNative(imagePathOrUri: String, allowFallbackCrop: Boolean, promise: Promise) {
+        executor.execute {
+            try {
+                val opts = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.RGB_565
+                }
+                val rawBmp: Bitmap? = if (imagePathOrUri.startsWith("content://")) {
+                    reactContext.contentResolver.openInputStream(Uri.parse(imagePathOrUri))?.use {
+                        BitmapFactory.decodeStream(it, null, opts)
+                    }
+                } else {
+                    val clean = cleanFilePath(imagePathOrUri)
+                    BitmapFactory.decodeFile(clean, opts)
+                }
+                if (rawBmp == null) {
+                    promise.reject("FACE_DECODE_ERR", "No se pudo decodificar la imagen")
+                    return@execute
+                }
+
+                val maxDim = 960
+                val srcW = rawBmp.width
+                val srcH = rawBmp.height
+                val scale = if (srcW > maxDim || srcH > maxDim) {
+                    maxDim.toFloat() / maxOf(srcW, srcH).toFloat()
+                } else 1f
+                var workW = (srcW * scale).toInt().coerceAtLeast(64)
+                if (workW % 2 != 0) workW += 1
+                val workH = (srcH * scale).toInt().coerceAtLeast(64)
+
+                val bmp565 = Bitmap.createScaledBitmap(rawBmp, workW, workH, true)
+                    .copy(Bitmap.Config.RGB_565, false)
+                if (bmp565 != rawBmp) {
+                    try { rawBmp.recycle() } catch (_: Exception) {}
+                }
+
+                val maxFaces = 8
+                val detector = android.media.FaceDetector(workW, workH, maxFaces)
+                val faces = arrayOfNulls<android.media.FaceDetector.Face>(maxFaces)
+                val foundCount = detector.findFaces(bmp565, faces)
+
+                data class FaceBox(
+                    val x1: Int,
+                    val y1: Int,
+                    val x2: Int,
+                    val y2: Int,
+                    val confidence: Double
+                )
+                val boxes = ArrayList<FaceBox>()
+                for (i in 0 until foundCount) {
+                    val f = faces[i] ?: continue
+                    val conf = f.confidence().toDouble()
+                    if (conf < 0.30) continue
+                    val mid = android.graphics.PointF()
+                    f.getMidPoint(mid)
+                    val eyeDist = f.eyesDistance()
+                    if (eyeDist <= 6f) continue
+                    val halfW = (eyeDist * 1.35f).toInt()
+                    val upH = (eyeDist * 1.45f).toInt()
+                    val downH = (eyeDist * 1.75f).toInt()
+                    val bx1 = (mid.x.toInt() - halfW).coerceIn(0, workW - 2)
+                    val by1 = (mid.y.toInt() - upH).coerceIn(0, workH - 2)
+                    val bx2 = (mid.x.toInt() + halfW).coerceIn(bx1 + 1, workW)
+                    val by2 = (mid.y.toInt() + downH).coerceIn(by1 + 1, workH)
+                    boxes.add(FaceBox(bx1, by1, bx2, by2, conf.coerceIn(0.35, 0.99)))
+                }
+
+                if (boxes.isEmpty() && allowFallbackCrop) {
+                    val padW = (workW * 0.16f).toInt()
+                    val padH = (workH * 0.14f).toInt()
+                    boxes.add(
+                        FaceBox(
+                            padW,
+                            padH,
+                            (workW - padW).coerceAtLeast(padW + 16),
+                            (workH - padH).coerceAtLeast(padH + 16),
+                            0.45
+                        )
+                    )
+                }
+
+                boxes.sortByDescending { (it.x2 - it.x1) * (it.y2 - it.y1) }
+
+                val cropsDir = File(reactContext.cacheDir, "checkremb_crops")
+                if (!cropsDir.exists()) cropsDir.mkdirs()
+
+                fun computeEmbedding128(cropBmp: Bitmap): DoubleArray {
+                    val grid = 16
+                    val small = Bitmap.createScaledBitmap(cropBmp, grid, grid, true)
+                    val px = IntArray(grid * grid)
+                    small.getPixels(px, 0, grid, 0, 0, grid, grid)
+                    if (small != cropBmp) {
+                        try { small.recycle() } catch (_: Exception) {}
+                    }
+                    val luma = DoubleArray(grid * grid)
+                    val rg = DoubleArray(grid * grid)
+                    val by = DoubleArray(grid * grid)
+                    var meanY = 0.0
+                    for (idx in px.indices) {
+                        val c = px[idx]
+                        val r = ((c shr 16) and 0xFF).toDouble()
+                        val g = ((c shr 8) and 0xFF).toDouble()
+                        val b = (c and 0xFF).toDouble()
+                        val y = 0.299 * r + 0.587 * g + 0.114 * b
+                        luma[idx] = y
+                        rg[idx] = (r - g) / 255.0
+                        by[idx] = (b - 0.5 * (r + g)) / 255.0
+                        meanY += y
+                    }
+                    meanY /= (grid * grid).toDouble()
+                    var stdY = 0.0
+                    for (y in luma) {
+                        val d = y - meanY
+                        stdY += d * d
+                    }
+                    stdY = kotlin.math.sqrt(stdY / (grid * grid).toDouble()).coerceAtLeast(8.0)
+
+                    val vec = DoubleArray(128)
+                    var outIdx = 0
+                    // 8x8 bloques (64 valores de luminancia normalizada + 64 valores de gradiente/croma)
+                    for (gy in 0 until 8) {
+                        for (gx in 0 until 8) {
+                            val iy = gy * 2
+                            val ix = gx * 2
+                            val p00 = (luma[iy * grid + ix] - meanY) / stdY
+                            val p01 = (luma[iy * grid + ix + 1] - meanY) / stdY
+                            val p10 = (luma[(iy + 1) * grid + ix] - meanY) / stdY
+                            val p11 = (luma[(iy + 1) * grid + ix + 1] - meanY) / stdY
+                            val cellMean = 0.25 * (p00 + p01 + p10 + p11)
+                            val gradX = 0.5 * ((p01 - p00) + (p11 - p10))
+                            val gradY = 0.5 * ((p10 - p00) + (p11 - p01))
+                            val cRg = 0.5 * (rg[iy * grid + ix] + rg[(iy + 1) * grid + ix + 1])
+                            val cBy = 0.5 * (by[iy * grid + ix] + by[(iy + 1) * grid + ix + 1])
+                            vec[outIdx] = cellMean
+                            vec[outIdx + 64] = (gradX * 0.45) + (gradY * 0.45) + (cRg * 0.35) + (cBy * 0.25)
+                            outIdx++
+                        }
+                    }
+
+                    var norm = 0.0
+                    for (v in vec) norm += v * v
+                    norm = kotlin.math.sqrt(norm).coerceAtLeast(1e-6)
+                    for (i in vec.indices) {
+                        vec[i] = vec[i] / norm
+                    }
+                    return vec
+                }
+
+                val facesArr = Arguments.createArray()
+                for ((idx, b) in boxes.withIndex()) {
+                    val cw = (b.x2 - b.x1).coerceAtLeast(8)
+                    val ch = (b.y2 - b.y1).coerceAtLeast(8)
+                    val cropBmp = Bitmap.createBitmap(bmp565, b.x1, b.y1, cw, ch)
+                    val emb = computeEmbedding128(cropBmp)
+                    val cropFile = File(cropsDir, "face_${System.currentTimeMillis()}_${idx}.jpg")
+                    FileOutputStream(cropFile).use { fos ->
+                        cropBmp.compress(Bitmap.CompressFormat.JPEG, 88, fos)
+                    }
+                    if (cropBmp != bmp565) {
+                        try { cropBmp.recycle() } catch (_: Exception) {}
+                    }
+
+                    val embArr = Arguments.createArray()
+                    for (v in emb) embArr.pushDouble(v)
+
+                    val bboxMap = Arguments.createMap().apply {
+                        putInt("x1", (b.x1 / scale).toInt())
+                        putInt("y1", (b.y1 / scale).toInt())
+                        putInt("x2", (b.x2 / scale).toInt())
+                        putInt("y2", (b.y2 / scale).toInt())
+                        putDouble("confidence", b.confidence)
+                    }
+                    val faceMap = Arguments.createMap().apply {
+                        putInt("index", idx)
+                        putMap("bbox", bboxMap)
+                        putString("cropUri", "file://" + cropFile.absolutePath)
+                        putArray("embedding", embArr)
+                    }
+                    facesArr.pushMap(faceMap)
+                }
+
+                try { bmp565.recycle() } catch (_: Exception) {}
+
+                val res = Arguments.createMap().apply {
+                    putInt("facesDetected", boxes.size)
+                    putArray("faces", facesArr)
+                }
+                promise.resolve(res)
+            } catch (e: Exception) {
+                promise.reject("FACE_DETECT_ERR", e.message ?: "Error al analizar rostro", e)
             }
         }
     }

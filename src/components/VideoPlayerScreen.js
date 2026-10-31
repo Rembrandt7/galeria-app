@@ -1662,9 +1662,94 @@ export default function VideoPlayerScreen({
                 </TouchableOpacity>
               </View>
 
-              {/* PANEL DE RECORTE INTELIGENTE (Detecta todo negro y/o sin movimiento y permite comparar para dar Visto Bueno) */}
+              {/* PANEL DE RECORTE INTELIGENTE (Detecta intros, partes poco interesantes, todo negro y sin movimiento) */}
               {trimMode === 'smart' && (
                 <View style={styles.smartTrimBox}>
+                  {/* Botones de Edición Rápida IA en 1 Toque */}
+                  <View
+                    style={{
+                      flexDirection: 'row',
+                      gap: 6,
+                      marginBottom: 8,
+                      flexWrap: 'wrap',
+                    }}
+                  >
+                    <TouchableOpacity
+                      style={{
+                        flex: 1,
+                        minWidth: 105,
+                        backgroundColor: 'rgba(245, 158, 11, 0.2)',
+                        borderWidth: 1,
+                        borderColor: '#f59e0b',
+                        borderRadius: 10,
+                        paddingVertical: 7,
+                        paddingHorizontal: 8,
+                        alignItems: 'center',
+                      }}
+                      disabled={busy}
+                      onPress={() => {
+                        setSmartDetectBlack(false);
+                        setSmartDetectStatic(false);
+                        setSmartDetectIntro(true);
+                        handleRunSmartTrim(false, false, true);
+                      }}
+                    >
+                      <Text style={{ color: '#fde68a', fontSize: 11, fontWeight: '800' }}>
+                        🎬 Quitar Intro/Fin
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={{
+                        flex: 1,
+                        minWidth: 120,
+                        backgroundColor: 'rgba(236, 72, 153, 0.2)',
+                        borderWidth: 1,
+                        borderColor: '#ec4899',
+                        borderRadius: 10,
+                        paddingVertical: 7,
+                        paddingHorizontal: 8,
+                        alignItems: 'center',
+                      }}
+                      disabled={busy}
+                      onPress={() => {
+                        setSmartDetectBlack(true);
+                        setSmartDetectStatic(true);
+                        setSmartDetectIntro(false);
+                        handleRunSmartTrim(true, true, false);
+                      }}
+                    >
+                      <Text style={{ color: '#fbcfe8', fontSize: 11, fontWeight: '800' }}>
+                        🔥 Quitar Aburrido
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={{
+                        flex: 1,
+                        minWidth: 105,
+                        backgroundColor: 'rgba(16, 185, 129, 0.22)',
+                        borderWidth: 1,
+                        borderColor: '#10b981',
+                        borderRadius: 10,
+                        paddingVertical: 7,
+                        paddingHorizontal: 8,
+                        alignItems: 'center',
+                      }}
+                      disabled={busy}
+                      onPress={() => {
+                        setSmartDetectBlack(true);
+                        setSmartDetectStatic(true);
+                        setSmartDetectIntro(true);
+                        handleRunSmartTrim(true, true, true);
+                      }}
+                    >
+                      <Text style={{ color: '#a7f3d0', fontSize: 11, fontWeight: '800' }}>
+                        ✨ Todo (Rápido)
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
                   {/* Filtros qué detectar + botón re-analizar */}
                   <View style={styles.smartFilterRow}>
                     <TouchableOpacity
@@ -1872,6 +1957,8 @@ export default function VideoPlayerScreen({
                                     ? '🎬 Intro'
                                     : rem.reason === 'outro'
                                     ? '🎬 Cierre'
+                                    : rem.reason === 'boring'
+                                    ? '🥱 Poco inter.'
                                     : '⏸️ Sin mov.'}{' '}
                                   {formatTime(rem.start, true)}-{formatTime(rem.end, true)}
                                 </Text>

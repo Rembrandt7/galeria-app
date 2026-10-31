@@ -270,7 +270,7 @@ export const mediaService = {
           const fastNative = await VideoEngineModule.getAlbumsFastNative();
           if (Array.isArray(fastNative) && fastNative.length > 0) {
             mediaAlbums = fastNative.filter(
-              (a) => a && (Number(a.assetCount) > 0 || a.isPinnedFilesFolder)
+              (a) => a && Number(a.assetCount) > 0
             );
           }
         } catch (_fastErr) {}

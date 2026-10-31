@@ -165,17 +165,16 @@ export default function AlbumList({
     return 0;
   };
 
-  // Filtrar estrictamente cualquier carpeta que no tenga al menos 1 imagen o video,
-  // conservando SIEMPRE las 3 carpetas fijadas de Archivos ("2do plano", "Descargas", "Telegram")
-  // y eliminando cualquier carpeta duplicada por ruta física o por nombre visual.
+  // Filtrar estrictamente cualquier carpeta que no tenga al menos 1 imagen o video
+  // (si una carpeta no tiene nada, que no se vea) y eliminar duplicados por ruta o nombre.
   const nonEmptyAlbums = useMemo(() => {
     const rawBase = (albums || []).filter((item) => {
-      if (!item) return false;
+      if (!item || Number(item.assetCount) <= 0) return false;
       if (isDecoyMode) {
         const textCheck = `${item.title || ''} ${item.name || ''} ${item.uri || ''}`;
         return /whatsapp/i.test(textCheck);
       }
-      return Number(item.assetCount) > 0 || getPinnedFilesOrder(item) > 0;
+      return true;
     });
     // Priorizar carpetas fijadas y con mayor cantidad de archivos antes de deduplicar
     rawBase.sort((a, b) => {
@@ -237,66 +236,7 @@ export default function AlbumList({
       base.push(item);
     }
 
-    if (isDecoyMode) {
-      if (base.length === 0) {
-        return [
-          {
-            id: 'decoy_whatsapp_images',
-            title: 'WhatsApp Images',
-            uri: 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images',
-            assetCount: 0,
-            coverUri: null,
-          },
-          {
-            id: 'decoy_whatsapp_video',
-            title: 'WhatsApp Video',
-            uri: 'file:///storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video',
-            assetCount: 0,
-            coverUri: null,
-          },
-        ];
-      }
-      return base;
-    }
-
-    const hasPin1 = seenPinnedRanks.has(1);
-    const hasPin2 = seenPinnedRanks.has(2);
-    const hasPin3 = seenPinnedRanks.has(3);
-    const extraPins = [];
-    if (!hasPin1) {
-      extraPins.push({
-        id: 'pinned_2do_plano',
-        title: '2do plano',
-        uri: 'file:///storage/emulated/0/Movies/2do plano',
-        assetCount: 0,
-        coverUri: null,
-        isPinnedFilesFolder: true,
-        pinnedOrder: 1,
-      });
-    }
-    if (!hasPin2) {
-      extraPins.push({
-        id: 'pinned_download',
-        title: 'Descargas',
-        uri: 'file:///storage/emulated/0/Download',
-        assetCount: 0,
-        coverUri: null,
-        isPinnedFilesFolder: true,
-        pinnedOrder: 2,
-      });
-    }
-    if (!hasPin3) {
-      extraPins.push({
-        id: 'pinned_telegram_root',
-        title: 'Telegram',
-        uri: 'file:///storage/emulated/0/Telegram',
-        assetCount: 0,
-        coverUri: null,
-        isPinnedFilesFolder: true,
-        pinnedOrder: 3,
-      });
-    }
-    return extraPins.length > 0 ? [...extraPins, ...base] : base;
+    return base;
   }, [albums, isDecoyMode]);
 
   const favList = useMemo(() => Object.values(favorites || {}), [favorites]);
@@ -526,18 +466,20 @@ export default function AlbumList({
     }
   };
 
-  // Construir lista final con "Favoritos" al inicio y "Varios" (carpetas de <5 archivos) agrupadas al final
+  // Construir lista final con "Favoritos" al inicio (solo si tiene elementos) y "Varios" (carpetas de <5 archivos) agrupadas al final
   const gridData = useMemo(() => {
     if (!showFoldersInScreen) {
-      return [
-        {
-          id: '__galaxy_favorites_card__',
-          isFavoritesCard: true,
-          title: 'Favoritos',
-          assetCount: favCount,
-          coverUri: favCoverUri,
-        },
-      ];
+      return favCount > 0
+        ? [
+            {
+              id: '__galaxy_favorites_card__',
+              isFavoritesCard: true,
+              title: 'Favoritos',
+              assetCount: favCount,
+              coverUri: favCoverUri,
+            },
+          ]
+        : [];
     }
 
     const favCard = {
@@ -550,7 +492,7 @@ export default function AlbumList({
     const q = searchQuery.trim().toLowerCase();
     const list = [];
 
-    if (activeSegment !== 'files') {
+    if (activeSegment !== 'files' && favCount > 0) {
       if (!q || 'favoritos'.includes(q)) {
         list.push(favCard);
       }
@@ -798,11 +740,7 @@ export default function AlbumList({
           onSelectAlbum({ ...item, title: displayTitle });
         }}
         onLongPress={() => {
-          if (quickEditVisibility) {
-            handleToggleAlbumOrSystem(item);
-          } else {
-            triggerShakeAndSelect(item);
-          }
+          triggerShakeAndSelect(item);
         }}
       >
         {coverToUse ? (

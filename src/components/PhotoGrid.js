@@ -27,6 +27,7 @@ const ITEM_MARGIN = 1;
 export default function PhotoGrid({
   assets = [],
   favorites = {},
+  onToggleFavorite,
   onSelectPhoto,
   onOpenModoGuardar,
   onFindDuplicates,
@@ -377,13 +378,14 @@ export default function PhotoGrid({
           onPress={handlePress}
           onLongPress={handleLongPress}
           isFavorite={isFav}
+          onToggleFavorite={onToggleFavorite}
           isCover={isCov}
           selectable={isSelecting}
           isSelected={isSel}
         />
       );
     },
-    [favorites, handlePress, handleLongPress, isSelecting, selectedIds, itemSize, currentFolderCoverUri]
+    [favorites, onToggleFavorite, handlePress, handleLongPress, isSelecting, selectedIds, itemSize, currentFolderCoverUri]
   );
 
   // Con numColumns, FlatList pide el layout por FILA (no por elemento)
