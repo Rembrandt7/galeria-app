@@ -1490,24 +1490,39 @@ export default function FolderBrowser({
               </Text>
             </TouchableOpacity>
 
-            {systemSubfoldersList.length > 0 && (
+            {(systemSubfoldersList.length > 0 || hiddenSubfolderCount > 0) && (
               <TouchableOpacity
                 onPress={() => setShowSubfolderSystemModal(true)}
                 style={{
                   flexDirection: 'row',
                   alignItems: 'center',
                   gap: 4,
-                  backgroundColor: 'rgba(37, 99, 235, 0.22)',
+                  backgroundColor:
+                    hiddenSubfolderCount > 0
+                      ? 'rgba(245, 158, 11, 0.22)'
+                      : 'rgba(37, 99, 235, 0.22)',
                   borderWidth: 1,
-                  borderColor: '#3b82f6',
+                  borderColor: hiddenSubfolderCount > 0 ? '#f59e0b' : '#3b82f6',
                   paddingHorizontal: 9,
                   paddingVertical: 4,
                   borderRadius: 12,
                 }}
               >
-                <Ionicons name="hardware-chip-outline" size={12} color="#60a5fa" />
-                <Text style={{ color: '#bfdbfe', fontSize: 11, fontWeight: '800' }}>
-                  Sistema ({systemSubfoldersList.length})
+                <Ionicons
+                  name={hiddenSubfolderCount > 0 ? 'eye-off-outline' : 'hardware-chip-outline'}
+                  size={12}
+                  color={hiddenSubfolderCount > 0 ? '#fbbf24' : '#60a5fa'}
+                />
+                <Text
+                  style={{
+                    color: hiddenSubfolderCount > 0 ? '#fde68a' : '#bfdbfe',
+                    fontSize: 11,
+                    fontWeight: '800',
+                  }}
+                >
+                  {hiddenSubfolderCount > 0
+                    ? `Ocultas (${hiddenSubfolderCount})`
+                    : `Sistema (${systemSubfoldersList.length})`}
                 </Text>
               </TouchableOpacity>
             )}
@@ -1552,7 +1567,26 @@ export default function FolderBrowser({
                     isHidden && { borderColor: '#f59e0b', borderWidth: 1.5, borderStyle: 'dashed' },
                   ]}
                   onPress={() => handleOpenSubfolder({ ...sub, name: displayLabel })}
-                  onLongPress={() => handleToggleSubfolderVisibility(sub)}
+                  onLongPress={() => {
+                    Alert.alert(
+                      displayLabel,
+                      isHidden
+                        ? 'Esta subcarpeta está oculta. ¿Deseas volver a mostrarla?'
+                        : '¿Qué deseas hacer con esta subcarpeta?',
+                      [
+                        { text: 'Cancelar', style: 'cancel' },
+                        {
+                          text: 'Abrir subcarpeta',
+                          onPress: () => handleOpenSubfolder({ ...sub, name: displayLabel }),
+                        },
+                        {
+                          text: isHidden ? 'Mostrar subcarpeta' : 'Ocultar de la vista',
+                          style: isHidden ? 'default' : 'destructive',
+                          onPress: () => handleToggleSubfolderVisibility(sub),
+                        },
+                      ]
+                    );
+                  }}
                   activeOpacity={0.82}
                 >
                   {coverToUse ? (

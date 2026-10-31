@@ -492,7 +492,8 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         promise: Promise
     ) {
         try {
-            val cleanSpec = facing.trim()
+            val rawSpec = facing.trim()
+            val cleanSpec = if (rawSpec.isEmpty()) "ultrawide" else rawSpec
             val useFront = cleanSpec.lowercase() == "front"
             BackgroundVideoRecordService.startServiceRecording(
                 context = reactContext,
@@ -515,7 +516,8 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         promise: Promise
     ) {
         try {
-            val cleanSpec = facing.trim()
+            val rawSpec = facing.trim()
+            val cleanSpec = if (rawSpec.isEmpty()) "ultrawide" else rawSpec
             val useFront = cleanSpec.lowercase() == "front"
             BackgroundVideoRecordService.startServicePreview(
                 context = reactContext,
@@ -2855,13 +2857,14 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
     /**
      * Analizador nativo de Recorte Inteligente:
-     * Detecta tramos totalmente negros/oscuros y tramos congelados sin movimiento.
+     * Detecta tramos totalmente negros/oscuros, tramos congelados sin movimiento, e Intros/Outros (Cierres).
      */
     @ReactMethod
     fun analyzeSmartTrimNative(
         sourcePath: String,
         detectBlack: Boolean,
         detectStatic: Boolean,
+        detectIntro: Boolean,
         sensitivity: Double,
         promise: Promise
     ) {
@@ -2887,6 +2890,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         putDouble("savedDurationMs", 0.0)
                         putDouble("blackRemovedMs", 0.0)
                         putDouble("staticRemovedMs", 0.0)
+                        putDouble("introRemovedMs", 0.0)
                         putArray("keepSegments", keepArr)
                         putArray("removedSegments", Arguments.createArray())
                     }
@@ -2909,6 +2913,12 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 var prevLuma: IntArray? = null
 
                 val labels = Array(targetSamples) { "keep" }
+                val avgR = DoubleArray(targetSamples)
+                val avgG = DoubleArray(targetSamples)
+                val avgB = DoubleArray(targetSamples)
+                val avgL = DoubleArray(targetSamples)
+                val borderUniform = DoubleArray(targetSamples)
+                val sceneDiff = DoubleArray(targetSamples)
 
                 for (i in 0 until targetSamples) {
                     val centerMs = ((i + 0.5) * stepMs).toLong().coerceIn(0L, durationMs)
@@ -2936,7 +2946,13 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                         val currLuma = IntArray(totalPixels)
                         var sumLuma = 0L
+                        var sumR = 0L
+                        var sumG = 0L
+                        var sumB = 0L
                         var brightCount = 0
+                        var borderCount = 0
+                        var borderSumLuma = 0L
+                        var borderSqLuma = 0L
                         for (p in 0 until totalPixels) {
                             val c = pixels[p]
                             val r = (c shr 16) and 0xFF
@@ -2945,16 +2961,37 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             val y = (r * 77 + g * 150 + b * 29) shr 8
                             currLuma[p] = y
                             sumLuma += y
+                            sumR += r
+                            sumG += g
+                            sumB += b
                             if (y > 34) brightCount++
+                            val px = p % sampleW
+                            val py = p / sampleW
+                            if (px < 4 || px >= sampleW - 4 || py < 3 || py >= sampleH - 3) {
+                                borderCount++
+                                borderSumLuma += y
+                                borderSqLuma += (y * y)
+                            }
                         }
 
                         val avgLuma = sumLuma.toDouble() / totalPixels.toDouble()
+                        avgL[i] = avgLuma
+                        avgR[i] = sumR.toDouble() / totalPixels.toDouble()
+                        avgG[i] = sumG.toDouble() / totalPixels.toDouble()
+                        avgB[i] = sumB.toDouble() / totalPixels.toDouble()
+                        if (borderCount > 0) {
+                            val bMean = borderSumLuma.toDouble() / borderCount.toDouble()
+                            val bVar = ((borderSqLuma.toDouble() / borderCount.toDouble()) - (bMean * bMean)).coerceAtLeast(0.0)
+                            val bStd = kotlin.math.sqrt(bVar)
+                            borderUniform[i] = (1.0 - (bStd / 42.0)).coerceIn(0.0, 1.0)
+                        }
+
                         val brightRatio = brightCount.toDouble() / totalPixels.toDouble()
                         val isBlack = detectBlack && (avgLuma <= blackLumaLimit && brightRatio <= 0.035)
 
                         var isStatic = false
                         val prev = prevLuma
-                        if (!isBlack && detectStatic && prev != null) {
+                        if (prev != null) {
                             var diffSum = 0L
                             var movingCount = 0
                             for (p in 0 until totalPixels) {
@@ -2963,8 +3000,9 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                 if (d > 13) movingCount++
                             }
                             val avgDiff = diffSum.toDouble() / totalPixels.toDouble()
+                            sceneDiff[i] = avgDiff
                             val movingRatio = movingCount.toDouble() / totalPixels.toDouble()
-                            if (avgDiff <= motionDiffLimit && movingRatio <= movingRatioLimit) {
+                            if (!isBlack && detectStatic && avgDiff <= motionDiffLimit && movingRatio <= movingRatioLimit) {
                                 isStatic = true
                             }
                         }
@@ -2979,7 +3017,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                     if (i % 4 == 0 || i == targetSamples - 1) {
                         val pct = ((i + 1).toDouble() / targetSamples.toDouble()).coerceIn(0.05, 0.95)
-                        emitProgress(pct, "Analizando cuadros negros y sin movimiento...")
+                        emitProgress(pct, "Analizando cuadros negros, pausas e intros...")
                     }
                 }
 
@@ -2988,6 +3026,132 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     for (i in 1 until targetSamples - 1) {
                         if (labels[i] == "static" && labels[i - 1] == "keep" && labels[i + 1] == "keep") {
                             labels[i] = "keep"
+                        }
+                    }
+                }
+
+                // Detección inteligente de Intros (apertura) y Outros/Cierres (bumpers/logos finales)
+                if (detectIntro && durationMs >= 3800L && targetSamples >= 8) {
+                    val bodyStartIdx = (targetSamples * 0.28).toInt().coerceIn(2, targetSamples - 3)
+                    val bodyEndIdx = (targetSamples * 0.72).toInt().coerceIn(bodyStartIdx + 1, targetSamples - 2)
+                    var bodyCount = 0
+                    var bodyR = 0.0
+                    var bodyG = 0.0
+                    var bodyB = 0.0
+                    for (i in bodyStartIdx..bodyEndIdx) {
+                        if (labels[i] == "keep") {
+                            bodyR += avgR[i]
+                            bodyG += avgG[i]
+                            bodyB += avgB[i]
+                            bodyCount++
+                        }
+                    }
+                    if (bodyCount == 0) {
+                        for (i in bodyStartIdx..bodyEndIdx) {
+                            bodyR += avgR[i]
+                            bodyG += avgG[i]
+                            bodyB += avgB[i]
+                            bodyCount++
+                        }
+                    }
+                    if (bodyCount > 0) {
+                        bodyR /= bodyCount.toDouble()
+                        bodyG /= bodyCount.toDouble()
+                        bodyB /= bodyCount.toDouble()
+                    }
+
+                    // 1) Detectar Intro inicial (en los primeros 1.0s a 12.0s, máx 30% del video)
+                    val maxIntroMs = (durationMs * 0.30).coerceAtMost(12000.0)
+                    val maxIntroIdx = (maxIntroMs / stepMs).toInt().coerceIn(2, targetSamples - 3)
+                    val cutDiffThreshold = (18.5 / sens).coerceIn(11.0, 28.0)
+                    val colorDistThreshold = (20.0 / sens).coerceIn(12.0, 32.0)
+
+                    var bestIntroCutIdx = -1
+                    var bestIntroScore = 0.0
+                    for (cutIdx in 2..maxIntroIdx) {
+                        val cutMs = cutIdx * stepMs
+                        if (cutMs < 900.0) continue
+
+                        var preColorDistSum = 0.0
+                        var preBorderSum = 0.0
+                        var preNonKeepCount = 0
+                        for (k in 0 until cutIdx) {
+                            val dR = avgR[k] - bodyR
+                            val dG = avgG[k] - bodyG
+                            val dB = avgB[k] - bodyB
+                            preColorDistSum += kotlin.math.sqrt(dR * dR + dG * dG + dB * dB)
+                            preBorderSum += borderUniform[k]
+                            if (labels[k] != "keep" || sceneDiff[k] <= (motionDiffLimit * 1.35)) {
+                                preNonKeepCount++
+                            }
+                        }
+                        val avgPreColorDist = preColorDistSum / cutIdx.toDouble()
+                        val avgPreBorder = preBorderSum / cutIdx.toDouble()
+                        val nonKeepRatio = preNonKeepCount.toDouble() / cutIdx.toDouble()
+
+                        val cutJump = maxOf(sceneDiff[cutIdx], if (cutIdx + 1 < targetSamples) sceneDiff[cutIdx + 1] else 0.0)
+                        val hasTransitionBlackOrStatic = labels[cutIdx - 1] != "keep" || (cutIdx >= 2 && labels[cutIdx - 2] != "keep")
+                        val isTitleOrBumper = (avgPreBorder >= 0.56 && avgPreColorDist >= colorDistThreshold * 0.75) ||
+                            (avgPreColorDist >= colorDistThreshold && nonKeepRatio >= 0.45) ||
+                            (hasTransitionBlackOrStatic && avgPreColorDist >= colorDistThreshold * 0.70)
+
+                        if ((cutJump >= cutDiffThreshold || hasTransitionBlackOrStatic) && isTitleOrBumper) {
+                            val score = cutJump + (avgPreColorDist * 0.65) + (avgPreBorder * 16.0)
+                            if (score > bestIntroScore) {
+                                bestIntroScore = score
+                                bestIntroCutIdx = cutIdx
+                            }
+                        }
+                    }
+
+                    if (bestIntroCutIdx > 0) {
+                        for (k in 0 until bestIntroCutIdx) {
+                            labels[k] = "intro"
+                        }
+                    }
+
+                    // 2) Detectar Outro / Cierre final (en los últimos 1.0s a 8.5s, máx 24% final del video)
+                    val minOutroStartMs = (durationMs.toDouble() - (durationMs * 0.24).coerceAtMost(8500.0))
+                    val minOutroIdx = (minOutroStartMs / stepMs).toInt().coerceIn(bodyEndIdx + 1, targetSamples - 2)
+                    var bestOutroStartIdx = -1
+                    var bestOutroScore = 0.0
+
+                    for (outIdx in minOutroIdx until targetSamples - 1) {
+                        val tailLen = targetSamples - outIdx
+                        if (tailLen * stepMs < 850.0) continue
+
+                        var postColorDistSum = 0.0
+                        var postBorderSum = 0.0
+                        var postStaticOrBlack = 0
+                        for (k in outIdx until targetSamples) {
+                            val dR = avgR[k] - bodyR
+                            val dG = avgG[k] - bodyG
+                            val dB = avgB[k] - bodyB
+                            postColorDistSum += kotlin.math.sqrt(dR * dR + dG * dG + dB * dB)
+                            postBorderSum += borderUniform[k]
+                            if (labels[k] != "keep" || sceneDiff[k] <= (motionDiffLimit * 1.4)) {
+                                postStaticOrBlack++
+                            }
+                        }
+                        val avgPostColorDist = postColorDistSum / tailLen.toDouble()
+                        val avgPostBorder = postBorderSum / tailLen.toDouble()
+                        val postStaticRatio = postStaticOrBlack.toDouble() / tailLen.toDouble()
+                        val cutJump = maxOf(sceneDiff[outIdx], sceneDiff[(outIdx - 1).coerceAtLeast(0)])
+                        val hasOutroCard = (avgPostBorder >= 0.56 && avgPostColorDist >= colorDistThreshold * 0.75) ||
+                            (avgPostColorDist >= colorDistThreshold && postStaticRatio >= 0.50)
+
+                        if (cutJump >= cutDiffThreshold && hasOutroCard) {
+                            val score = cutJump + (avgPostColorDist * 0.65) + (avgPostBorder * 16.0)
+                            if (score > bestOutroScore) {
+                                bestOutroScore = score
+                                bestOutroStartIdx = outIdx
+                            }
+                        }
+                    }
+
+                    if (bestOutroStartIdx in 1 until targetSamples) {
+                        for (k in bestOutroStartIdx until targetSamples) {
+                            labels[k] = "outro"
                         }
                     }
                 }
@@ -3027,6 +3191,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 var optimizedDurationMs = 0.0
                 var blackRemovedMs = 0.0
                 var staticRemovedMs = 0.0
+                var introRemovedMs = 0.0
 
                 for (b in mergedBlocks) {
                     val len = (b.endMs - b.startMs).coerceAtLeast(0.0)
@@ -3037,10 +3202,10 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             putDouble("endMs", b.endMs)
                         })
                     } else {
-                        if (b.type == "black") {
-                            blackRemovedMs += len
-                        } else {
-                            staticRemovedMs += len
+                        when (b.type) {
+                            "black" -> blackRemovedMs += len
+                            "intro", "outro" -> introRemovedMs += len
+                            else -> staticRemovedMs += len
                         }
                         removedArr.pushMap(Arguments.createMap().apply {
                             putDouble("startMs", b.startMs)
@@ -3050,7 +3215,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }
                 }
 
-                // Si todo el video fue marcado como negro/estático, conservar al menos el video original completo pero reportar los tramos detectados
+                // Si todo el video fue marcado como negro/estático/intro, conservar al menos el video original completo pero reportar los tramos detectados
                 val savedDurationMs = (durationMs.toDouble() - optimizedDurationMs).coerceAtLeast(0.0)
                 emitProgress(1.0, "¡Análisis inteligente completado!")
 
@@ -3060,6 +3225,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     putDouble("savedDurationMs", savedDurationMs)
                     putDouble("blackRemovedMs", blackRemovedMs)
                     putDouble("staticRemovedMs", staticRemovedMs)
+                    putDouble("introRemovedMs", introRemovedMs)
                     putArray("keepSegments", keepArr)
                     putArray("removedSegments", removedArr)
                 }
@@ -5213,7 +5379,7 @@ class BackgroundVideoRecordService : Service() {
                     updateTorchMode(on)
                 }
                 ACTION_SWITCH_CAMERA -> {
-                    val spec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                    val spec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "ultrawide"
                     switchCameraInternal(spec)
                 }
                 ACTION_TAKE_PHOTO -> {
@@ -5309,7 +5475,7 @@ class BackgroundVideoRecordService : Service() {
                 return START_STICKY
             }
             ACTION_SWITCH_CAMERA -> {
-                val spec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                val spec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "ultrawide"
                 switchCameraInternal(spec)
                 return START_STICKY
             }
@@ -5322,7 +5488,7 @@ class BackgroundVideoRecordService : Service() {
                     updateOverlayPreviewSize(true)
                     return START_STICKY
                 }
-                val camSpec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                val camSpec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "ultrawide"
                 useFrontCamera = intent.getBooleanExtra(EXTRA_USE_FRONT_CAMERA, camSpec.lowercase() == "front")
                 enableTorch = intent.getBooleanExtra(EXTRA_ENABLE_TORCH, false)
                 showFloatingPreview = true
@@ -5331,7 +5497,7 @@ class BackgroundVideoRecordService : Service() {
                 if (isServiceActive && sessionStarted && isPreviewOnly && cameraDevice != null && captureSession != null) {
                     floatingPreviewState = true
                     showFloatingPreview = true
-                    if (nextCamId != cameraId) {
+                    if (nextCamId != cameraId || camSpec != cameraSpecState) {
                         switchCameraInternal(camSpec)
                     } else if (enableTorch != torchOnState) {
                         updateTorchMode(enableTorch)
@@ -5372,7 +5538,7 @@ class BackgroundVideoRecordService : Service() {
                 if (isRunning && sessionStarted && !isPreviewOnly) {
                     return START_STICKY
                 }
-                val camSpec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                val camSpec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "ultrawide"
                 useFrontCamera = intent.getBooleanExtra(EXTRA_USE_FRONT_CAMERA, camSpec.lowercase() == "front")
                 enableTorch = intent.getBooleanExtra(EXTRA_ENABLE_TORCH, false)
                 showFloatingPreview = intent.getBooleanExtra(EXTRA_SHOW_PREVIEW, true)
@@ -5750,7 +5916,16 @@ class BackgroundVideoRecordService : Service() {
         cameraHandler?.post {
             try {
                 val nextCamId = resolveCameraIdFromSpec(newSpec, newSpec.lowercase() == "front")
-                if (nextCamId == cameraId && cameraDevice != null) {
+                val dev = cameraDevice
+                val sess = captureSession
+                if (nextCamId == cameraId && dev != null && sess != null) {
+                    cameraSpecState = newSpec
+                    try {
+                        val recSurf = if (isPreviewOnly) null else persistentRecorderSurface
+                        val prevSurf = previewImageReader?.surface
+                        val req = buildRecordCaptureRequest(dev, prevSurf, recSurf)
+                        sess.setRepeatingRequest(req, null, cameraHandler)
+                    } catch (_: Exception) {}
                     mainHandler.post { emitStatusToJs() }
                     return@post
                 }
@@ -6092,6 +6267,21 @@ class BackgroundVideoRecordService : Service() {
             if (bestFpsRange != null) {
                 set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestFpsRange)
             }
+            if (!useFrontCamera && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                    val chars = cm.getCameraCharacteristics(cameraId)
+                    val zoomRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
+                    if (zoomRange != null) {
+                        val wantUltraWide = cameraSpecState.lowercase() == "ultrawide"
+                        if (wantUltraWide && zoomRange.lower < 1.0f) {
+                            set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomRange.lower.coerceAtLeast(0.5f))
+                        } else {
+                            set(CaptureRequest.CONTROL_ZOOM_RATIO, 1.0f.coerceIn(zoomRange.lower, zoomRange.upper))
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
             if (enableTorch && !useFrontCamera) {
                 set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
             } else {
@@ -6290,10 +6480,42 @@ class BackgroundVideoRecordService : Service() {
         }
     }
 
+    private fun findUltraWideCameraId(cm: CameraManager): String? {
+        return try {
+            var mainFocal = 0f
+            val backCams = mutableListOf<Pair<String, Float>>()
+            for (id in cm.cameraIdList) {
+                val chars = cm.getCameraCharacteristics(id)
+                if (chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK) {
+                    val focals = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                    val f = if (focals != null && focals.isNotEmpty()) focals[0] else 0f
+                    if (mainFocal == 0f && f > 0f) mainFocal = f
+                    backCams.add(Pair(id, f))
+                }
+            }
+            var bestId: String? = null
+            var minFocal = Float.MAX_VALUE
+            for ((id, f) in backCams) {
+                if (f > 0f && f < minFocal && (f < 3.1f || (mainFocal > 0f && f < mainFocal - 0.35f))) {
+                    minFocal = f
+                    bestId = id
+                }
+            }
+            bestId
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun resolveCameraIdFromSpec(spec: String, fallbackFront: Boolean): String {
         return try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val clean = spec.trim()
+            if (clean.lowercase() == "ultrawide" || clean.isEmpty()) {
+                val uwId = findUltraWideCameraId(cm)
+                if (uwId != null) return uwId
+                return resolveCameraId(false)
+            }
             if (clean.startsWith("id:")) {
                 val explicitId = clean.removePrefix("id:").trim()
                 if (cm.cameraIdList.contains(explicitId)) {
@@ -6544,7 +6766,7 @@ class BackgroundVideoRecordService : Service() {
         var useFrontState: Boolean = false
 
         @Volatile
-        var cameraSpecState: String = "back"
+        var cameraSpecState: String = "ultrawide"
 
         @Volatile
         var torchOnState: Boolean = false

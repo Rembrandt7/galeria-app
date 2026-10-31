@@ -1131,6 +1131,28 @@ export default function AlbumList({
             {quickEditVisibility ? 'Listo' : 'Toque rápido ocultar'}
           </Text>
         </TouchableOpacity>
+
+        {hiddenCount > 0 && (
+          <TouchableOpacity
+            style={[
+              styles.sortChip,
+              {
+                backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                borderColor: '#f59e0b',
+              },
+            ]}
+            onPress={() => {
+              setManagerTab('all');
+              if (onOpenVisibilityModal) onOpenVisibilityModal();
+            }}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="eye-off" size={13} color="#fbbf24" />
+            <Text style={[styles.sortChipText, { color: '#fde68a', fontWeight: '800' }]}>
+              Ver ocultas ({hiddenCount})
+            </Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
       {!showFoldersInScreen && (

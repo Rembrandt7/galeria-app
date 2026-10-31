@@ -106,9 +106,10 @@ export default function VideoPlayerScreen({
   const [activeHandle, setActiveHandle] = useState('start');
   const [previewingCut, setPreviewingCut] = useState(false);
 
-  // Estado de Recorte Inteligente (Detección de todo negro y/o sin movimiento + Comparación para Visto Bueno)
+  // Estado de Recorte Inteligente (Detección de todo negro, sin movimiento e intros/cierres + Comparación para Visto Bueno)
   const [smartDetectBlack, setSmartDetectBlack] = useState(true);
   const [smartDetectStatic, setSmartDetectStatic] = useState(true);
+  const [smartDetectIntro, setSmartDetectIntro] = useState(true);
   const [smartResult, setSmartResult] = useState(null);
   const [smartCompareMode, setSmartCompareMode] = useState('optimal'); // 'optimal' | 'original' | 'removed'
   const fallbackAttemptedRef = useRef(false);
@@ -792,15 +793,16 @@ export default function VideoPlayerScreen({
     setSmartCompareMode('optimal');
   };
 
-  // Analizar video inteligentemente para detectar partes todo negro y/o sin movimiento
+  // Analizar video inteligentemente para detectar partes todo negro, sin movimiento e intros/cierres
   const handleRunSmartTrim = async (
     customBlack = smartDetectBlack,
-    customStatic = smartDetectStatic
+    customStatic = smartDetectStatic,
+    customIntro = smartDetectIntro
   ) => {
-    if (!customBlack && !customStatic) {
+    if (!customBlack && !customStatic && !customIntro) {
       Alert.alert(
         'Recorte Inteligente',
-        'Activa al menos una opción: "Todo negro" o "Sin movimiento".'
+        'Activa al menos una opción: "Todo negro", "Sin movimiento" o "Intro / Cierre".'
       );
       return;
     }
@@ -812,7 +814,7 @@ export default function VideoPlayerScreen({
     setBusy(true);
     setProgressInfo({
       percent: 0.1,
-      stage: 'Buscando partes en negro y tramos sin movimiento...',
+      stage: 'Buscando intros, partes en negro y tramos sin movimiento...',
     });
 
     try {
@@ -820,6 +822,7 @@ export default function VideoPlayerScreen({
         asset,
         detectBlack: customBlack,
         detectStatic: customStatic,
+        detectIntro: customIntro,
         sensitivity: 1.0,
         onProgress: (prog) => setProgressInfo(prog),
       });
@@ -833,7 +836,7 @@ export default function VideoPlayerScreen({
         setSmartCompareMode('optimal');
         Alert.alert(
           '✨ ¡Tu video ya está limpio!',
-          'No se detectaron partes completamente negras ni tramos congelados sin movimiento.'
+          'No se detectaron intros, partes completamente negras ni tramos congelados sin movimiento.'
         );
         return;
       }
@@ -1535,7 +1538,9 @@ export default function VideoPlayerScreen({
 
                 <TouchableOpacity
                   style={[styles.friendlyToolChip, styles.friendlyToolChipSmart]}
-                  onPress={() => handleRunSmartTrim(smartDetectBlack, smartDetectStatic)}
+                  onPress={() =>
+                    handleRunSmartTrim(smartDetectBlack, smartDetectStatic, smartDetectIntro)
+                  }
                   disabled={busy}
                 >
                   <Ionicons name="sparkles" size={15} color="#a855f7" />
@@ -1560,7 +1565,7 @@ export default function VideoPlayerScreen({
                   onPress={() => {
                     setTrimMode('smart');
                     if (!smartResult && !busy) {
-                      handleRunSmartTrim(smartDetectBlack, smartDetectStatic);
+                      handleRunSmartTrim(smartDetectBlack, smartDetectStatic, smartDetectIntro);
                     }
                   }}
                 >
@@ -1695,12 +1700,32 @@ export default function VideoPlayerScreen({
                         size={15}
                         color={smartDetectStatic ? '#c084fc' : '#64748b'}
                       />
-                      <Text style={styles.smartFilterChipText}>⏸️ Sin movimiento</Text>
+                      <Text style={styles.smartFilterChipText}>⏸️ Sin mov.</Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.smartFilterChip,
+                        smartDetectIntro && styles.smartFilterChipActive,
+                      ]}
+                      onPress={() => {
+                        const next = !smartDetectIntro;
+                        setSmartDetectIntro(next);
+                      }}
+                    >
+                      <Ionicons
+                        name={smartDetectIntro ? 'checkbox' : 'square-outline'}
+                        size={15}
+                        color={smartDetectIntro ? '#c084fc' : '#64748b'}
+                      />
+                      <Text style={styles.smartFilterChipText}>🎬 Intro / Cierre</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
                       style={styles.smartScanActionBtn}
-                      onPress={() => handleRunSmartTrim(smartDetectBlack, smartDetectStatic)}
+                      onPress={() =>
+                        handleRunSmartTrim(smartDetectBlack, smartDetectStatic, smartDetectIntro)
+                      }
                       disabled={busy}
                     >
                       <Ionicons name="search" size={14} color="#ffffff" />
@@ -1841,7 +1866,13 @@ export default function VideoPlayerScreen({
                                 }}
                               >
                                 <Text style={styles.smartRemovedChipText}>
-                                  {rem.reason === 'black' ? '⬛ Negro' : '⏸️ Sin mov.'}{' '}
+                                  {rem.reason === 'black'
+                                    ? '⬛ Negro'
+                                    : rem.reason === 'intro'
+                                    ? '🎬 Intro'
+                                    : rem.reason === 'outro'
+                                    ? '🎬 Cierre'
+                                    : '⏸️ Sin mov.'}{' '}
                                   {formatTime(rem.start, true)}-{formatTime(rem.end, true)}
                                 </Text>
                               </TouchableOpacity>

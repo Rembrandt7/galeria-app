@@ -60,11 +60,12 @@ export default function CameraScreen({
   const [hasCamPerm, setHasCamPerm] = useState(false);
   const [hasMicPerm, setHasMicPerm] = useState(false);
 
-  // Selección de cámara con la que guarda ('back' | 'front' | 'id:...')
+  // Selección de cámara con la que guarda ('ultrawide' | 'back' | 'front' | 'id:...')
   const [facing, setFacing] = useState('back');
-  const [cameraSpec, setCameraSpec] = useState('back');
+  const [cameraSpec, setCameraSpec] = useState('ultrawide');
   const [availableCameras, setAvailableCameras] = useState([
-    { cameraId: '0', facing: 'back', label: 'Trasera', spec: 'back' },
+    { cameraId: 'back_ultrawide', facing: 'back', label: 'Gran Angular', spec: 'ultrawide' },
+    { cameraId: '0', facing: 'back', label: 'Trasera 1x', spec: 'back' },
     { cameraId: '1', facing: 'front', label: 'Frontal', spec: 'front' },
   ]);
 
@@ -101,16 +102,21 @@ export default function CameraScreen({
       const list = await VideoEngineModule.getAvailableCamerasNative();
       if (Array.isArray(list) && list.length > 0) {
         const formatted = [
-          { cameraId: 'back_main', facing: 'back', label: 'Trasera', spec: 'back' },
+          { cameraId: 'back_ultrawide', facing: 'back', label: 'Gran Angular', spec: 'ultrawide' },
+          { cameraId: 'back_main', facing: 'back', label: 'Trasera 1x', spec: 'back' },
           { cameraId: 'front_main', facing: 'front', label: 'Frontal', spec: 'front' },
         ];
         for (const cam of list) {
           if (!cam || !cam.cameraId) continue;
           if (cam.cameraId !== '0' && cam.cameraId !== '1') {
+            const lbl = String(cam.label || '');
+            if (lbl.toLowerCase().includes('gran angular')) {
+              continue;
+            }
             formatted.push({
               cameraId: String(cam.cameraId),
               facing: cam.facing === 'front' ? 'front' : 'back',
-              label: cam.label || `Lente ${cam.cameraId}`,
+              label: lbl || `Lente ${cam.cameraId}`,
               spec: `id:${cam.cameraId}`,
             });
           }
@@ -936,7 +942,13 @@ export default function CameraScreen({
                                 >
                                   <ActivityIndicator size="small" color="#34d399" />
                                   <Text style={styles.previewLoadingText}>
-                                    Abriendo lente {facing === 'front' ? 'Frontal' : 'Trasera'}...
+                                    Abriendo lente{' '}
+                                    {facing === 'front'
+                                      ? 'Frontal'
+                                      : cameraSpec === 'ultrawide'
+                                      ? 'Gran Angular'
+                                      : 'Trasera'}
+                                    ...
                                   </Text>
                                 </View>
                               )}
@@ -960,10 +972,18 @@ export default function CameraScreen({
                             />
                             <Text style={styles.previewOverlayBadgeText}>
                               {isRecording
-                                ? `Grabando (${facing === 'front' ? 'Frontal' : 'Trasera'}) · ${formatTimer(elapsed)}`
+                                ? `Grabando (${
+                                    facing === 'front'
+                                      ? 'Frontal'
+                                      : cameraSpec === 'ultrawide'
+                                      ? 'Gran Angular'
+                                      : 'Trasera'
+                                  }) · ${formatTimer(elapsed)}`
                                 : facing === 'front'
                                 ? 'Frontal en vivo'
-                                : 'Trasera en vivo'}
+                                : cameraSpec === 'ultrawide'
+                                ? 'Gran Angular en vivo'
+                                : 'Trasera 1x en vivo'}
                             </Text>
                           </View>
                         </View>
@@ -995,10 +1015,7 @@ export default function CameraScreen({
                         <Text style={styles.sectionMiniLabel}>¿Con qué cámara guarda?</Text>
                         <View style={styles.cameraChipsRow}>
                           {availableCameras.map((cam) => {
-                            const isSelected =
-                              cameraSpec === cam.spec ||
-                              (cameraSpec === cam.facing &&
-                                (cam.spec === 'back' || cam.spec === 'front'));
+                            const isSelected = cameraSpec === cam.spec;
                             return (
                               <TouchableOpacity
                                 key={`cam_opt_${cam.spec}`}

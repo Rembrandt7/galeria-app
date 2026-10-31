@@ -180,13 +180,14 @@ export const videoEngineService = {
   },
 
   /**
-   * Analiza el video de forma inteligente para detectar pedazos totalmente negros y/o sin ningún movimiento,
-   * devolviendo los tramos óptimos a conservar y los tramos descartados para comparación y visto bueno.
+   * Analiza el video de forma inteligente para detectar pedazos totalmente negros, sin ningún movimiento
+   * e intros/cierres (bumpers), devolviendo los tramos óptimos a conservar y los tramos descartados.
    */
   async analyzeSmartTrim({
     asset,
     detectBlack = true,
     detectStatic = true,
+    detectIntro = true,
     sensitivity = 1.0,
     onProgress,
   }) {
@@ -201,7 +202,7 @@ export const videoEngineService = {
         sub = DeviceEventEmitter.addListener('VideoEngineProgress', (evt) => {
           onProgress({
             percent: evt?.percent ?? 0.5,
-            stage: evt?.stage || 'Analizando cuadros negros y sin movimiento...',
+            stage: evt?.stage || 'Analizando cuadros negros, pausas e intros...',
           });
         });
       }
@@ -213,6 +214,7 @@ export const videoEngineService = {
           target,
           Boolean(detectBlack),
           Boolean(detectStatic),
+          Boolean(detectIntro),
           Number(sensitivity) || 1.0
         );
       } catch (_firstErr) {
@@ -221,6 +223,7 @@ export const videoEngineService = {
             asset.uri,
             Boolean(detectBlack),
             Boolean(detectStatic),
+            Boolean(detectIntro),
             Number(sensitivity) || 1.0
           );
         } else {
@@ -229,6 +232,7 @@ export const videoEngineService = {
             fallbackInput.path,
             Boolean(detectBlack),
             Boolean(detectStatic),
+            Boolean(detectIntro),
             Number(sensitivity) || 1.0
           );
         }
@@ -245,13 +249,32 @@ export const videoEngineService = {
         : [];
 
       const removedSegments = Array.isArray(rawRes?.removedSegments)
-        ? rawRes.removedSegments.map((s, idx) => ({
-            id: `smart_rem_${idx}_${Math.round(s.startMs || 0)}`,
-            start: Math.max(0, (s.startMs || 0) / 1000),
-            end: Math.max(0.1, (s.endMs || 0) / 1000),
-            reason: s.reason === 'black' ? 'black' : 'static',
-            label: s.reason === 'black' ? 'Todo negro' : 'Sin movimiento',
-          }))
+        ? rawRes.removedSegments.map((s, idx) => {
+            const rawReason = String(s.reason || 'static');
+            const reason =
+              rawReason === 'black'
+                ? 'black'
+                : rawReason === 'intro'
+                ? 'intro'
+                : rawReason === 'outro'
+                ? 'outro'
+                : 'static';
+            const label =
+              reason === 'black'
+                ? 'Todo negro'
+                : reason === 'intro'
+                ? 'Intro'
+                : reason === 'outro'
+                ? 'Cierre'
+                : 'Sin movimiento';
+            return {
+              id: `smart_rem_${idx}_${Math.round(s.startMs || 0)}`,
+              start: Math.max(0, (s.startMs || 0) / 1000),
+              end: Math.max(0.1, (s.endMs || 0) / 1000),
+              reason,
+              label,
+            };
+          })
         : [];
 
       return {
@@ -260,6 +283,7 @@ export const videoEngineService = {
         savedDurationSec: (rawRes?.savedDurationMs || 0) / 1000,
         blackRemovedSec: (rawRes?.blackRemovedMs || 0) / 1000,
         staticRemovedSec: (rawRes?.staticRemovedMs || 0) / 1000,
+        introRemovedSec: (rawRes?.introRemovedMs || 0) / 1000,
         keepSegments,
         removedSegments,
       };
