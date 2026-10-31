@@ -57,15 +57,27 @@ export function detectPlatform(url) {
 }
 
 /**
- * Decodifica secuencias escapadas en JSON o HTML (\u0025, \u0026, &amp;, \/...)
+ * Decodifica secuencias escapadas simples o doblemente escapadas en JSON o HTML (\u0025, \\u0026, &amp;, \/, \\/...)
+ * y elimina rangos parciales bytestart/byteend de CDNs de Instagram/Facebook.
  */
 function unescapeUrl(raw) {
-  if (!raw) return '';
-  return raw
+  if (!raw || typeof raw !== 'string') return '';
+  let s = raw
+    .replace(/\\\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+    .replace(/\\\\\//g, '/')
     .replace(/\\\//g, '/')
     .replace(/&amp;/g, '&')
-    .trim();
+    .trim()
+    .replace(/^["'\\]+|["'\\]+$/g, '');
+  if (/cdninstagram\.com|fbcdn\.net/i.test(s)) {
+    s = s
+      .replace(/bytestart=\d+&?/gi, '')
+      .replace(/byteend=\d+&?/gi, '')
+      .replace(/\?&/g, '?')
+      .replace(/[?&]+$/, '');
+  }
+  return s;
 }
 
 /**
@@ -675,94 +687,242 @@ async function resolveFacebook(url, signal) {
 }
 
 /**
- * 5B. Extractor especializado para Instagram (Reels, Historias, Publicaciones y enlaces cortos)
+ * 5B. Extractor especializado de múltiples capas para Instagram (Reels, Share /share/reel/, /share/p/, Historias y Publicaciones)
  */
-async function resolveInstagram(url, signal) {
-  let cleanUrl = url.trim();
-  const isStory = /\/stories\//i.test(cleanUrl);
+function extractInstagramShortcode(rawUrl, html = '') {
+  const combined = `${rawUrl || ''} ${(html || '').slice(0, 80000)}`;
+  const m =
+    combined.match(/instagram\.com\/(?:[^/?#]+\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]{5,25})/i) ||
+    combined.match(/"shortcode"\s*:\s*"([A-Za-z0-9_-]{5,25})"/i) ||
+    combined.match(/\\"shortcode\\"\s*:\s*\\"([A-Za-z0-9_-]{5,25})\\"/i);
+  return m && m[1] ? m[1] : null;
+}
 
-  // Etapa 1: Probar proxies OpenGraph directos (ddinstagram / kkinstagram) para Reels y Posts
-  const scMatch = cleanUrl.match(/instagram\.com\/(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i);
-  if (scMatch && scMatch[1]) {
-    const shortcode = scMatch[1];
-    for (const proxyDomain of ['https://www.ddinstagram.com', 'https://kkinstagram.com']) {
+function extractInstagramVideoFromHtml(html, defaultTitle = 'instagram_video', defaultSource = 'Instagram HD') {
+  if (!html || typeof html !== 'string') return null;
+
+  const igPatterns = [
+    {
+      regex: /"video_versions"\s*:\s*\[\s*\{[^}]*?"url"\s*:\s*"(https?:[^"]+)"/gi,
+      label: 'Instagram HD',
+    },
+    {
+      regex: /\\+"video_versions\\+"\s*:\s*\[\s*\{[^}]*?\\+"url\\+"\s*:\s*\\+"(https?:[^"'\s<>]+?)\\+"/gi,
+      label: 'Instagram HD',
+    },
+    {
+      regex: /"video_url"\s*:\s*"(https?:[^"]+)"/gi,
+      label: 'Instagram HD',
+    },
+    {
+      regex: /\\+"video_url\\+"\s*:\s*\\+"(https?:[^"'\s<>]+?)\\+"/gi,
+      label: 'Instagram Embed HD',
+    },
+    {
+      regex: /"contentUrl"\s*:\s*"(https?:[^"]+)"/gi,
+      label: 'Instagram Video',
+    },
+    {
+      regex: /<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["'](https?:[^"']+)["']/gi,
+      label: 'Instagram OpenGraph',
+    },
+    {
+      regex: /<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video(?::secure_url)?["']/gi,
+      label: 'Instagram OpenGraph',
+    },
+    {
+      regex: /<video[^>]+src=["'](https?:[^"']+)["']/gi,
+      label: 'Instagram Player',
+    },
+    {
+      regex: /(https?:(?:\\\\\/\\\\\/|\\\/\\\/|\/\/)[^"'\s<>\\]+(?:cdninstagram\.com|fbcdn\.net)[^"'\s<>\\]+\.mp4[^"'\s<>\\]*)/gi,
+      label: 'Instagram CDN',
+    },
+  ];
+
+  for (const item of igPatterns) {
+    const matches = html.matchAll(item.regex);
+    for (const match of matches) {
+      if (match && match[1]) {
+        const clean = unescapeUrl(match[1]);
+        if (
+          clean.startsWith('http') &&
+          !clean.startsWith('blob:') &&
+          !/\.(?:jpg|jpeg|png|webp|gif|svg|js|css)(?:\?|#|$)/i.test(clean) &&
+          !/mime=audio|audio_only|\/m69\/|\/m366\/|\/t42\.1790-2\//i.test(clean) &&
+          !clean.includes('static.cdninstagram.com')
+        ) {
+          return {
+            downloadUrl: clean,
+            title: defaultTitle,
+            source: item.label || defaultSource,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+async function resolveInstagramViaGraphQL(shortcode, signal) {
+  const docIds = ['8845758582119845', '10015901848480474', '7153631108069371'];
+  for (const docId of docIds) {
+    if (signal?.aborted) throw new Error('CANCELLED');
+    try {
+      const variables = JSON.stringify({
+        shortcode,
+        fetch_tagged_user_count: null,
+        hoisted_comment_id: null,
+        hoisted_reply_id: null,
+      });
+      const formBody =
+        `av=0&__d=www&__user=0&__a=1&__req=1&lsd=AVqbxe3J_YA&fb_api_caller_class=RelayModern` +
+        `&fb_api_req_friendly_name=PolarisPostActionLoadPostQueryQuery` +
+        `&variables=${encodeURIComponent(variables)}&server_timestamps=true&doc_id=${docId}`;
+
+      for (const endpoint of ['https://www.instagram.com/graphql/query', 'https://www.instagram.com/api/graphql']) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+        try {
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'User-Agent': DESKTOP_USER_AGENT,
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-IG-App-ID': '936619743392459',
+              'X-FB-LSD': 'AVqbxe3J_YA',
+              'X-ASBD-ID': '129477',
+              'Sec-Fetch-Site': 'same-origin',
+              Origin: 'https://www.instagram.com',
+              Referer: `https://www.instagram.com/reel/${shortcode}/`,
+              Accept: '*/*',
+            },
+            body: formBody,
+            signal,
+          });
+          if (res.ok) {
+            const text = await res.text();
+            const found = extractInstagramVideoFromHtml(text, `instagram_${shortcode}`, 'Instagram GraphQL HD');
+            if (found) return found;
+          }
+        } catch (_innerErr) {
+          if (signal?.aborted) throw new Error('CANCELLED');
+        }
+      }
+    } catch (_e) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+  return null;
+}
+
+async function resolveInstagram(url, signal) {
+  let cleanUrl = url.trim().replace(/^https?:\/\/instagr\.am\//i, 'https://www.instagram.com/');
+  const isStory = /\/stories\//i.test(cleanUrl);
+  let shortcode = extractInstagramShortcode(cleanUrl);
+
+  // Etapa 0: Si es un enlace corto (/share/reel/..., /share/p/..., /share/...) o no tiene shortcode visible, desenvolverlo primero
+  if (!shortcode || /\/share\//i.test(cleanUrl)) {
+    for (const ua of [FB_CRAWLER_USER_AGENT, DESKTOP_USER_AGENT]) {
       if (signal?.aborted) throw new Error('CANCELLED');
       try {
-        const page = await fetchCleanHtmlPage(`${proxyDomain}/reel/${shortcode}/`, FB_CRAWLER_USER_AGENT, signal);
-        const ogVideo =
-          page.html.match(/<meta[^>]+property=["']og:video(?::secure_url)?["'][^>]+content=["'](https?:[^"']+)["']/i) ||
-          page.html.match(/<meta[^>]+content=["'](https?:[^"']+)["'][^>]+property=["']og:video(?::secure_url)?["']/i);
-        if (ogVideo && ogVideo[1]) {
-          const candidate = unescapeUrl(ogVideo[1]);
-          if (candidate.startsWith('http')) {
-            return {
-              downloadUrl: candidate,
-              title: `instagram_${shortcode}`,
-              source: 'Instagram HD',
-            };
-          }
+        const unwrapped = await fetchCleanHtmlPage(cleanUrl, ua, signal);
+        const directFromUnwrap = extractInstagramVideoFromHtml(
+          unwrapped.html,
+          shortcode ? `instagram_${shortcode}` : 'instagram_video'
+        );
+        if (directFromUnwrap) return directFromUnwrap;
+
+        const discoveredSc = extractInstagramShortcode(unwrapped.finalUrl, unwrapped.html);
+        if (discoveredSc) {
+          shortcode = discoveredSc;
+          cleanUrl = `https://www.instagram.com/reel/${discoveredSc}/`;
+          break;
+        }
+        if (unwrapped.finalUrl && unwrapped.finalUrl.startsWith('http') && !unwrapped.finalUrl.includes('/login')) {
+          cleanUrl = unwrapped.finalUrl;
         }
       } catch (_e) {
         if (signal?.aborted) throw new Error('CANCELLED');
       }
     }
+  }
 
-    // Etapa 2: Endpoint /embed/captioned/ oficial de Instagram
-    try {
-      const embedPage = await fetchCleanHtmlPage(
-        `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
-        DESKTOP_USER_AGENT,
-        signal
-      );
-      const vidMatch =
-        embedPage.html.match(/"video_url"\s*:\s*"(https?:[^"]+)"/i) ||
-        embedPage.html.match(/\\"video_url\\"\s*:\s*\\"(https?:[^"\\]+)\\"/i) ||
-        embedPage.html.match(/<video[^>]+src=["'](https?:[^"']+)["']/i);
-      if (vidMatch && vidMatch[1]) {
-        return {
-          downloadUrl: unescapeUrl(vidMatch[1]),
-          title: `instagram_${shortcode}`,
-          source: 'Instagram Embed',
-        };
-      }
-    } catch (_e) {
+  if (shortcode) {
+    // Etapa 1: Endpoint oficial /embed/captioned/ de Instagram (soporta JSON simple y doblemente escapado en contextJSON)
+    for (const embedUrl of [
+      `https://www.instagram.com/p/${shortcode}/embed/captioned/`,
+      `https://www.instagram.com/reel/${shortcode}/embed/captioned/`,
+      `https://www.instagram.com/p/${shortcode}/embed/`,
+    ]) {
       if (signal?.aborted) throw new Error('CANCELLED');
+      try {
+        const embedPage = await fetchCleanHtmlPage(embedUrl, DESKTOP_USER_AGENT, signal);
+        const foundEmbed = extractInstagramVideoFromHtml(
+          embedPage.html,
+          `instagram_${shortcode}`,
+          'Instagram Embed HD'
+        );
+        if (foundEmbed) return foundEmbed;
+      } catch (_e) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+      }
+    }
+
+    // Etapa 2: API GraphQL pública de Instagram (funciona incluso cuando el autor desactiva el embed)
+    const foundGql = await resolveInstagramViaGraphQL(shortcode, signal);
+    if (foundGql) return foundGql;
+
+    // Etapa 3: Proxies OpenGraph directos (ddinstagram / kkinstagram / eeinstagram) con User-Agent de Bot de Telegram
+    const telegramBotUA = 'TelegramBot (like TwitterBot)';
+    for (const proxyDomain of ['https://www.ddinstagram.com', 'https://kkinstagram.com', 'https://eeinstagram.com']) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+      try {
+        const page = await fetchCleanHtmlPage(`${proxyDomain}/reel/${shortcode}/`, telegramBotUA, signal);
+        const foundProxy = extractInstagramVideoFromHtml(page.html, `instagram_${shortcode}`, 'Instagram HD');
+        if (foundProxy) return foundProxy;
+      } catch (_e) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+      }
     }
   }
 
-  // Etapa 3: Consultar con cookies nativas guardadas (permite extraer Historias de Instagram si ya inició sesión)
-  try {
-    const directPage = await fetchCleanHtmlPage(cleanUrl, DESKTOP_USER_AGENT, signal);
-    const matchJson =
-      directPage.html.match(/"video_versions"\s*:\s*\[\s*\{[^}]*"url"\s*:\s*"(https?:[^"]+)"/i) ||
-      directPage.html.match(/"video_url"\s*:\s*"(https?:[^"]+)"/i) ||
-      directPage.html.match(/<meta[^>]+property=["']og:video["'][^>]+content=["'](https?:[^"']+)["']/i);
-    if (matchJson && matchJson[1]) {
-      return {
-        downloadUrl: unescapeUrl(matchJson[1]),
-        title: isStory ? 'instagram_historia' : 'instagram_video',
-        source: 'Instagram Directo',
-      };
-    }
-  } catch (_e) {
+  // Etapa 4: Consultar página directa con cookies nativas guardadas (ideal para Reels y para Historias si ya inició sesión)
+  for (const ua of [DESKTOP_USER_AGENT, FB_CRAWLER_USER_AGENT]) {
     if (signal?.aborted) throw new Error('CANCELLED');
-  }
-
-  // Etapa 4: Sniffer WebView Nativo silencioso
-  if (NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative) {
     try {
-      const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(cleanUrl, false);
-      if (sniffed && sniffed.downloadUrl) {
-        return {
-          downloadUrl: sniffed.downloadUrl,
-          cookies: sniffed.cookies || '',
-          userAgent: sniffed.userAgent || USER_AGENT,
-          title: isStory ? 'instagram_historia' : 'instagram_video',
-          source: 'Instagram WebView',
-        };
-      }
+      const directPage = await fetchCleanHtmlPage(cleanUrl, ua, signal);
+      const foundDirect = extractInstagramVideoFromHtml(
+        directPage.html,
+        isStory ? 'instagram_historia' : shortcode ? `instagram_${shortcode}` : 'instagram_video',
+        'Instagram Directo'
+      );
+      if (foundDirect) return foundDirect;
     } catch (_e) {
       if (signal?.aborted) throw new Error('CANCELLED');
+    }
+  }
+
+  // Etapa 5: Sniffer WebView Nativo silencioso (ejecuta el JS de Instagram / Embed y extrae video_versions o stream completo)
+  if (NativeModules?.VideoEngineModule?.sniffVideoWithWebViewNative) {
+    const webViewTargets = shortcode
+      ? [`https://www.instagram.com/p/${shortcode}/embed/captioned/`, `https://www.instagram.com/reel/${shortcode}/`]
+      : [cleanUrl];
+    for (const targetCandidate of webViewTargets) {
+      if (signal?.aborted) throw new Error('CANCELLED');
+      try {
+        const sniffed = await NativeModules.VideoEngineModule.sniffVideoWithWebViewNative(targetCandidate, false);
+        if (sniffed && sniffed.downloadUrl) {
+          return {
+            downloadUrl: unescapeUrl(sniffed.downloadUrl),
+            cookies: sniffed.cookies || '',
+            userAgent: sniffed.userAgent || USER_AGENT,
+            title: isStory ? 'instagram_historia' : shortcode ? `instagram_${shortcode}` : 'instagram_video',
+            source: 'Instagram WebView',
+          };
+        }
+      } catch (_e) {
+        if (signal?.aborted) throw new Error('CANCELLED');
+      }
     }
   }
 

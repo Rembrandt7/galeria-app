@@ -744,6 +744,8 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         cookieMgr?.getCookie(currentUrl)
                             ?: if (currentUrl.contains("facebook.com") || currentUrl.contains("fb.watch")) {
                                 cookieMgr?.getCookie("https://www.facebook.com")
+                            } else if (currentUrl.contains("instagram.com") || currentUrl.contains("instagr.am")) {
+                                cookieMgr?.getCookie("https://www.instagram.com")
                             } else null
                     } catch (_: Exception) { null }
 
@@ -779,8 +781,20 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         if (resolvedLoc.contains("/login") && resolvedLoc.contains("next=")) {
                             val parsedUri = Uri.parse(resolvedLoc)
                             val nextParam = parsedUri.getQueryParameter("next")
-                            if (!nextParam.isNullOrBlank() && nextParam.startsWith("http") && nextParam != currentUrl) {
-                                resolvedLoc = nextParam
+                            if (!nextParam.isNullOrBlank()) {
+                                val fullNext = if (nextParam.startsWith("http")) {
+                                    nextParam
+                                } else if (nextParam.startsWith("/")) {
+                                    urlObj.protocol + "://" + urlObj.host + nextParam
+                                } else {
+                                    ""
+                                }
+                                if (fullNext.isNotEmpty() && fullNext != currentUrl) {
+                                    currentUrl = fullNext
+                                    resolvedLoc = fullNext
+                                } else {
+                                    break
+                                }
                             } else {
                                 break
                             }
@@ -837,12 +851,26 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
             var statusLabel: TextView? = null
             var actionButton: TextView? = null
 
-            val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            val mobileUA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            val desktopUA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            val mobileUA = try {
+                WebSettings.getDefaultUserAgent(reactContext)
+                    .replace("; wv)", ")")
+                    .replace("; wv;", ";")
+                    .replace(Regex("Version/[0-9.]+\\\\s+"), "")
+                    .replace(Regex("\\\\s+Build/[^;)]+"), "")
+            } catch (_: Exception) {
+                "Mozilla/5.0 (Linux; Android 14; SM-F946B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+            }
             val chosenUA = if (interactive) mobileUA else desktopUA
 
             fun cleanExtractedUrl(raw: String): String {
-                return raw
+                var s = raw
+                    .replace("\\\\\\\\u0026", "&")
+                    .replace("\\\\\\\\u002F", "/")
+                    .replace("\\\\\\\\u002f", "/")
+                    .replace("\\\\\\\\u003D", "=")
+                    .replace("\\\\\\\\u003C", "<")
+                    .replace("\\\\\\\\/", "/")
                     .replace("\\\\u0026", "&")
                     .replace("\\\\u002F", "/")
                     .replace("\\\\u002f", "/")
@@ -851,18 +879,26 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     .replace("\\\\/", "/")
                     .replace("&amp;", "&")
                     .trim()
-                    .trim('"', '\\'')
+                    .trim('"', '\\'', '\\\\')
+                if (s.contains("cdninstagram.com") || s.contains("fbcdn.net")) {
+                    s = s.replace(Regex("bytestart=[0-9]+&?"), "")
+                        .replace(Regex("byteend=[0-9]+&?"), "")
+                        .replace("?&", "?")
+                        .trimEnd('&', '?')
+                }
+                return s
             }
 
             fun isValidVideoStream(u: String): Boolean {
                 val low = u.lowercase()
                 if (!low.startsWith("http")) return false
                 if (low.startsWith("blob:")) return false
-                if (low.contains(".jpg") || low.contains(".png") || low.contains(".webp") || low.contains(".gif") || low.contains(".svg") || low.contains(".css") || low.contains(".js")) return false
-                if (low.contains("rsrc.php") || low.contains("static.xx.fbcdn.net")) return false
+                if (low.contains(".jpg") || low.contains(".jpeg") || low.contains(".png") || low.contains(".webp") || low.contains(".gif") || low.contains(".svg") || low.contains(".css") || low.contains(".js") || low.contains(".ico")) return false
+                if (low.contains("rsrc.php") || low.contains("static.xx.fbcdn.net") || low.contains("static.cdninstagram.com")) return false
+                if (low.contains("mime=audio") || low.contains("audio_only") || low.contains("/m69/") || low.contains("/m366/") || low.contains("/t42.1790-2/")) return false
                 return (low.contains(".mp4") ||
-                    (low.contains("fbcdn.net") && (low.contains("/v/") || low.contains("bytestart") || low.contains("efg="))) ||
-                    (low.contains("cdninstagram.com") && low.contains("/v/")) ||
+                    (low.contains("fbcdn.net") && (low.contains("/v/") || low.contains("/o1/v/") || low.contains("bytestart") || low.contains("efg="))) ||
+                    (low.contains("cdninstagram.com") && (low.contains("/v/") || low.contains("/o1/v/") || low.contains("/t16/") || low.contains("/t50.") || low.contains("bytestart"))) ||
                     low.contains("video.twimg.com") ||
                     low.contains("googlevideo.com/videoplayback"))
             }
@@ -900,15 +936,21 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 }
             }
 
-            fun onCandidateFound(rawCandidate: String) {
+            fun onCandidateFound(rawCandidate: String, isFromDomProbe: Boolean = false) {
                 val clean = cleanExtractedUrl(rawCandidate)
                 if (!isValidVideoStream(clean)) return
-                detectedVideoUrl = clean
+                val isSegmented = rawCandidate.lowercase().contains("bytestart=")
+                if (isFromDomProbe || detectedVideoUrl.isNullOrBlank() || !isSegmented) {
+                    detectedVideoUrl = clean
+                }
                 if (!interactive) {
-                    cleanupAndResolve(clean, null)
+                    // Si proviene del DOM (video_versions / video_url progresivo con audio) o no es un segmento DASH, resolver de inmediato
+                    if (isFromDomProbe || !isSegmented) {
+                        cleanupAndResolve(clean, null)
+                    }
                 } else {
                     UiThreadUtil.runOnUiThread {
-                        statusLabel?.text = "✅ ¡Video de la historia detectado! Toca el botón verde para descargarlo"
+                        statusLabel?.text = "✅ ¡Video detectado! Toca el botón verde para descargarlo"
                         actionButton?.text = "⬇ Descargar Video Detectado Ahora"
                         actionButton?.setBackgroundColor(Color.parseColor("#10B981"))
                     }
@@ -927,18 +969,37 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 wv.settings.apply {
                     javaScriptEnabled = true
                     domStorageEnabled = true
+                    databaseEnabled = true
+                    javaScriptCanOpenWindowsAutomatically = true
                     mediaPlaybackRequiresUserGesture = false
                     loadsImagesAutomatically = interactive
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                     userAgentString = chosenUA
                 }
 
+                var redirectedToEmbed = false
                 wv.webChromeClient = WebChromeClient()
                 wv.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val u = request?.url?.toString() ?: return false
+                        if (!u.startsWith("http://") && !u.startsWith("https://")) {
+                            return true
+                        }
+                        if (!interactive && !redirectedToEmbed && u.contains("instagram.com/accounts/login")) {
+                            val sc = Regex("instagram\\\\.com/(?:p|reel|reels|tv)/([A-Za-z0-9_-]+)").find(targetUrl)?.groupValues?.getOrNull(1)
+                            if (!sc.isNullOrBlank()) {
+                                redirectedToEmbed = true
+                                view?.loadUrl("https://www.instagram.com/p/" + sc + "/embed/captioned/")
+                                return true
+                            }
+                        }
+                        return false
+                    }
+
                     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                         val reqUrl = request?.url?.toString() ?: ""
                         if (isValidVideoStream(reqUrl)) {
-                            onCandidateFound(reqUrl)
+                            onCandidateFound(reqUrl, false)
                         }
                         return super.shouldInterceptRequest(view, request)
                     }
@@ -954,6 +1015,10 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         }
                         var html = document.documentElement.innerHTML || '';
                         var regexes = [
+                          /"video_versions"\\s*:\\s*\\[\\s*\\{[^}]*?"url"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /\\\\+"video_versions\\\\+"\\s*:\\s*\\[\\s*\\{[^}]*?\\\\+"url\\\\+"\\s*:\\s*\\\\+"(https?:[^"'\\s<>]+?)\\\\+"/i,
+                          /"video_url"\\s*:\\s*"(https?:[^"]+)"/i,
+                          /\\\\+"video_url\\\\+"\\s*:\\s*\\\\+"(https?:[^"'\\s<>]+?)\\\\+"/i,
                           /"progressive_url"\\s*:\\s*"(https?:[^"]+)"/i,
                           /"browser_native_hd_url"\\s*:\\s*"(https?:[^"]+)"/i,
                           /"playable_url_quality_hd"\\s*:\\s*"(https?:[^"]+)"/i,
@@ -962,7 +1027,6 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                           /"browser_native_sd_url"\\s*:\\s*"(https?:[^"]+)"/i,
                           /"playable_url"\\s*:\\s*"(https?:[^"]+)"/i,
                           /"sd_src"\\s*:\\s*"(https?:[^"]+)"/i,
-                          /"video_url"\\s*:\\s*"(https?:[^"]+)"/i,
                           /(https?:\\\\/\\\\/video[^"'\\s<>\\\\]+\\.mp4[^"'\\s<>\\\\]*)/i,
                           /(https?:\\/\\/video[^"'\\s<>\\\\]+\\.mp4[^"'\\s<>\\\\]*)/i
                         ];
@@ -977,6 +1041,10 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 fun scheduleProbe(iteration: Int) {
                     if (resolved.get()) return
+                    if (!interactive && iteration >= 3 && !detectedVideoUrl.isNullOrBlank()) {
+                        cleanupAndResolve(detectedVideoUrl, null)
+                        return
+                    }
                     if (!interactive && iteration > 10) {
                         cleanupAndResolve(detectedVideoUrl, "Tiempo agotado buscando flujo de video")
                         return
@@ -987,12 +1055,12 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             wv.evaluateJavascript(jsProbe) { res ->
                                 val trimmedRes = res?.trim()?.trim('"') ?: ""
                                 if (trimmedRes.isNotEmpty() && trimmedRes != "null") {
-                                    onCandidateFound(trimmedRes)
+                                    onCandidateFound(trimmedRes, true)
                                 }
                             }
                         } catch (_: Exception) {}
                         scheduleProbe(iteration + 1)
-                    }, 850L)
+                    }, 800L)
                 }
 
                 if (interactive && reactContext.currentActivity != null) {
@@ -1069,7 +1137,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                 wv.evaluateJavascript(jsProbe) { res ->
                                     val trimmedRes = res?.trim()?.trim('"') ?: ""
                                     if (trimmedRes.isNotEmpty() && trimmedRes != "null") {
-                                        onCandidateFound(trimmedRes)
+                                        onCandidateFound(trimmedRes, true)
                                         if (!detectedVideoUrl.isNullOrBlank()) {
                                             cleanupAndResolve(detectedVideoUrl, null)
                                         }
@@ -1124,11 +1192,21 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         var currentUaIndex = 0
         var blockExternalApps = true
 
+        val nativeCleanUa = try {
+            WebSettings.getDefaultUserAgent(reactContext)
+                .replace("; wv)", ")")
+                .replace("; wv;", ";")
+                .replace(Regex("Version/[0-9.]+\\\\s+"), "")
+                .replace(Regex("\\\\s+Build/[^;)]+"), "")
+        } catch (_: Exception) {
+            "Mozilla/5.0 (Linux; Android 14; SM-F946B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+        }
+
         val userAgents = listOf(
-            Pair("📱 S24", "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36"),
-            Pair("🍎 iPhone", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1"),
-            Pair("💻 PC", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
-            Pair("📱 Pixel", "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36")
+            Pair("📱 Galaxy", nativeCleanUa),
+            Pair("🍎 iPhone", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1"),
+            Pair("💻 PC", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"),
+            Pair("📱 Pixel", "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36")
         )
 
         fun normalizeInputUrl(raw: String): String {
@@ -1139,9 +1217,61 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
             return "https://www.google.com/search?q=" + Uri.encode(trimmed)
         }
 
+        fun extractIntentFallbackUrl(rawUri: String): String? {
+            try {
+                if (rawUri.startsWith("intent://", ignoreCase = true)) {
+                    val parsed = Intent.parseUri(rawUri, Intent.URI_INTENT_SCHEME)
+                    val fb = parsed.getStringExtra("browser_fallback_url")
+                        ?: parsed.getStringExtra("S.browser_fallback_url")
+                    if (!fb.isNullOrBlank() && (fb.startsWith("http://") || fb.startsWith("https://"))) {
+                        return fb
+                    }
+                    val dataUri = parsed.dataString
+                    if (!dataUri.isNullOrBlank() && (dataUri.startsWith("http://") || dataUri.startsWith("https://"))) {
+                        return dataUri
+                    }
+                    val scheme = parsed.scheme ?: "https"
+                    if (scheme == "http" || scheme == "https") {
+                        val afterIntent = rawUri.substringAfter("intent://").substringBefore("#Intent")
+                        if (afterIntent.contains(".")) {
+                            return scheme + "://" + afterIntent
+                        }
+                    }
+                }
+                val match = Regex("S\\\\.browser_fallback_url=([^;#]+)").find(rawUri)
+                if (match != null) {
+                    val decoded = Uri.decode(match.groupValues[1])
+                    if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
+                        return decoded
+                    }
+                }
+                if (rawUri.startsWith("twitter://", ignoreCase = true)) {
+                    if (rawUri.contains("login", ignoreCase = true)) {
+                        return "https://x.com/i/flow/login"
+                    }
+                    return "https://x.com"
+                }
+            } catch (_: Exception) {}
+            return null
+        }
+
+        fun cleanDetectedStreamUrl(rawUrl: String): String {
+            var s = rawUrl.trim()
+            if (s.contains("cdninstagram.com") || s.contains("fbcdn.net")) {
+                s = s.replace(Regex("bytestart=[0-9]+&?"), "")
+                    .replace(Regex("byteend=[0-9]+&?"), "")
+                    .replace("?&", "?")
+                    .trimEnd('&', '?')
+            }
+            return s
+        }
+
         fun closeBrowser(action: String, targetResultUrl: String?) {
             if (!resolvedFlag.compareAndSet(false, true)) return
             UiThreadUtil.runOnUiThread {
+                try {
+                    CookieManager.getInstance().flush()
+                } catch (_: Exception) {}
                 try {
                     dialogRef?.dismiss()
                 } catch (_: Exception) {}
@@ -1179,6 +1309,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     javaScriptEnabled = true
                     domStorageEnabled = true
                     databaseEnabled = true
+                    javaScriptCanOpenWindowsAutomatically = true
                     mediaPlaybackRequiresUserGesture = false
                     loadsImagesAutomatically = true
                     mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -1188,6 +1319,43 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     displayZoomControls = false
                     userAgentString = userAgents[0].second
                 }
+
+                val stealthJs = """
+                    (function() {
+                      try {
+                        Object.defineProperty(navigator, 'webdriver', { get: function() { return false; }, configurable: true });
+                        if (!window.chrome) { window.chrome = { runtime: {} }; }
+                        if (navigator.userAgentData && navigator.userAgentData.brands) {
+                          var cleanBrands = navigator.userAgentData.brands.map(function(b) {
+                            if (b && b.brand && b.brand.indexOf('WebView') !== -1) {
+                              return { brand: 'Google Chrome', version: b.version };
+                            }
+                            return b;
+                          });
+                          var uaDataObj = {
+                            brands: cleanBrands,
+                            mobile: true,
+                            platform: 'Android',
+                            toJSON: function() { return { brands: cleanBrands, mobile: true, platform: 'Android' }; },
+                            getHighEntropyValues: function() {
+                              return Promise.resolve({
+                                brands: cleanBrands,
+                                fullVersionList: cleanBrands,
+                                mobile: true,
+                                platform: 'Android',
+                                platformVersion: '14.0.0',
+                                architecture: 'arm',
+                                bitness: '64',
+                                model: 'SM-F946B',
+                                uaFullVersion: (cleanBrands[0] && cleanBrands[0].version) ? (cleanBrands[0].version + '.0.0.0') : '131.0.0.0'
+                              });
+                            }
+                          };
+                          Object.defineProperty(navigator, 'userAgentData', { get: function() { return uaDataObj; }, configurable: true });
+                        }
+                      } catch (e) {}
+                    })();
+                """.trimIndent()
 
                 wv.webChromeClient = WebChromeClient()
                 wv.webViewClient = object : WebViewClient() {
@@ -1205,6 +1373,13 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             urlInputRef?.setText(u)
                             return false
                         }
+                        // Si el enlace es un intent:// (ej. X/Twitter login o Instagram) con URL web de respaldo, abrirla en el propio WebView
+                        val fallbackHttp = extractIntentFallbackUrl(u)
+                        if (!fallbackHttp.isNullOrBlank()) {
+                            view?.loadUrl(fallbackHttp)
+                            urlInputRef?.setText(fallbackHttp)
+                            return true
+                        }
                         if (!blockExternalApps) {
                             try {
                                 val extIntent = Intent(Intent.ACTION_VIEW, Uri.parse(u))
@@ -1220,26 +1395,36 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         return true
                     }
 
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                        super.onPageStarted(view, url, favicon)
+                        if (!url.isNullOrBlank() && url != "about:blank") {
+                            urlInputRef?.setText(url)
+                        }
+                        try {
+                            view?.evaluateJavascript(stealthJs, null)
+                        } catch (_: Exception) {}
+                    }
+
                     override fun onPageFinished(view: WebView?, url: String?) {
                         super.onPageFinished(view, url)
                         if (!url.isNullOrBlank() && url != "about:blank") {
                             urlInputRef?.setText(url)
                         }
                         try {
-                            view?.evaluateJavascript(
-                                "try{Object.defineProperty(navigator,'webdriver',{get:()=>false});}catch(e){}",
-                                null
-                            )
+                            view?.evaluateJavascript(stealthJs, null)
+                            CookieManager.getInstance().flush()
                         } catch (_: Exception) {}
                     }
 
                     override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
                         val reqUrl = request?.url?.toString() ?: ""
                         val lower = reqUrl.lowercase()
-                        if ((lower.contains(".mp4") || lower.contains(".m3u8") || lower.contains("videoplayback") || lower.contains("mime=video")) &&
+                        val isAudioOnly = lower.contains("mime=audio") || lower.contains("audio_only") || lower.contains("/m69/") || lower.contains("/m366/") || lower.contains("/t42.1790-2/")
+                        if (!isAudioOnly &&
+                            (lower.contains(".mp4") || lower.contains(".m3u8") || lower.contains("videoplayback") || lower.contains("mime=video")) &&
                             !lower.contains(".jpg") && !lower.contains(".png") && !lower.contains(".js")
                         ) {
-                            detectedMediaUrl = reqUrl
+                            detectedMediaUrl = cleanDetectedStreamUrl(reqUrl)
                             UiThreadUtil.runOnUiThread {
                                 downloadBtnRef?.text = "⬇ ¡Video Detectado! (Bajar)"
                                 downloadBtnRef?.background = GradientDrawable().apply {
@@ -1424,10 +1609,8 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         wv.clearHistory()
                         wv.clearFormData()
                     } catch (_: Exception) {}
-                    // Rotar versión de navegador ligeramente para renovar huella de sesión
-                    val randBuild = (110..199).random()
                     val basePair = userAgents[currentUaIndex]
-                    wv.settings.userAgentString = basePair.second + " Rev/$randBuild"
+                    wv.settings.userAgentString = basePair.second
                     showTempBanner("✨ Cookies, caché y sesión limpiadas (entrando como 1ª vez)")
                     wv.reload()
                 }
@@ -1460,7 +1643,21 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 val dlBtn = makeNavBtn("⬇ Video", "#6D28D9", true) {
                     val currentPageUrl = wv.url ?: normalizeInputUrl(urlInput.text?.toString() ?: "")
-                    val bestUrl = if (!detectedMediaUrl.isNullOrBlank()) detectedMediaUrl!! else currentPageUrl
+                    val lowPage = currentPageUrl.lowercase()
+                    val isKnownPlatformPost = (lowPage.contains("instagram.com/") && (lowPage.contains("/reel") || lowPage.contains("/p/") || lowPage.contains("/tv/") || lowPage.contains("/share/") || lowPage.contains("/stories/"))) ||
+                        (lowPage.contains("facebook.com/") && (lowPage.contains("/reel") || lowPage.contains("/watch") || lowPage.contains("/videos/") || lowPage.contains("/share/"))) ||
+                        lowPage.contains("tiktok.com/") ||
+                        lowPage.contains("youtube.com/watch") ||
+                        lowPage.contains("youtube.com/shorts") ||
+                        lowPage.contains("youtu.be/") ||
+                        ((lowPage.contains("x.com/") || lowPage.contains("twitter.com/")) && lowPage.contains("/status/"))
+                    val bestUrl = if (isKnownPlatformPost) {
+                        currentPageUrl
+                    } else if (!detectedMediaUrl.isNullOrBlank()) {
+                        detectedMediaUrl!!
+                    } else {
+                        currentPageUrl
+                    }
                     closeBrowser("download", bestUrl)
                 }
                 downloadBtnRef = dlBtn
