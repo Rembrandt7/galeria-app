@@ -42,7 +42,8 @@ export default function SegmentBar({
     },
     {
       key: 'camera',
-      label: 'Cámara',
+      label: '',
+      iconOnly: true,
       icon: 'camera',
       iconOutline: 'camera-outline',
       count: 0,
@@ -73,6 +74,18 @@ export default function SegmentBar({
       <View style={styles.segmentTrack}>
         {segments.map((seg) => {
           const isActive = seg.isActive;
+          if (seg.iconOnly) {
+            return (
+              <TouchableOpacity
+                key={`segment_${seg.key}`}
+                style={styles.cameraIconBtn}
+                onPress={seg.onPress}
+                activeOpacity={0.78}
+              >
+                <Ionicons name="videocam" size={16} color="#ffffff" />
+              </TouchableOpacity>
+            );
+          }
           return (
             <TouchableOpacity
               key={`segment_${seg.key}`}
@@ -160,6 +173,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
     borderRadius: 10,
     minHeight: 32,
+  },
+  cameraIconBtn: {
+    width: 36,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: 'rgba(220, 38, 38, 0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   segmentLabel: {
     fontSize: 11,

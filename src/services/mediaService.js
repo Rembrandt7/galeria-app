@@ -219,7 +219,9 @@ export const mediaService = {
         try {
           const fastNative = await VideoEngineModule.getAlbumsFastNative();
           if (Array.isArray(fastNative) && fastNative.length > 0) {
-            mediaAlbums = fastNative.filter((a) => a && Number(a.assetCount) > 0);
+            mediaAlbums = fastNative.filter(
+              (a) => a && (Number(a.assetCount) > 0 || a.isPinnedFilesFolder)
+            );
           }
         } catch (_fastErr) {}
       }
@@ -320,6 +322,18 @@ export const mediaService = {
         })
       );
 
+      // Primero registrar mediaAlbums (que incluye las carpetas fijadas de getAlbumsFastNative)
+      const dedupedMediaAlbums = [];
+      for (const ma of mediaAlbums) {
+        const normPath = normalizePathKey(ma.uri);
+        const lowerTitle = (ma.title || '').trim().toLowerCase();
+        if (normPath && seenNormPaths.has(normPath)) continue;
+        if (!ma.isPinnedFilesFolder && seenTitles.has(lowerTitle)) continue;
+        if (normPath) seenNormPaths.add(normPath);
+        if (lowerTitle) seenTitles.add(lowerTitle);
+        dedupedMediaAlbums.push(ma);
+      }
+
       const extraAlbums = [];
       for (const { f, info } of inspectedFolders) {
         const title = folderService.formatFolderDisplayName(
@@ -328,6 +342,7 @@ export const mediaService = {
         );
         const normPath = normalizePathKey(f.uri);
         if (normPath && seenNormPaths.has(normPath)) continue;
+        if (seenTitles.has(title.toLowerCase())) continue;
 
         const total = Number(info.count || f.totalMedia || 0);
         const isUserSaved = (saved || []).some((s) => s.uri === f.uri);
@@ -349,19 +364,7 @@ export const mediaService = {
         }
       }
 
-      // Filtrar mediaAlbums que no estén duplicados con las carpetas ya incluidas
-      const dedupedMediaAlbums = [];
-      for (const ma of mediaAlbums) {
-        const normPath = normalizePathKey(ma.uri);
-        const lowerTitle = (ma.title || '').trim().toLowerCase();
-        if (normPath && seenNormPaths.has(normPath)) continue;
-        if (seenTitles.has(lowerTitle)) continue;
-        if (normPath) seenNormPaths.add(normPath);
-        if (lowerTitle) seenTitles.add(lowerTitle);
-        dedupedMediaAlbums.push(ma);
-      }
-
-      const combined = [...extraAlbums, ...dedupedMediaAlbums];
+      const combined = [...dedupedMediaAlbums, ...extraAlbums];
 
       // Ordenar priorizando álbumes esenciales y luego los que tienen más fotos primero
       const getEssentialPriority = (item) => {

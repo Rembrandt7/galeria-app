@@ -10,8 +10,33 @@ const MAX_DEPTH = 4;
 
 export const DOWNLOADED_VIDEOS_FOLDER_NAME = 'Videos Descargados';
 export const DOWNLOADED_VIDEOS_FOLDER_URI = 'file:///storage/emulated/0/Movies/Videos Descargados';
+export const SEGUNDO_PLANO_FOLDER_NAME = '2do plano';
+export const SEGUNDO_PLANO_FOLDER_URI = 'file:///storage/emulated/0/Movies/2do plano';
+export const TELEGRAM_ROOT_FOLDER_URI = 'file:///storage/emulated/0/Telegram';
+export const DOWNLOAD_ROOT_FOLDER_URI = 'file:///storage/emulated/0/Download';
 
 export const COMMON_SYSTEM_FOLDERS = [
+  {
+    id: 'segundo_plano',
+    name: '2do plano',
+    uri: SEGUNDO_PLANO_FOLDER_URI,
+    icon: 'videocam-outline',
+    description: 'Carpeta fijada donde se guardan las grabaciones en 2do plano',
+  },
+  {
+    id: 'download',
+    name: 'Descargas (Download)',
+    uri: DOWNLOAD_ROOT_FOLDER_URI,
+    icon: 'download-outline',
+    description: 'Archivos, imágenes y videos descargados (Fijada arriba)',
+  },
+  {
+    id: 'telegram_root',
+    name: 'Telegram (Raíz)',
+    uri: TELEGRAM_ROOT_FOLDER_URI,
+    icon: 'paper-plane-outline',
+    description: 'Carpeta Telegram de la raíz del sistema (/storage/emulated/0/Telegram)',
+  },
   {
     id: 'videos_descargados',
     name: 'Videos Descargados',
@@ -34,13 +59,6 @@ export const COMMON_SYSTEM_FOLDERS = [
     description: 'Fotos, videos y estados recibidos y enviados',
   },
   {
-    id: 'download',
-    name: 'Descargas (Download)',
-    uri: 'file:///storage/emulated/0/Download',
-    icon: 'download-outline',
-    description: 'Archivos e imágenes descargadas',
-  },
-  {
     id: 'dcim',
     name: 'Cámara (DCIM)',
     uri: 'file:///storage/emulated/0/DCIM',
@@ -53,13 +71,6 @@ export const COMMON_SYSTEM_FOLDERS = [
     uri: 'file:///storage/emulated/0/Pictures',
     icon: 'images-outline',
     description: 'Capturas de pantalla y fotos de apps',
-  },
-  {
-    id: 'telegram',
-    name: 'Telegram Media',
-    uri: 'file:///storage/emulated/0/Android/media/org.telegram.messenger',
-    icon: 'paper-plane-outline',
-    description: 'Archivos multimedia recibidos en Telegram',
   },
 ];
 
@@ -1011,7 +1022,14 @@ export const folderService = {
       // Si el permiso físico aún no está activo, igual registrar la ruta estándar
     }
     try {
+      await folderService.createSubfolder(
+        'file:///storage/emulated/0/Movies',
+        SEGUNDO_PLANO_FOLDER_NAME
+      );
+    } catch (_eSp) {}
+    try {
       await folderService.addSavedFolder(finalUri, DOWNLOADED_VIDEOS_FOLDER_NAME);
+      await folderService.addSavedFolder(SEGUNDO_PLANO_FOLDER_URI, SEGUNDO_PLANO_FOLDER_NAME);
     } catch (_e2) {}
     return finalUri;
   },
@@ -1109,12 +1127,13 @@ export const folderService = {
     const count = Number(item.assetCount ?? item.count ?? 0);
     const subCount = Number(item.subfolderCount || 0);
 
-    // 1. Nunca marcar como sistema las carpetas esenciales del usuario ni las organizadas por Mes y Año
+    // 1. Nunca marcar como sistema las carpetas esenciales del usuario ni las fijadas (2do plano, Descargas, Telegram) ni las organizadas por Mes y Año
     if (
+      item.isPinnedFilesFolder ||
       item.isDownloadedVideos ||
       item.isFavoritesCard ||
       item.isVariosCard ||
-      /^(camera|cámara|camara|dcim|videos descargados|favoritos|screenshots|capturas|whatsapp images|whatsapp video|whatsapp|download|descargas|pictures|imágenes|imagenes|movies|películas|peliculas|familia|viajes|trabajo|instagram|facebook|tiktok|telegram|telegram images|telegram video|restored|recuerdos)$/i.test(
+      /^(2do plano|segundo plano|grabaciones|camera|cámara|camara|dcim|videos descargados|favoritos|screenshots|capturas|whatsapp images|whatsapp video|whatsapp|download|descargas|pictures|imágenes|imagenes|movies|películas|peliculas|familia|viajes|trabajo|instagram|facebook|tiktok|telegram|telegram images|telegram video|restored|recuerdos)$/i.test(
         lowerName
       ) ||
       /^(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\s+20\d{2}/i.test(
@@ -1205,8 +1224,13 @@ export const folderService = {
     const combined = `${lowerTitle} ${lowerUri} ${lowerFilename}`;
 
     // 1. REGLA ESTRICTA DE EXCLUSIÓN: "que esas no aparescan en las fotos"
-    // Screenshots / capturas, WhatsApp, X (Twitter), Threads, Descargas, Archivos, Documentos y Redes van al segmento 'files'
+    // 2do plano, Descargas, Telegram, Screenshots / capturas, WhatsApp, X (Twitter), Threads, Archivos, Documentos y Redes van al segmento 'files'
+    if (itemOrAsset.isPinnedFilesFolder) {
+      return 'files';
+    }
+
     const isFilesOrSocial =
+      /2do\s*plano|segundo\s*plano|vid_2do_|vid_bvr_|\/grabaciones/i.test(combined) ||
       /screenshot|captura|screen_capture|grabaci[oó]n.*pantalla/i.test(combined) ||
       /whatsapp|wa\d{4}|wa_|_wa\d/i.test(combined) ||
       /\b(x|twitter|x-corp)\b/i.test(lowerTitle) ||

@@ -160,6 +160,49 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun getAvailableCamerasNative(promise: Promise) {
+        try {
+            val cm = reactContext.getSystemService(Context.CAMERA_SERVICE) as android.hardware.camera2.CameraManager
+            val arr = Arguments.createArray()
+            var backCount = 0
+            var frontCount = 0
+            for (id in cm.cameraIdList) {
+                val chars = cm.getCameraCharacteristics(id)
+                val facingInt = chars.get(android.hardware.camera2.CameraCharacteristics.LENS_FACING)
+                val focalLengths = chars.get(android.hardware.camera2.CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
+                val focal = if (focalLengths != null && focalLengths.isNotEmpty()) focalLengths[0] else 0f
+                val isFront = facingInt == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT
+                val facingStr = if (isFront) "front" else "back"
+                val label = if (isFront) {
+                    frontCount += 1
+                    if (frontCount == 1) "Frontal" else "Frontal " + frontCount
+                } else {
+                    backCount += 1
+                    if (backCount == 1) {
+                        "Trasera 1x"
+                    } else if (focal > 0f && focal < 2.5f) {
+                        "Gran Angular (" + id + ")"
+                    } else if (focal >= 5.0f) {
+                        "Telefoto (" + id + ")"
+                    } else {
+                        "Trasera " + backCount
+                    }
+                }
+                val map = Arguments.createMap().apply {
+                    putString("cameraId", id)
+                    putString("facing", facingStr)
+                    putString("label", label)
+                    putDouble("focalLength", focal.toDouble())
+                }
+                arr.pushMap(map)
+            }
+            promise.resolve(arr)
+        } catch (e: Exception) {
+            promise.resolve(Arguments.createArray())
+        }
+    }
+
+    @ReactMethod
     fun startBackgroundVideoRecordNative(
         facing: String,
         torchOn: Boolean,
@@ -168,10 +211,12 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
         promise: Promise
     ) {
         try {
-            val useFront = facing.lowercase() == "front"
+            val cleanSpec = facing.trim()
+            val useFront = cleanSpec.lowercase() == "front"
             BackgroundVideoRecordService.startServiceRecording(
                 context = reactContext,
                 useFrontCamera = useFront,
+                cameraSpec = cleanSpec,
                 enableTorch = torchOn,
                 showFloatingPreview = showFloatingPreview,
                 maxDurationSec = if (maxDurationSec > 0) maxDurationSec else 600
@@ -179,6 +224,16 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
             promise.resolve(true)
         } catch (e: Exception) {
             promise.reject("BG_REC_START_ERR", e.message ?: "Error al iniciar servicio de grabación", e)
+        }
+    }
+
+    @ReactMethod
+    fun switchBackgroundCameraNative(facingOrCameraId: String, promise: Promise) {
+        try {
+            BackgroundVideoRecordService.switchCamera(reactContext, facingOrCameraId.trim())
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
         }
     }
 
@@ -246,6 +301,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 putBoolean("isPaused", BackgroundVideoRecordService.isPausedState)
                 putInt("elapsedSeconds", BackgroundVideoRecordService.elapsedSecondsState)
                 putString("facing", if (BackgroundVideoRecordService.useFrontState) "front" else "back")
+                putString("cameraSpec", BackgroundVideoRecordService.cameraSpecState)
                 putBoolean("torchOn", BackgroundVideoRecordService.torchOnState)
                 putBoolean("showFloatingPreview", BackgroundVideoRecordService.floatingPreviewState)
                 putString("outputPath", BackgroundVideoRecordService.currentOutputPath ?: "")
@@ -1600,6 +1656,60 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }
                 }
 
+                // Migrar automáticamente grabaciones previas de DCIM/Grabaciones hacia Movies/2do plano
+                val segundoPlanoDir = File("/storage/emulated/0/Movies/2do plano")
+                try {
+                    if (!segundoPlanoDir.exists()) segundoPlanoDir.mkdirs()
+                    val oldGrabDir = File("/storage/emulated/0/DCIM/Grabaciones")
+                    if (oldGrabDir.exists() && oldGrabDir.isDirectory) {
+                        val oldFiles = oldGrabDir.listFiles() ?: emptyArray()
+                        for (of in oldFiles) {
+                            if (of.isFile) {
+                                val targetF = File(segundoPlanoDir, of.name)
+                                if (!targetF.exists()) {
+                                    of.renameTo(targetF)
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                val imgExtsPin = hashSetOf("jpg", "jpeg", "png", "webp", "heic", "heif", "gif", "bmp", "avif")
+                val vidExtsPin = hashSetOf("mp4", "mov", "m4v", "mkv", "webm", "3gp", "avi")
+                fun isMediaName(n: String): Boolean {
+                    val dot = n.lastIndexOf('.')
+                    if (dot <= 0 || dot == n.length - 1) return false
+                    val ext = n.substring(dot + 1).lowercase()
+                    return imgExtsPin.contains(ext) || vidExtsPin.contains(ext)
+                }
+
+                fun scanDirCountAndCover(dirsToScan: List<File>, maxDepth: Int = 2): Pair<Int, String> {
+                    var total = 0
+                    var newestMod = -1L
+                    var newestPath = ""
+                    fun walk(d: File, depth: Int) {
+                        if (!d.exists() || !d.isDirectory) return
+                        val list = d.listFiles() ?: return
+                        for (f in list) {
+                            if (f.name.startsWith(".")) continue
+                            if (f.isFile && isMediaName(f.name)) {
+                                total += 1
+                                val lm = f.lastModified()
+                                if (lm >= newestMod) {
+                                    newestMod = lm
+                                    newestPath = f.absolutePath
+                                }
+                            } else if (f.isDirectory && depth < maxDepth) {
+                                walk(f, depth + 1)
+                            }
+                        }
+                    }
+                    for (root in dirsToScan) {
+                        walk(root, 0)
+                    }
+                    return Pair(total, newestPath)
+                }
+
                 // Fusionar subcarpetas virtuales "Fotos" y "Videos" en su carpeta padre igual que folderService
                 val mergedByDir = LinkedHashMap<String, BucketAcc>()
                 for ((_, b) in buckets) {
@@ -1622,14 +1732,91 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     }
                 }
 
+                // Asegurar que las 3 carpetas fijadas de Archivos ("2do plano", "Descargas", "Telegram" raíz) siempre existan y sumen sus subcarpetas
+                val telegramRootDir = File("/storage/emulated/0/Telegram")
+                try {
+                    if (!telegramRootDir.exists()) telegramRootDir.mkdirs()
+                } catch (_: Exception) {}
+                val telegramAltDir = File("/storage/emulated/0/Android/media/org.telegram.messenger/Telegram")
+                val downloadRootDir = File("/storage/emulated/0/Download")
+
+                // Remover subcarpetas sueltas de Telegram ("Telegram Images", "Telegram Video") de mergedByDir para consolidarlas en la carpeta raíz "Telegram"
+                val keysToRemove = mutableListOf<String>()
+                for ((k, item) in mergedByDir) {
+                    if (k.startsWith("/storage/emulated/0/telegram/") ||
+                        k.startsWith("/storage/emulated/0/android/media/org.telegram.messenger/telegram")
+                    ) {
+                        keysToRemove.add(k)
+                    }
+                }
+                for (k in keysToRemove) {
+                    mergedByDir.remove(k)
+                }
+
+                val (spCount, spCover) = scanDirCountAndCover(
+                    listOf(segundoPlanoDir, File("/storage/emulated/0/2do plano")),
+                    1
+                )
+                val spKey = segundoPlanoDir.absolutePath.lowercase()
+                mergedByDir[spKey] = BucketAcc(
+                    id = "pinned_2do_plano",
+                    title = "2do plano",
+                    dirPath = segundoPlanoDir.absolutePath,
+                    coverPath = spCover,
+                    count = spCount
+                )
+
+                val (dlCount, dlCover) = scanDirCountAndCover(listOf(downloadRootDir), 2)
+                val dlKey = downloadRootDir.absolutePath.lowercase()
+                val existingDl = mergedByDir[dlKey]
+                mergedByDir[dlKey] = BucketAcc(
+                    id = existingDl?.id ?: "pinned_download",
+                    title = "Descargas",
+                    dirPath = downloadRootDir.absolutePath,
+                    coverPath = if (dlCover.isNotEmpty()) dlCover else (existingDl?.coverPath ?: ""),
+                    count = maxOf(dlCount, existingDl?.count ?: 0)
+                )
+
+                val (tgCount, tgCover) = scanDirCountAndCover(
+                    listOf(
+                        telegramRootDir,
+                        telegramAltDir,
+                        File("/storage/emulated/0/Pictures/Telegram"),
+                        File("/storage/emulated/0/Movies/Telegram")
+                    ),
+                    2
+                )
+                val tgKey = telegramRootDir.absolutePath.lowercase()
+                mergedByDir[tgKey] = BucketAcc(
+                    id = "pinned_telegram_root",
+                    title = "Telegram",
+                    dirPath = telegramRootDir.absolutePath,
+                    coverPath = tgCover,
+                    count = tgCount
+                )
+
                 val out = Arguments.createArray()
-                for ((_, item) in mergedByDir) {
+                for ((k, item) in mergedByDir) {
+                    val pinnedOrder = when (k) {
+                        spKey -> 1
+                        dlKey -> 2
+                        tgKey -> 3
+                        else -> 0
+                    }
                     val map = Arguments.createMap().apply {
                         putString("id", item.id)
                         putString("title", item.title)
                         putInt("assetCount", item.count)
-                        putString("coverUri", "file://" + item.coverPath)
+                        if (item.coverPath.isNotEmpty()) {
+                            putString("coverUri", "file://" + item.coverPath)
+                        } else {
+                            putNull("coverUri")
+                        }
                         putString("uri", "file://" + item.dirPath)
+                        if (pinnedOrder > 0) {
+                            putBoolean("isPinnedFilesFolder", true)
+                            putInt("pinnedOrder", pinnedOrder)
+                        }
                     }
                     out.pushMap(map)
                 }
@@ -1681,12 +1868,13 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 val subDirs = ArrayList<File>(16)
 
                 val children = rootDir.listFiles() ?: emptyArray()
+                val isTelegramRoot = rootDir.absolutePath.equals("/storage/emulated/0/Telegram", ignoreCase = true)
                 for (child in children) {
                     val name = child.name
                     if (name.startsWith(".")) continue
                     if (child.isDirectory) {
                         val low = name.lowercase()
-                        if (low == "fotos" || low == "videos") {
+                        if (low == "fotos" || low == "videos" || (isTelegramRoot && low.startsWith("telegram "))) {
                             val subFiles = child.listFiles() ?: emptyArray()
                             for (sf in subFiles) {
                                 if (sf.isFile && !sf.name.startsWith(".")) {
@@ -1696,6 +1884,9 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                     }
                                 }
                             }
+                            if (isTelegramRoot) {
+                                subDirs.add(child)
+                            }
                         } else {
                             subDirs.add(child)
                         }
@@ -1703,6 +1894,40 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         val mt = getMediaType(name)
                         if (mt != null) {
                             assetList.add(FastAsset(child, mt, child.lastModified(), child.length()))
+                        }
+                    }
+                }
+
+                // Si es la carpeta raíz /storage/emulated/0/Telegram, también incluir archivos de /storage/emulated/0/Android/media/org.telegram.messenger/Telegram, Pictures/Telegram y Movies/Telegram
+                if (isTelegramRoot) {
+                    val extraTgDirs = listOf(
+                        File("/storage/emulated/0/Android/media/org.telegram.messenger/Telegram"),
+                        File("/storage/emulated/0/Pictures/Telegram"),
+                        File("/storage/emulated/0/Movies/Telegram")
+                    )
+                    val seenPaths = HashSet<String>()
+                    for (a in assetList) seenPaths.add(a.file.absolutePath)
+                    for (ed in extraTgDirs) {
+                        if (!ed.exists() || !ed.isDirectory) continue
+                        val eChildren = ed.listFiles() ?: continue
+                        for (ec in eChildren) {
+                            if (ec.name.startsWith(".")) continue
+                            if (ec.isFile) {
+                                val mt = getMediaType(ec.name)
+                                if (mt != null && seenPaths.add(ec.absolutePath)) {
+                                    assetList.add(FastAsset(ec, mt, ec.lastModified(), ec.length()))
+                                }
+                            } else if (ec.isDirectory) {
+                                val innerFiles = ec.listFiles() ?: emptyArray()
+                                for (inf in innerFiles) {
+                                    if (inf.isFile && !inf.name.startsWith(".")) {
+                                        val mt = getMediaType(inf.name)
+                                        if (mt != null && seenPaths.add(inf.absolutePath)) {
+                                            assetList.add(FastAsset(inf, mt, inf.lastModified(), inf.length()))
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2921,6 +3146,10 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                     val on = intent.getBooleanExtra(EXTRA_ENABLE_TORCH, false)
                     updateTorchMode(on)
                 }
+                ACTION_SWITCH_CAMERA -> {
+                    val spec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                    switchCameraInternal(spec)
+                }
             }
         }
     }
@@ -2939,6 +3168,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             addAction(ACTION_STOP)
             addAction(ACTION_SET_PREVIEW)
             addAction(ACTION_SET_TORCH)
+            addAction(ACTION_SWITCH_CAMERA)
         }
         try {
             ContextCompat.registerReceiver(
@@ -2977,16 +3207,25 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                 updateTorchMode(on)
                 return START_STICKY
             }
+            ACTION_SWITCH_CAMERA -> {
+                val spec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                switchCameraInternal(spec)
+                return START_STICKY
+            }
             ACTION_START -> {
                 if (isRunning && sessionStarted) {
                     return START_STICKY
                 }
-                useFrontCamera = intent.getBooleanExtra(EXTRA_USE_FRONT_CAMERA, false)
+                val camSpec = intent.getStringExtra(EXTRA_CAMERA_SPEC) ?: "back"
+                useFrontCamera = intent.getBooleanExtra(EXTRA_USE_FRONT_CAMERA, camSpec.lowercase() == "front")
                 enableTorch = intent.getBooleanExtra(EXTRA_ENABLE_TORCH, false)
                 showFloatingPreview = intent.getBooleanExtra(EXTRA_SHOW_PREVIEW, false)
                 maxDurationSec = intent.getIntExtra(EXTRA_MAX_DURATION_SEC, 600)
 
+                cameraId = resolveCameraIdFromSpec(camSpec, useFrontCamera)
+                useFrontCamera = isCameraIdFront(cameraId)
                 useFrontState = useFrontCamera
+                cameraSpecState = camSpec
                 torchOnState = enableTorch
                 floatingPreviewState = showFloatingPreview
                 elapsedSecondsState = 0
@@ -2996,7 +3235,6 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
                 acquireWakeLock()
                 startForegroundWithNotification()
 
-                cameraId = resolveCameraId(useFrontCamera)
                 chooseOptimalVideoSize(cameraId)
                 outputFile = createTargetOutputFile()
                 currentOutputPath = outputFile?.absolutePath
@@ -3239,13 +3477,83 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             val sv = overlaySurfaceView
             val lp = overlayLayoutParams
             if (wm != null && sv != null && lp != null && sv.isAttachedToWindow) {
-                lp.width = if (visible) dpToPx(136) else 1
-                lp.height = if (visible) dpToPx(184) else 1
+                lp.width = if (visible) dpToPx(148) else 1
+                lp.height = if (visible) dpToPx(200) else 1
                 try {
                     wm.updateViewLayout(sv, lp)
                 } catch (_: Exception) {}
             }
             emitStatusToJs()
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun switchCameraInternal(newSpec: String) {
+        if (!isRunning) return
+        cameraHandler?.post {
+            try {
+                val nextCamId = resolveCameraIdFromSpec(newSpec, newSpec.lowercase() == "front")
+                if (nextCamId == cameraId && cameraDevice != null) {
+                    mainHandler.post { emitStatusToJs() }
+                    return@post
+                }
+                cameraId = nextCamId
+                useFrontCamera = isCameraIdFront(nextCamId)
+                useFrontState = useFrontCamera
+                cameraSpecState = newSpec
+                if (useFrontCamera) {
+                    enableTorch = false
+                    torchOnState = false
+                }
+
+                try { captureSession?.stopRepeating() } catch (_: Exception) {}
+                try { captureSession?.close() } catch (_: Exception) {}
+                captureSession = null
+
+                try { cameraDevice?.close() } catch (_: Exception) {}
+                cameraDevice = null
+
+                val recSurf = persistentRecorderSurface ?: return@post
+                val prevSurf = previewHolderSurface
+                val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                cm.openCamera(
+                    cameraId,
+                    object : CameraDevice.StateCallback() {
+                        override fun onOpened(device: CameraDevice) {
+                            cameraDevice = device
+                            try {
+                                val outputs = mutableListOf<Surface>()
+                                if (prevSurf != null && prevSurf.isValid) {
+                                    outputs.add(prevSurf)
+                                }
+                                outputs.add(recSurf)
+                                device.createCaptureSession(
+                                    outputs,
+                                    object : CameraCaptureSession.StateCallback() {
+                                        override fun onConfigured(session: CameraCaptureSession) {
+                                            captureSession = session
+                                            try {
+                                                val req = buildRecordCaptureRequest(device, prevSurf, recSurf)
+                                                session.setRepeatingRequest(req, null, cameraHandler)
+                                                mainHandler.post { emitStatusToJs() }
+                                            } catch (_: Exception) {}
+                                        }
+                                        override fun onConfigureFailed(session: CameraCaptureSession) {}
+                                    },
+                                    cameraHandler
+                                )
+                            } catch (_: Exception) {}
+                        }
+                        override fun onDisconnected(device: CameraDevice) {
+                            try { device.close() } catch (_: Exception) {}
+                        }
+                        override fun onError(device: CameraDevice, error: Int) {
+                            try { device.close() } catch (_: Exception) {}
+                        }
+                    },
+                    cameraHandler
+                )
+            } catch (_: Exception) {}
         }
     }
 
@@ -3348,7 +3656,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
     ) {
         try {
             val outputs = mutableListOf<Surface>()
-            val activePreview = if (showFloatingPreview && previewSurface != null && previewSurface.isValid) {
+            val activePreview = if (previewSurface != null && previewSurface.isValid) {
                 previewSurface
             } else {
                 null
@@ -3615,6 +3923,35 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         super.onDestroy()
     }
 
+    private fun isCameraIdFront(camId: String): Boolean {
+        return try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val chars = cm.getCameraCharacteristics(camId)
+            chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
+        } catch (_: Exception) {
+            camId == "1"
+        }
+    }
+
+    private fun resolveCameraIdFromSpec(spec: String, fallbackFront: Boolean): String {
+        return try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val clean = spec.trim()
+            if (clean.startsWith("id:")) {
+                val explicitId = clean.removePrefix("id:").trim()
+                if (cm.cameraIdList.contains(explicitId)) {
+                    return explicitId
+                }
+            }
+            if (cm.cameraIdList.contains(clean)) {
+                return clean
+            }
+            resolveCameraId(clean.lowercase() == "front" || fallbackFront)
+        } catch (_: Exception) {
+            resolveCameraId(fallbackFront)
+        }
+    }
+
     private fun resolveCameraId(useFront: Boolean): String {
         return try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -3677,21 +4014,31 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
 
     private fun createTargetOutputFile(): File {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "VID_BVR_" + stamp + ".mp4"
+        val fileName = "VID_2DO_" + stamp + ".mp4"
         try {
-            val dcimDir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM),
-                "Grabaciones"
+            val moviesSegundoPlanoDir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                "2do plano"
             )
-            if (!dcimDir.exists()) {
-                dcimDir.mkdirs()
+            if (!moviesSegundoPlanoDir.exists()) {
+                moviesSegundoPlanoDir.mkdirs()
             }
-            if (dcimDir.exists() && dcimDir.canWrite()) {
-                return File(dcimDir, fileName)
+            if (moviesSegundoPlanoDir.exists() && moviesSegundoPlanoDir.canWrite()) {
+                return File(moviesSegundoPlanoDir, fileName)
             }
         } catch (_: Exception) {}
 
-        val fallbackDir = getExternalFilesDir("Grabaciones") ?: filesDir
+        try {
+            val rootSegundoPlanoDir = File("/storage/emulated/0/2do plano")
+            if (!rootSegundoPlanoDir.exists()) {
+                rootSegundoPlanoDir.mkdirs()
+            }
+            if (rootSegundoPlanoDir.exists() && rootSegundoPlanoDir.canWrite()) {
+                return File(rootSegundoPlanoDir, fileName)
+            }
+        } catch (_: Exception) {}
+
+        val fallbackDir = getExternalFilesDir("2do plano") ?: filesDir
         if (!fallbackDir.exists()) fallbackDir.mkdirs()
         return File(fallbackDir, fileName)
     }
@@ -3702,6 +4049,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             putBoolean("isPaused", isPausedState)
             putInt("elapsedSeconds", elapsedSecondsState)
             putString("facing", if (useFrontState) "front" else "back")
+            putString("cameraSpec", cameraSpecState)
             putBoolean("torchOn", torchOnState)
             putBoolean("showFloatingPreview", floatingPreviewState)
             putString("outputPath", currentOutputPath ?: "")
@@ -3726,8 +4074,10 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         const val ACTION_RESUME_RECORD = "com.bravo.video.recorder.background.service.ACTION_RESUME_RECORD"
         const val ACTION_SET_PREVIEW = "com.bravo.video.recorder.background.service.ACTION_SET_PREVIEW"
         const val ACTION_SET_TORCH = "com.bravo.video.recorder.background.service.ACTION_SET_TORCH"
+        const val ACTION_SWITCH_CAMERA = "com.bravo.video.recorder.background.service.ACTION_SWITCH_CAMERA"
 
         const val EXTRA_USE_FRONT_CAMERA = "EXTRA_USE_FRONT_CAMERA"
+        const val EXTRA_CAMERA_SPEC = "EXTRA_CAMERA_SPEC"
         const val EXTRA_ENABLE_TORCH = "EXTRA_ENABLE_TORCH"
         const val EXTRA_SHOW_PREVIEW = "EXTRA_SHOW_PREVIEW"
         const val EXTRA_MAX_DURATION_SEC = "EXTRA_MAX_DURATION_SEC"
@@ -3745,6 +4095,9 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         var useFrontState: Boolean = false
 
         @Volatile
+        var cameraSpecState: String = "back"
+
+        @Volatile
         var torchOnState: Boolean = false
 
         @Volatile
@@ -3756,6 +4109,7 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
         fun startServiceRecording(
             context: Context,
             useFrontCamera: Boolean,
+            cameraSpec: String,
             enableTorch: Boolean,
             showFloatingPreview: Boolean,
             maxDurationSec: Int
@@ -3763,11 +4117,22 @@ class BackgroundVideoRecordService : Service(), SurfaceHolder.Callback {
             val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_USE_FRONT_CAMERA, useFrontCamera)
+                putExtra(EXTRA_CAMERA_SPEC, cameraSpec)
                 putExtra(EXTRA_ENABLE_TORCH, enableTorch)
                 putExtra(EXTRA_SHOW_PREVIEW, showFloatingPreview)
                 putExtra(EXTRA_MAX_DURATION_SEC, maxDurationSec)
             }
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun switchCamera(context: Context, cameraSpec: String) {
+            cameraSpecState = cameraSpec
+            if (!isRunning) return
+            val intent = Intent(context, BackgroundVideoRecordService::class.java).apply {
+                action = ACTION_SWITCH_CAMERA
+                putExtra(EXTRA_CAMERA_SPEC, cameraSpec)
+            }
+            context.startService(intent)
         }
 
         fun stopServiceRecording(context: Context) {

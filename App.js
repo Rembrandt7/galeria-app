@@ -1199,10 +1199,7 @@ export default function App() {
               activeSegment={activeSegment}
               activeTab={activeTab}
               onSelectSegment={handleSelectSegment}
-              onOpenCamera={() => {
-                setCameraVisible(false);
-                setTimeout(() => setCameraVisible(true), 10);
-              }}
+              onOpenCamera={() => setCameraVisible((prev) => !prev)}
               onOpenExplorer={() => handleSelectTab('folder')}
               photosCount={activeTab === 'albums' || activeTab === 'folder' ? photosAlbumsCount : photosAssetsCount}
               filesCount={activeTab === 'albums' || activeTab === 'folder' ? filesAlbumsCount : filesAssetsCount}
@@ -1310,10 +1307,7 @@ export default function App() {
             onOpenBrowser={() => setBrowserVisible(true)}
             onOpenStore={() => setStoreVisible(true)}
             onOpenSettings={() => setSettingsVisible(true)}
-            onOpenCamera={() => {
-              setCameraVisible(false);
-              setTimeout(() => setCameraVisible(true), 10);
-            }}
+            onOpenCamera={() => setCameraVisible((prev) => !prev)}
             onFindDuplicates={() => setDupVisible(true)}
             onOpenModoGuardar={() => handleOpenModoGuardar(displayedAssets, 0, 'swipe')}
             trashCount={Object.keys(trashBin).length}

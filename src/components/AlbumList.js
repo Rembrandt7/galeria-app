@@ -128,11 +128,74 @@ export default function AlbumList({
   const groupSmallInVarios = gridConfig?.groupSmallInVarios !== false;
   const showFoldersInScreen = gridConfig?.showFoldersInScreen !== false;
 
-  // Filtrar estrictamente cualquier carpeta que no tenga al menos 1 imagen o video
-  const nonEmptyAlbums = useMemo(
-    () => (albums || []).filter((item) => item && Number(item.assetCount) > 0),
-    [albums]
-  );
+  // Determinar si una carpeta es una de las 3 carpetas fijadas arriba en la sección Archivos:
+  // 1) "2do plano", 2) "Descargas", 3) "Telegram" (raíz del sistema)
+  const getPinnedFilesOrder = (item) => {
+    if (!item || typeof item !== 'object') return 0;
+    if (Number(item.pinnedOrder) > 0) return Number(item.pinnedOrder);
+    const t = String(item.title || item.name || '').trim().toLowerCase();
+    const u = String(item.uri || '').trim().toLowerCase();
+    if (/^(2do\s*plano|segundo\s*plano)$/i.test(t) || u.endsWith('/2do plano')) return 1;
+    if (
+      /^(descargas|download|downloads)$/i.test(t) ||
+      u.endsWith('/storage/emulated/0/download')
+    ) {
+      return 2;
+    }
+    if (
+      /^(telegram)$/i.test(t) ||
+      u.endsWith('/storage/emulated/0/telegram')
+    ) {
+      return 3;
+    }
+    return 0;
+  };
+
+  // Filtrar estrictamente cualquier carpeta que no tenga al menos 1 imagen o video,
+  // conservando SIEMPRE las 3 carpetas fijadas de Archivos ("2do plano", "Descargas", "Telegram")
+  const nonEmptyAlbums = useMemo(() => {
+    const base = (albums || []).filter(
+      (item) => item && (Number(item.assetCount) > 0 || getPinnedFilesOrder(item) > 0)
+    );
+    const hasPin1 = base.some((it) => getPinnedFilesOrder(it) === 1);
+    const hasPin2 = base.some((it) => getPinnedFilesOrder(it) === 2);
+    const hasPin3 = base.some((it) => getPinnedFilesOrder(it) === 3);
+    const extraPins = [];
+    if (!hasPin1) {
+      extraPins.push({
+        id: 'pinned_2do_plano',
+        title: '2do plano',
+        uri: 'file:///storage/emulated/0/Movies/2do plano',
+        assetCount: 0,
+        coverUri: null,
+        isPinnedFilesFolder: true,
+        pinnedOrder: 1,
+      });
+    }
+    if (!hasPin2) {
+      extraPins.push({
+        id: 'pinned_download',
+        title: 'Descargas',
+        uri: 'file:///storage/emulated/0/Download',
+        assetCount: 0,
+        coverUri: null,
+        isPinnedFilesFolder: true,
+        pinnedOrder: 2,
+      });
+    }
+    if (!hasPin3) {
+      extraPins.push({
+        id: 'pinned_telegram_root',
+        title: 'Telegram',
+        uri: 'file:///storage/emulated/0/Telegram',
+        assetCount: 0,
+        coverUri: null,
+        isPinnedFilesFolder: true,
+        pinnedOrder: 3,
+      });
+    }
+    return extraPins.length > 0 ? [...extraPins, ...base] : base;
+  }, [albums]);
 
   const favList = useMemo(() => Object.values(favorites || {}), [favorites]);
   const favCount = favList.length;
@@ -163,6 +226,7 @@ export default function AlbumList({
   // 2) Es una carpeta sugerida de sistema y el modo auto-desactivar sistema está activo (salvo que el usuario la haya activado manualmente)
   const isAlbumHidden = (item) => {
     if (!item || typeof item !== 'object') return false;
+    if (getPinnedFilesOrder(item) > 0) return false;
     if (isExplicitlyHidden(item)) return true;
     const sysInfo = folderService.classifySystemFolder(item);
     if (sysInfo?.isSystemSuggested && autoHideSystemFolders && !isManuallyEnabledSystem(item)) {
@@ -186,10 +250,11 @@ export default function AlbumList({
   };
 
   const isEssentialMainAlbum = (item) => {
+    if (getPinnedFilesOrder(item) > 0) return true;
     const t = String(item?.title || '').trim().toLowerCase();
     return (
       item?.isDownloadedVideos ||
-      /^(camera|cámara|camara|dcim|videos descargados|favoritos)$/i.test(t)
+      /^(2do plano|segundo plano|descargas|download|telegram|camera|cámara|camara|dcim|videos descargados|favoritos)$/i.test(t)
     );
   };
 
@@ -249,6 +314,13 @@ export default function AlbumList({
     };
 
     mainList.sort((a, b) => {
+      // Las 3 carpetas fijadas ("2do plano", "Descargas", "Telegram") SIEMPRE van hasta arriba en ese orden
+      const pinA = getPinnedFilesOrder(a);
+      const pinB = getPinnedFilesOrder(b);
+      if (pinA > 0 && pinB > 0) return pinA - pinB;
+      if (pinA > 0) return -1;
+      if (pinB > 0) return 1;
+
       const nameA = folderService.formatFolderDisplayName(a.title, a.uri || '');
       const nameB = folderService.formatFolderDisplayName(b.title, b.uri || '');
 
@@ -576,10 +648,21 @@ export default function AlbumList({
 
     // 2. Tarjeta de Carpeta / Álbum estilo Samsung Galaxy One UI
     const isHidden = isAlbumHidden(item);
-    const displayTitle = folderService.formatFolderDisplayName(item.title, item.uri || '');
+    const pinnedRank = getPinnedFilesOrder(item);
+    const isPinnedCard = pinnedRank > 0;
+    const displayTitle =
+      pinnedRank === 1
+        ? '2do plano'
+        : pinnedRank === 2
+        ? 'Descargas'
+        : pinnedRank === 3
+        ? 'Telegram'
+        : folderService.formatFolderDisplayName(item.title, item.uri || '');
     const lowerTitle = displayTitle.toLowerCase();
     const isCameraAlbum = /^(camera|cámara|camara|dcim)$/i.test(lowerTitle);
-    const isDownloadsAlbum = /descarg|download/i.test(lowerTitle);
+    const isDownloadsAlbum = pinnedRank === 2 || /descarg|download/i.test(lowerTitle);
+    const isSegundoPlanoAlbum = pinnedRank === 1;
+    const isTelegramAlbum = pinnedRank === 3;
     const customCover = storageService.resolveCustomCover(customCovers, item);
     const coverToUse = customCover || item.coverUri || null;
 
@@ -588,6 +671,15 @@ export default function AlbumList({
         style={[
           styles.galaxyCard,
           dynamicCardStyle,
+          isPinnedCard && {
+            borderWidth: 1.5,
+            borderColor:
+              pinnedRank === 1
+                ? 'rgba(239, 68, 68, 0.65)'
+                : pinnedRank === 2
+                ? 'rgba(56, 189, 248, 0.65)'
+                : 'rgba(96, 165, 250, 0.65)',
+          },
           isHidden && styles.galaxyCardHidden,
         ]}
         activeOpacity={0.82}
@@ -621,7 +713,11 @@ export default function AlbumList({
             style={[
               styles.coverImage,
               {
-                backgroundColor: '#18181f',
+                backgroundColor: isSegundoPlanoAlbum
+                  ? '#1f1218'
+                  : isTelegramAlbum
+                  ? '#111c2d'
+                  : '#18181f',
                 alignItems: 'center',
                 justifyContent: 'center',
                 paddingBottom: 24,
@@ -629,14 +725,60 @@ export default function AlbumList({
               isHidden && { opacity: 0.45 },
             ]}
           >
-            <Ionicons name="images-outline" size={32} color="#60a5fa" />
+            <Ionicons
+              name={
+                isSegundoPlanoAlbum
+                  ? 'videocam'
+                  : isTelegramAlbum
+                  ? 'paper-plane'
+                  : isDownloadsAlbum
+                  ? 'cloud-download'
+                  : 'images-outline'
+              }
+              size={32}
+              color={
+                isSegundoPlanoAlbum
+                  ? '#f87171'
+                  : isTelegramAlbum
+                  ? '#38bdf8'
+                  : '#60a5fa'
+              }
+            />
           </View>
         )}
 
         {/* Oscurecedor gradual inferior para que el nombre y conteo luzcan nítidos como en Galaxy */}
         <View style={styles.bottomScrim} />
 
-        {/* Icono superior derecho (Cámara, Descargas, Subcarpetas o botón de Ocultar/Mostrar) */}
+        {/* Insignia superior izquierda "📌 Fijado" para 2do plano, Descargas y Telegram */}
+        {isPinnedCard && (
+          <View
+            style={{
+              position: 'absolute',
+              top: 6,
+              left: 6,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 3,
+              backgroundColor:
+                pinnedRank === 1
+                  ? 'rgba(220, 38, 38, 0.88)'
+                  : pinnedRank === 2
+                  ? 'rgba(2, 132, 199, 0.88)'
+                  : 'rgba(37, 99, 235, 0.88)',
+              paddingHorizontal: 6,
+              paddingVertical: 2.5,
+              borderRadius: 8,
+            }}
+          >
+            <Ionicons name="pin" size={10} color="#ffffff" />
+            <Text style={{ color: '#ffffff', fontSize: 9, fontWeight: '800' }}>
+              Fijado
+            </Text>
+          </View>
+        )}
+
+        {/* Icono superior derecho (Cámara, 2do plano, Descargas, Telegram, Subcarpetas o botón de Ocultar/Mostrar) */}
         {quickEditVisibility || showAllFolders ? (
           <TouchableOpacity
             style={[styles.topRightCornerBadge, isHidden && styles.topRightCornerBadgeHidden]}
@@ -652,6 +794,14 @@ export default function AlbumList({
               color={isHidden ? '#ffffff' : '#60a5fa'}
             />
           </TouchableOpacity>
+        ) : isSegundoPlanoAlbum ? (
+          <View style={styles.topRightIconClean}>
+            <Ionicons name="videocam" size={15} color="#f87171" />
+          </View>
+        ) : isTelegramAlbum ? (
+          <View style={styles.topRightIconClean}>
+            <Ionicons name="paper-plane" size={14} color="#38bdf8" />
+          </View>
         ) : isCameraAlbum ? (
           <View style={styles.topRightIconClean}>
             <Ionicons name="camera" size={16} color="#ffffff" />
