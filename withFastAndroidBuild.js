@@ -173,18 +173,18 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     val canAuth = bm.canAuthenticate()
                     available = (canAuth == android.hardware.biometrics.BiometricManager.BIOMETRIC_SUCCESS)
                 }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                available = true
             }
-            if (!available && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                @Suppress("DEPRECATION")
-                val fm = reactContext.getSystemService(Context.FINGERPRINT_SERVICE) as? android.hardware.fingerprint.FingerprintManager
-                @Suppress("DEPRECATION", "MissingPermission")
-                if (fm != null && fm.isHardwareDetected && fm.hasEnrolledFingerprints()) {
-                    available = true
-                }
+            val res = Arguments.createMap().apply {
+                putBoolean("available", available)
             }
-            promise.resolve(available)
+            promise.resolve(res)
         } catch (_: Exception) {
-            promise.resolve(false)
+            val res = Arguments.createMap().apply {
+                putBoolean("available", false)
+            }
+            promise.resolve(res)
         }
     }
 
@@ -249,9 +249,19 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
             try {
                 val dir = File(cleanFilePath(dirPath))
                 val noMediaFile = File(dir, ".nomedia")
-                promise.resolve(noMediaFile.exists())
+                val exists = noMediaFile.exists()
+                val map = Arguments.createMap().apply {
+                    putBoolean("hasNoMedia", exists)
+                    putBoolean("hiddenFromOtherApps", exists)
+                    putString("path", dir.absolutePath)
+                }
+                promise.resolve(map)
             } catch (_: Exception) {
-                promise.resolve(false)
+                val map = Arguments.createMap().apply {
+                    putBoolean("hasNoMedia", false)
+                    putBoolean("hiddenFromOtherApps", false)
+                }
+                promise.resolve(map)
             }
         }
     }
@@ -300,8 +310,10 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     )
                 } catch (_: Exception) {}
 
+                val existsNow = File(dir, ".nomedia").exists()
                 val map = Arguments.createMap().apply {
-                    putBoolean("hiddenFromOtherApps", File(dir, ".nomedia").exists())
+                    putBoolean("hasNoMedia", existsNow)
+                    putBoolean("hiddenFromOtherApps", existsNow)
                     putString("path", dir.absolutePath)
                 }
                 promise.resolve(map)
