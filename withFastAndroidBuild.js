@@ -4763,7 +4763,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     val ch = (b.y2 - b.y1).coerceAtLeast(8)
                     val cropBmp = Bitmap.createBitmap(bmp565, b.x1, b.y1, cw, ch)
                     val emb = computeEmbedding128(cropBmp)
-                    val cropFile = File(cropsDir, "face_${System.currentTimeMillis()}_${idx}.jpg")
+                    val cropFile = File(cropsDir, "face_" + System.currentTimeMillis() + "_" + idx + ".jpg")
                     FileOutputStream(cropFile).use { fos ->
                         cropBmp.compress(Bitmap.CompressFormat.JPEG, 88, fos)
                     }

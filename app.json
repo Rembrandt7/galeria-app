@@ -16,7 +16,7 @@
     },
     "android": {
       "package": "com.rembrant.galeriaapp",
-      "versionCode": 81,
+      "versionCode": 82,
       "requestLegacyExternalStorage": true,
       "adaptiveIcon": {
         "backgroundColor": "#0f172a",
