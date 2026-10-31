@@ -1541,7 +1541,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         try {
                             android.app.AlertDialog.Builder(act)
                                 .setTitle("⚠️ Archivo ya existente")
-                                .setMessage("Este enlace o archivo ya lo descargaste anteriormente en tu galería.\n\n¿Deseas volver a descargarlo de todos modos?")
+                                .setMessage("Este enlace o archivo ya lo descargaste anteriormente en tu galería.\\n\\n¿Deseas volver a descargarlo de todos modos?")
                                 .setNegativeButton("Cancelar", null)
                                 .setPositiveButton("Descargar de nuevo") { _, _ ->
                                     enqueueBackgroundDownload(resolvedTargetUrl, mediaType, thumbUrl, cleanPage)
@@ -2450,7 +2450,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     private fun saveHiddenArchivosDirs(dirs: Set<String>) {
         try {
             val regFile = getHiddenDirsRegistryFile()
-            regFile.writeText(dirs.map { it.trim().trimEnd('/') }.filter { it.startsWith("/") }.distinct().joinToString("\n"))
+            regFile.writeText(dirs.map { it.trim().trimEnd('/') }.filter { it.startsWith("/") }.distinct().joinToString("\\n"))
         } catch (_: Exception) {}
     }
 
