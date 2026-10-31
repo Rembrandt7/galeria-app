@@ -76,6 +76,7 @@ export default function FolderBrowser({
   onToggleShowAllFolders,
   onExitFolder,
   onOpenModoGuardar,
+  onFindDuplicates,
   trashCount = 0,
   trashBin = {},
   onAssignFolderToSegment,
@@ -522,14 +523,16 @@ export default function FolderBrowser({
     return base;
   }, [isPhotosActive, isVideosActive, filterType, rawFolderList, folderPhotos, folderVideos, searchQuery]);
 
-  // Contabilizar archivos Grandes (>4MB) y Medianos (2-4MB) para mostrar filtros solo si existen
+  // Contabilizar archivos en Rojo (mucha compresión) y Amarillo (poca compresión), analizando videos por duración
   const { heavyCount, mediumCount } = useMemo(() => {
     let heavy = 0;
     let medium = 0;
     for (const a of categoryAndSearchList) {
       const sz = a.fileSize || 0;
-      if (sz > 4 * 1024 * 1024) heavy++;
-      else if (sz > 2 * 1024 * 1024) medium++;
+      if (sz <= 0) continue;
+      const info = compressionService.getSizeLevel(sz, a.mediaType || 'photo', a.duration || 0);
+      if (info.level === 'heavy') heavy++;
+      else if (info.level === 'medium') medium++;
     }
     return { heavyCount: heavy, mediumCount: medium };
   }, [categoryAndSearchList]);
@@ -541,16 +544,23 @@ export default function FolderBrowser({
       ? 'all'
       : sizeFilter;
 
-  // Lista total filtrada (photos | videos | all + buscador por texto + filtro por peso condicional)
+  // Lista total filtrada (photos | videos | all + buscador por texto + filtro por Rojo/Amarillo condicional)
   const totalFilteredAssets = useMemo(() => {
     if (effectiveSizeFilter === 'heavy') {
-      return categoryAndSearchList.filter((a) => (a.fileSize || 0) > 4 * 1024 * 1024);
+      return categoryAndSearchList.filter(
+        (a) =>
+          (a.fileSize || 0) > 0 &&
+          compressionService.getSizeLevel(a.fileSize, a.mediaType || 'photo', a.duration || 0)
+            .level === 'heavy'
+      );
     }
     if (effectiveSizeFilter === 'medium') {
-      return categoryAndSearchList.filter((a) => {
-        const sz = a.fileSize || 0;
-        return sz > 2 * 1024 * 1024 && sz <= 4 * 1024 * 1024;
-      });
+      return categoryAndSearchList.filter(
+        (a) =>
+          (a.fileSize || 0) > 0 &&
+          compressionService.getSizeLevel(a.fileSize, a.mediaType || 'photo', a.duration || 0)
+            .level === 'medium'
+      );
     }
     return categoryAndSearchList;
   }, [categoryAndSearchList, effectiveSizeFilter]);
@@ -1634,70 +1644,30 @@ export default function FolderBrowser({
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.optionsBoxesScroll}
         >
-          {/* Opción A: Agregar esta carpeta exclusivamente a Fotos */}
-          {currentFolder?.uri && onAssignFolderToSegment && (
+          {/* Opción: Buscar Duplicados en esta carpeta */}
+          {onFindDuplicates && (
             <TouchableOpacity
               style={[
                 styles.optionSquareCard,
                 {
-                  backgroundColor: 'rgba(37, 99, 235, 0.18)',
-                  borderColor: '#3b82f6',
-                },
-              ]}
-              onPress={() => {
-                onAssignFolderToSegment(currentFolder.uri, 'photos', currentFolder.name);
-                Alert.alert(
-                  'Carpeta agregada',
-                  `"${currentFolder.name || 'Carpeta'}" se guardó en Fotos y no aparecerá en Archivos.`
-                );
-              }}
-              activeOpacity={0.8}
-            >
-              <View style={styles.actionToolHeader}>
-                <Ionicons name="camera" size={15} color="#60a5fa" />
-                <Text
-                  style={[styles.actionToolTitle, { color: '#93c5fd' }]}
-                  numberOfLines={1}
-                >
-                  + A Fotos
-                </Text>
-              </View>
-              <Text style={[styles.actionToolSub, { color: '#60a5fa' }]} numberOfLines={1}>
-                Sección Fotos (exclusiva)
-              </Text>
-            </TouchableOpacity>
-          )}
-
-          {/* Opción B: Agregar esta carpeta exclusivamente a Archivos */}
-          {currentFolder?.uri && onAssignFolderToSegment && (
-            <TouchableOpacity
-              style={[
-                styles.optionSquareCard,
-                {
-                  backgroundColor: 'rgba(217, 119, 6, 0.18)',
+                  backgroundColor: 'rgba(245, 158, 11, 0.18)',
                   borderColor: '#f59e0b',
                 },
               ]}
-              onPress={() => {
-                onAssignFolderToSegment(currentFolder.uri, 'files', currentFolder.name);
-                Alert.alert(
-                  'Carpeta agregada',
-                  `"${currentFolder.name || 'Carpeta'}" se guardó en Archivos y no aparecerá en Fotos.`
-                );
-              }}
+              onPress={onFindDuplicates}
               activeOpacity={0.8}
             >
               <View style={styles.actionToolHeader}>
-                <Ionicons name="folder-open" size={15} color="#fbbf24" />
+                <Ionicons name="copy-outline" size={15} color="#fbbf24" />
                 <Text
                   style={[styles.actionToolTitle, { color: '#fde68a' }]}
                   numberOfLines={1}
                 >
-                  + A Archivos
+                  Buscar duplicados
                 </Text>
               </View>
               <Text style={[styles.actionToolSub, { color: '#fbbf24' }]} numberOfLines={1}>
-                Sección Archivos (exclusiva)
+                Limpiar repetidas aquí
               </Text>
             </TouchableOpacity>
           )}
@@ -1822,7 +1792,7 @@ export default function FolderBrowser({
             </TouchableOpacity>
           )}
 
-          {/* Opción 2: Comprimir Videos */}
+          {/* Opción 2: Comprimir Videos (Analizados por duración: Verde / Amarillo / Rojo) */}
           {folderVideos.length > 0 && (
             <TouchableOpacity
               style={[
@@ -1845,7 +1815,9 @@ export default function FolderBrowser({
                   ]}
                   numberOfLines={1}
                 >
-                  Comprimir videos ({videoReductionSummary.compressibleCount || folderVideos.length})
+                  {videoReductionSummary.level === 'light'
+                    ? `Videos en Verde (${folderVideos.length})`
+                    : `Comprimir videos (${videoReductionSummary.compressibleCount || folderVideos.length})`}
                 </Text>
               </View>
               <Text
@@ -1853,10 +1825,10 @@ export default function FolderBrowser({
                 numberOfLines={1}
               >
                 {videoReductionSummary.level === 'heavy'
-                  ? `Reducción alta · -${videoReductionSummary.estimatedSavedFormatted}`
+                  ? `Rojo (Comprimir mucho) · -${videoReductionSummary.estimatedSavedFormatted}`
                   : videoReductionSummary.level === 'medium'
-                  ? `Reducción media · -${videoReductionSummary.estimatedSavedFormatted}`
-                  : `Optimizar 100% res · -${videoReductionSummary.estimatedSavedFormatted}`}
+                  ? `Amarillo (Comprimir poco) · -${videoReductionSummary.estimatedSavedFormatted}`
+                  : 'En Verde · Óptimos por duración'}
               </Text>
             </TouchableOpacity>
           )}

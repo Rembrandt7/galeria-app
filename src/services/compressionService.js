@@ -396,19 +396,107 @@ export const compressionService = {
 
   /**
    * Determina el nivel de peso y los colores visuales según los rangos del usuario:
-   * - 0 a 2 MB: Verde
    * - Fotos: <= 2 MB Verde (muy poco que reducir), 2 a 4 MB Amarillo (reducción media), > 4 MB Rojo (mucha reducción)
-   * - Videos: <= 8 MB Verde (muy poco que reducir), 8 a 25 MB Amarillo (reducción media), > 25 MB Rojo (mucha reducción)
+   * - Videos (analizados en relación a su duración de tiempo `MB/s`):
+   *   - Verde (No se pueden comprimir / ya optimizados): `<= 0.30 MB/s` (<= 18 MB/min, ~2.4 Mbps) o archivos muy cortos `<= 1.5 MB`
+   *   - Amarillo (Se pueden comprimir un poco): `0.30 a 0.70 MB/s` (18 a 42 MB/min, ~2.4 a 5.6 Mbps)
+   *   - Rojo (Se pueden comprimir mucho): `> 0.70 MB/s` (> 42 MB/min, > 5.6 Mbps)
    */
-  getSizeLevel(bytes, mediaType = 'photo') {
-    const rawBytes = Number(bytes) || 0;
+  getSizeLevel(bytesOrAsset, mediaType = 'photo', durationSec = 0) {
+    const isAssetObj = bytesOrAsset && typeof bytesOrAsset === 'object';
+    const rawBytes = Number(isAssetObj ? bytesOrAsset.fileSize : bytesOrAsset) || 0;
+    const resolvedType = isAssetObj ? bytesOrAsset.mediaType || mediaType : mediaType;
+    const rawDuration = Number(isAssetObj ? bytesOrAsset.duration : durationSec) || 0;
+    // Normalizar si la duración viene en milisegundos (ej. > 100000)
+    const durSec = rawDuration > 36000 ? rawDuration / 1000 : rawDuration;
+
     const mb = rawBytes / (1024 * 1024);
-    const isVideo = mediaType === 'video';
-    const greenThreshold = isVideo ? 8 : 2;
-    const yellowThreshold = isVideo ? 25 : 4;
+    const isVideo = resolvedType === 'video';
+
+    if (isVideo) {
+      const mbPerSec = durSec > 0 ? mb / durSec : 0;
+      const mbPerMin = mbPerSec * 60;
+
+      // 1. VERDE: En relación a su duración no se puede comprimir (bitrate ya óptimo <= 0.30 MB/s o <= 1.5 MB)
+      const isVideoGreen =
+        rawBytes <= 0 ||
+        mb <= 1.5 ||
+        (durSec > 0 ? mbPerSec <= 0.30 : mb <= 6);
+
+      if (isVideoGreen) {
+        return {
+          level: 'light',
+          mb: mb.toFixed(2),
+          mbPerSec: mbPerSec.toFixed(2),
+          mbPerMin: mbPerMin.toFixed(1),
+          durationSec: durSec,
+          color: '#10b981', // Verde: ya optimizado por su duración (no comprimible)
+          titleColor: '#10b981',
+          bannerBg: 'rgba(16, 185, 129, 0.18)',
+          borderColor: '#10b981',
+          tagText: 'En Verde (No comprimible)',
+          reductionText: 'En Verde · Óptimo por su duración',
+          canCompress: false,
+          estimatedSavedBytes: 0,
+          isHeavy: false,
+        };
+      }
+
+      // 2. AMARILLO: Se puede comprimir un poco (0.30 < MB/s <= 0.70, o 6-20 MB si no hay duración)
+      const isVideoYellow = durSec > 0 ? mbPerSec <= 0.70 : mb <= 20;
+      if (isVideoYellow) {
+        const targetBytes = durSec > 0 ? durSec * 0.28 * 1024 * 1024 : rawBytes * 0.68;
+        const estSaved = Math.max(
+          Math.round(rawBytes * 0.22),
+          Math.min(Math.round(rawBytes * 0.42), Math.round(rawBytes - targetBytes))
+        );
+        return {
+          level: 'medium',
+          mb: mb.toFixed(2),
+          mbPerSec: mbPerSec.toFixed(2),
+          mbPerMin: mbPerMin.toFixed(1),
+          durationSec: durSec,
+          color: '#f59e0b', // Amarillo: se puede comprimir un poco
+          titleColor: '#f59e0b',
+          bannerBg: 'rgba(245, 158, 11, 0.22)',
+          borderColor: '#f59e0b',
+          tagText: 'Amarillo (Comprimir poco)',
+          reductionText: `Amarillo · Ahorra ~${compressionService.formatBytes(estSaved)}`,
+          canCompress: true,
+          estimatedSavedBytes: estSaved,
+          isHeavy: false,
+        };
+      }
+
+      // 3. ROJO: Se puede comprimir mucho (> 0.70 MB/s en relación a su duración)
+      const targetBytes = durSec > 0 ? durSec * 0.32 * 1024 * 1024 : rawBytes * 0.42;
+      const estSaved = Math.max(
+        Math.round(rawBytes * 0.45),
+        Math.min(Math.round(rawBytes * 0.72), Math.round(rawBytes - targetBytes))
+      );
+      return {
+        level: 'heavy',
+        mb: mb.toFixed(2),
+        mbPerSec: mbPerSec.toFixed(2),
+        mbPerMin: mbPerMin.toFixed(1),
+        durationSec: durSec,
+        color: '#ef4444', // Rojo: se puede comprimir mucho
+        titleColor: '#ffffff',
+        bannerBg: '#dc2626',
+        borderColor: '#ef4444',
+        tagText: 'Rojo (Comprimir mucho)',
+        reductionText: `Rojo · Ahorra ~${compressionService.formatBytes(estSaved)}`,
+        canCompress: true,
+        estimatedSavedBytes: estSaved,
+        isHeavy: true,
+      };
+    }
+
+    const greenThreshold = 2;
+    const yellowThreshold = 4;
 
     if (mb <= greenThreshold) {
-      const estSaved = Math.round(rawBytes * (isVideo ? 0.28 : 0.32));
+      const estSaved = Math.round(rawBytes * 0.32);
       return {
         level: 'light',
         mb: mb.toFixed(2),
@@ -425,7 +513,7 @@ export const compressionService = {
     }
 
     if (mb <= yellowThreshold) {
-      const estSaved = Math.round(rawBytes * (isVideo ? 0.38 : 0.42));
+      const estSaved = Math.round(rawBytes * 0.42);
       return {
         level: 'medium',
         mb: mb.toFixed(2),
@@ -442,7 +530,7 @@ export const compressionService = {
     }
 
     // Rojo: se puede reducir mucho
-    const estSaved = Math.round(rawBytes * (isVideo ? 0.58 : 0.65));
+    const estSaved = Math.round(rawBytes * 0.65);
     return {
       level: 'heavy',
       mb: mb.toFixed(2),
@@ -460,7 +548,7 @@ export const compressionService = {
 
   /**
    * Analiza una lista de fotos o videos y devuelve cuánto se puede reducir en conjunto
-   * y el color correspondiente (Verde = ligero, Amarillo = medio, Rojo = mucho).
+   * y el color correspondiente (Verde = ligero/no comprimible en video, Amarillo = poco, Rojo = mucho).
    */
   getBatchReductionSummary(assets = [], mediaType = 'photo') {
     const filtered = (assets || []).filter((a) => a && (!mediaType || a.mediaType === mediaType));
@@ -477,7 +565,11 @@ export const compressionService = {
         unknownSizeCount++;
         continue;
       }
-      const info = compressionService.getSizeLevel(sz, item.mediaType || mediaType);
+      const info = compressionService.getSizeLevel(
+        sz,
+        item.mediaType || mediaType || 'photo',
+        Number(item.duration) || 0
+      );
       if (info.level === 'heavy') {
         heavyCount++;
         estimatedSavedBytes += info.estimatedSavedBytes;
@@ -491,7 +583,10 @@ export const compressionService = {
     }
 
     const compressibleCount = heavyCount + mediumCount;
-    const canCompress = filtered.length > 0;
+    const isVideoOnly = mediaType === 'video';
+    const canCompress = isVideoOnly
+      ? compressibleCount > 0 || unknownSizeCount > 0
+      : filtered.length > 0;
 
     if (!canCompress) {
       return {
@@ -1345,6 +1440,36 @@ export const compressionService = {
             compressionService._queuedVideos.length;
 
           try {
+            const vSize =
+              Number(video.fileSize) ||
+              (await compressionService.getFileSize(video, { forceFresh: true }));
+            const vLevelInfo = compressionService.getSizeLevel(
+              vSize,
+              'video',
+              Number(video.duration) || 0
+            );
+            // Si el video está en VERDE en relación a su duración (no se puede comprimir), omitirlo
+            if (vSize > 0 && Number(video.duration) > 0 && vLevelInfo.level === 'light') {
+              skippedGreenCount++;
+              processed++;
+              const afterTotalSkip =
+                processed +
+                compressionService._queuedPhotos.length +
+                compressionService._queuedVideos.length;
+              compressionService._emitJobState({
+                current: processed,
+                total: afterTotalSkip,
+                percent: processed / Math.max(1, afterTotalSkip),
+                currentFile: `${video.filename || 'Video'} (En verde · Omitido)`,
+                savedBytes: totalSavedBytes,
+                savedFormatted: compressionService.formatBytes(totalSavedBytes),
+                compressedCount,
+                skippedGreenCount,
+                errorsCount,
+              });
+              continue;
+            }
+
             const res = await videoEngineService.compressVideo({
               asset: video,
               presetId,

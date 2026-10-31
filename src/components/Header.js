@@ -39,6 +39,7 @@ export default function Header({
   filterType,
   onToggleFilter,
   onPickFolder,
+  onFindDuplicates,
   onOpenSettings,
   onToggleSearch,
   onOpenVisibilityManager,
@@ -213,6 +214,16 @@ export default function Header({
               activeOpacity={0.7}
             >
               <Ionicons name="add" size={25} color="#ffffff" />
+            </TouchableOpacity>
+          )}
+
+          {onFindDuplicates && (
+            <TouchableOpacity
+              onPress={onFindDuplicates}
+              style={styles.galaxyIconBtn}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="copy-outline" size={19} color="#fbbf24" />
             </TouchableOpacity>
           )}
 

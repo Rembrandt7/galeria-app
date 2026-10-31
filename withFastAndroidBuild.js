@@ -9,10 +9,32 @@ const path = require('path');
 
 const VIDEO_ENGINE_PACKAGE_KT = `package com.rembrant.galeriaapp
 
+import android.graphics.Color
+import android.widget.ImageView
 import com.facebook.react.ReactPackage
 import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.uimanager.SimpleViewManager
+import com.facebook.react.uimanager.ThemedReactContext
 import com.facebook.react.uimanager.ViewManager
+
+class BgCameraPreviewViewManager : SimpleViewManager<ImageView>() {
+    override fun getName(): String = "BgCameraPreviewView"
+
+    override fun createViewInstance(reactContext: ThemedReactContext): ImageView {
+        val iv = ImageView(reactContext).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundColor(Color.parseColor("#050811"))
+        }
+        BackgroundVideoRecordService.registerPreviewView(iv)
+        return iv
+    }
+
+    override fun onDropViewInstance(view: ImageView) {
+        BackgroundVideoRecordService.unregisterPreviewView(view)
+        super.onDropViewInstance(view)
+    }
+}
 
 class VideoEnginePackage : ReactPackage {
     override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> {
@@ -20,7 +42,7 @@ class VideoEnginePackage : ReactPackage {
     }
 
     override fun createViewManagers(reactContext: ReactApplicationContext): List<ViewManager<*, *>> {
-        return emptyList()
+        return listOf(BgCameraPreviewViewManager())
     }
 }
 `;
@@ -1938,11 +1960,13 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     val file: File,
                     val mediaType: String,
                     val lastMod: Long,
-                    val length: Long
+                    val length: Long,
+                    var durationSec: Double = 0.0
                 )
 
                 val rootPath = rootDir.absolutePath.trimEnd('/')
                 val assetList = ArrayList<FastAsset>(128)
+                val assetByPath = HashMap<String, FastAsset>()
                 val seenAssetPaths = HashSet<String>()
                 val subDirsMap = LinkedHashMap<String, File>()
 
@@ -1964,8 +1988,11 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             for (sf in subFiles) {
                                 if (sf.isFile && !sf.name.startsWith(".")) {
                                     val mt = getMediaType(sf.name)
-                                    if (mt != null && seenAssetPaths.add(sf.absolutePath.lowercase())) {
-                                        assetList.add(FastAsset(sf, mt, sf.lastModified(), sf.length()))
+                                    val key = sf.absolutePath.lowercase()
+                                    if (mt != null && seenAssetPaths.add(key)) {
+                                        val fa = FastAsset(sf, mt, sf.lastModified(), sf.length())
+                                        assetList.add(fa)
+                                        assetByPath[key] = fa
                                     }
                                 }
                             }
@@ -1977,8 +2004,11 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         }
                     } else if (child.isFile) {
                         val mt = getMediaType(name)
-                        if (mt != null && seenAssetPaths.add(child.absolutePath.lowercase())) {
-                            assetList.add(FastAsset(child, mt, child.lastModified(), child.length()))
+                        val key = child.absolutePath.lowercase()
+                        if (mt != null && seenAssetPaths.add(key)) {
+                            val fa = FastAsset(child, mt, child.lastModified(), child.length())
+                            assetList.add(fa)
+                            assetByPath[key] = fa
                         }
                     }
                 }
@@ -1990,7 +2020,8 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         android.provider.MediaStore.Files.FileColumns.DATA,
                         android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED,
                         android.provider.MediaStore.Files.FileColumns.SIZE,
-                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE,
+                        android.provider.MediaStore.Files.FileColumns.DURATION
                     )
                     val sel = "(" +
                         android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=? OR " +
@@ -2007,6 +2038,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         val modCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED)
                         val sizeCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.SIZE)
                         val typeCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE)
+                        val durCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DURATION)
 
                         while (cursor.moveToNext()) {
                             val fPath = if (dataCol >= 0) cursor.getString(dataCol) else null
@@ -2025,19 +2057,30 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             val modSec = if (modCol >= 0) cursor.getLong(modCol) else 0L
                             val modMs = if (modSec > 0L) modSec * 1000L else fObj.lastModified()
                             val fSize = if (sizeCol >= 0) cursor.getLong(sizeCol) else fObj.length()
+                            val durMs = if (durCol >= 0) cursor.getLong(durCol) else 0L
+                            val durSec = if (durMs > 0L) durMs.toDouble() / 1000.0 else 0.0
+                            val key = fObj.absolutePath.lowercase()
 
                             val slashIdx = rel.indexOf('/')
                             if (slashIdx < 0) {
-                                if (seenAssetPaths.add(fObj.absolutePath.lowercase())) {
-                                    assetList.add(FastAsset(fObj, mt, modMs, fSize))
+                                if (seenAssetPaths.add(key)) {
+                                    val fa = FastAsset(fObj, mt, modMs, fSize, durSec)
+                                    assetList.add(fa)
+                                    assetByPath[key] = fa
+                                } else if (durSec > 0.0) {
+                                    assetByPath[key]?.durationSec = durSec
                                 }
                             } else {
                                 val firstSeg = rel.substring(0, slashIdx)
                                 val rest = rel.substring(slashIdx + 1)
                                 val lowSeg = firstSeg.lowercase()
                                 if ((lowSeg == "fotos" || lowSeg == "videos" || (isTelegramRoot && lowSeg.startsWith("telegram "))) && !rest.contains('/')) {
-                                    if (seenAssetPaths.add(fObj.absolutePath.lowercase())) {
-                                        assetList.add(FastAsset(fObj, mt, modMs, fSize))
+                                    if (seenAssetPaths.add(key)) {
+                                        val fa = FastAsset(fObj, mt, modMs, fSize, durSec)
+                                        assetList.add(fa)
+                                        assetByPath[key] = fa
+                                    } else if (durSec > 0.0) {
+                                        assetByPath[key]?.durationSec = durSec
                                     }
                                 }
                                 if (!lowSeg.startsWith(".") && lowSeg != "fotos" && lowSeg != "videos") {
@@ -2129,6 +2172,25 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
 
                 assetList.sortByDescending { it.lastMod }
 
+                // Completar duración para videos que no tenían duración en MediaStore (hasta 40 videos por carpeta)
+                var retrievedDurCount = 0
+                for (a in assetList) {
+                    if (a.mediaType == "video" && a.durationSec <= 0.0 && retrievedDurCount < 40) {
+                        retrievedDurCount += 1
+                        val retr = MediaMetadataRetriever()
+                        try {
+                            retr.setDataSource(a.file.absolutePath)
+                            val dMs = retr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+                            if (dMs > 0L) {
+                                a.durationSec = dMs.toDouble() / 1000.0
+                            }
+                        } catch (_: Exception) {
+                        } finally {
+                            try { retr.release() } catch (_: Exception) {}
+                        }
+                    }
+                }
+
                 val assetsArr = Arguments.createArray()
                 for (a in assetList) {
                     val uriStr = "file://" + a.file.absolutePath
@@ -2140,6 +2202,7 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                         putDouble("creationTime", a.lastMod.toDouble())
                         putDouble("modificationTime", a.lastMod.toDouble())
                         putDouble("fileSize", a.length.toDouble())
+                        putDouble("duration", a.durationSec)
                     }
                     assetsArr.pushMap(map)
                 }
@@ -3558,15 +3621,17 @@ import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 /**
  * Motor nativo unificado de vista previa y grabación de video en 2do plano (Camera2 + ImageReader + MediaRecorder).
  *
  * Características:
  * - Captura fotogramas en vivo directamente desde el HAL de Camera2 mediante ImageReader (YUV_420_888)
- *   sin depender de SurfaceView ni WindowManager, garantizando que la vista previa dentro del <Modal>
- *   de React Native se vea al 100% tanto antes de grabar como durante la grabación en 2do plano.
+ *   y los dibuja de forma directa en BgCameraPreviewView (ImageView nativo en GPU) además de emitirlos a JS,
+ *   garantizando que la vista previa dentro del <Modal> nunca se vea negra ni parpadee.
  * - Soporta cambio en caliente entre Trasera, Frontal y lentes adicionales.
  * - Publica automáticamente cada video y foto en /storage/emulated/0/Movies/2do plano vía MediaStore
  *   y MediaScannerConnection para que aparezca de inmediato en la galería.
@@ -3589,8 +3654,8 @@ class BackgroundVideoRecordService : Service() {
     private var cameraId: String = "0"
     private var videoWidth: Int = 1920
     private var videoHeight: Int = 1080
-    private var previewWidth: Int = 320
-    private var previewHeight: Int = 240
+    private var previewWidth: Int = 640
+    private var previewHeight: Int = 360
     private var videoFps: Int = 30
     private var videoBitrate: Int = 10_000_000
     private var maxDurationSec: Int = 600
@@ -3601,6 +3666,7 @@ class BackgroundVideoRecordService : Service() {
     private var outputFile: File? = null
     private var sessionStarted: Boolean = false
     private var lastFrameEmitTimeMs: Long = 0L
+    private var lastJsBridgeEmitTimeMs: Long = 0L
 
     @Volatile
     private var isEncodingFrame: Boolean = false
@@ -3655,6 +3721,7 @@ class BackgroundVideoRecordService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        activeServiceInstance = this
         val ht = HandlerThread("CameraThread").apply { start() }
         cameraThread = ht
         cameraHandler = Handler(ht.looper)
@@ -3681,7 +3748,31 @@ class BackgroundVideoRecordService : Service() {
         }
     }
 
+    private val delayedIdleStopRunnable = Runnable {
+        if (!isRunning && (!isServiceActive || !floatingPreviewState)) {
+            stopRecordingAndSelf()
+        }
+    }
+
+    private fun closePreviewCameraOnly() {
+        if (isRunning) return
+        floatingPreviewState = false
+        showFloatingPreview = false
+        sessionStarted = false
+        mainHandler.removeCallbacks(delayedIdleStopRunnable)
+        cameraHandler?.post {
+            try { captureSession?.stopRepeating() } catch (_: Exception) {}
+            try { captureSession?.close() } catch (_: Exception) {}
+            captureSession = null
+            try { cameraDevice?.close() } catch (_: Exception) {}
+            cameraDevice = null
+        }
+        emitStatusToJs()
+        mainHandler.postDelayed(delayedIdleStopRunnable, 1800L)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        mainHandler.removeCallbacks(delayedIdleStopRunnable)
         when (intent?.action) {
             ACTION_STOP -> {
                 stopRecordingAndSelf()
@@ -3689,8 +3780,7 @@ class BackgroundVideoRecordService : Service() {
             }
             ACTION_STOP_PREVIEW -> {
                 if (!isRunning) {
-                    stopRecordingAndSelf()
-                    return START_NOT_STICKY
+                    closePreviewCameraOnly()
                 }
                 return START_STICKY
             }
@@ -3732,7 +3822,7 @@ class BackgroundVideoRecordService : Service() {
                 showFloatingPreview = true
 
                 val nextCamId = resolveCameraIdFromSpec(camSpec, useFrontCamera)
-                if (isServiceActive && sessionStarted && isPreviewOnly) {
+                if (isServiceActive && sessionStarted && isPreviewOnly && cameraDevice != null && captureSession != null) {
                     floatingPreviewState = true
                     showFloatingPreview = true
                     if (nextCamId != cameraId) {
@@ -3756,12 +3846,18 @@ class BackgroundVideoRecordService : Service() {
                 isPreviewOnly = true
                 isRunning = false
                 isServiceActive = true
+                sessionStarted = false
 
                 startForegroundWithNotification()
                 chooseOptimalVideoSize(cameraId)
                 chooseOptimalPreviewSize(cameraId)
-                ensurePreviewImageReader()
                 cameraHandler?.post {
+                    try { captureSession?.stopRepeating() } catch (_: Exception) {}
+                    try { captureSession?.close() } catch (_: Exception) {}
+                    captureSession = null
+                    try { cameraDevice?.close() } catch (_: Exception) {}
+                    cameraDevice = null
+                    ensurePreviewImageReader(forceRecreate = true)
                     startCameraAndRecorderSession(previewImageReader?.surface)
                 }
                 emitStatusToJs()
@@ -3776,7 +3872,6 @@ class BackgroundVideoRecordService : Service() {
                 showFloatingPreview = intent.getBooleanExtra(EXTRA_SHOW_PREVIEW, true)
                 maxDurationSec = intent.getIntExtra(EXTRA_MAX_DURATION_SEC, 600)
 
-                val wasPreviewOnly = isServiceActive && isPreviewOnly
                 cameraId = resolveCameraIdFromSpec(camSpec, useFrontCamera)
                 useFrontCamera = isCameraIdFront(cameraId)
                 useFrontState = useFrontCamera
@@ -3788,37 +3883,24 @@ class BackgroundVideoRecordService : Service() {
                 isPreviewOnly = false
                 isRunning = true
                 isServiceActive = true
+                sessionStarted = false
 
                 acquireWakeLock()
                 startForegroundWithNotification()
 
                 chooseOptimalVideoSize(cameraId)
                 chooseOptimalPreviewSize(cameraId)
-                ensurePreviewImageReader()
                 outputFile = createTargetOutputFile("VID_2DO_", ".mp4")
                 currentOutputPath = outputFile?.absolutePath
 
-                if (wasPreviewOnly) {
-                    sessionStarted = false
-                    cameraHandler?.post {
-                        try { captureSession?.stopRepeating() } catch (_: Exception) {}
-                        try { captureSession?.close() } catch (_: Exception) {}
-                        captureSession = null
-                        val dev = cameraDevice
-                        if (dev != null) {
-                            sessionStarted = true
-                            val persistentSurface = persistentRecorderSurface ?: createInitializedPersistentSurface().also {
-                                persistentRecorderSurface = it
-                            }
-                            createCaptureSessionAndStart(dev, previewImageReader?.surface, persistentSurface)
-                        } else {
-                            startCameraAndRecorderSession(previewImageReader?.surface)
-                        }
-                    }
-                } else {
-                    cameraHandler?.post {
-                        startCameraAndRecorderSession(previewImageReader?.surface)
-                    }
+                cameraHandler?.post {
+                    try { captureSession?.stopRepeating() } catch (_: Exception) {}
+                    try { captureSession?.close() } catch (_: Exception) {}
+                    captureSession = null
+                    try { cameraDevice?.close() } catch (_: Exception) {}
+                    cameraDevice = null
+                    ensurePreviewImageReader(forceRecreate = true)
+                    startCameraAndRecorderSession(previewImageReader?.surface)
                 }
                 emitStatusToJs()
             }
@@ -3826,17 +3908,17 @@ class BackgroundVideoRecordService : Service() {
         return START_STICKY
     }
 
-    private fun ensurePreviewImageReader() {
+    private fun ensurePreviewImageReader(forceRecreate: Boolean = false) {
         val current = previewImageReader
-        if (current != null && current.width == previewWidth && current.height == previewHeight) {
+        if (!forceRecreate && current != null && current.width == previewWidth && current.height == previewHeight && current.surface.isValid) {
             return
         }
         try { current?.close() } catch (_: Exception) {}
-        val reader = ImageReader.newInstance(previewWidth, previewHeight, ImageFormat.YUV_420_888, 2)
+        val reader = ImageReader.newInstance(previewWidth, previewHeight, ImageFormat.YUV_420_888, 3)
         reader.setOnImageAvailableListener({ r ->
             val image = try { r.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
             val now = System.currentTimeMillis()
-            if (!floatingPreviewState || !isServiceActive || isEncodingFrame || (now - lastFrameEmitTimeMs < 85L)) {
+            if (!floatingPreviewState || !isServiceActive || isEncodingFrame || (now - lastFrameEmitTimeMs < 75L)) {
                 try { image.close() } catch (_: Exception) {}
                 return@setOnImageAvailableListener
             }
@@ -3860,13 +3942,13 @@ class BackgroundVideoRecordService : Service() {
             frameExecutor.execute {
                 try {
                     val yuvImg = YuvImage(nv21, ImageFormat.NV21, imgW, imgH, null)
-                    val rawBaos = ByteArrayOutputStream(24576)
-                    yuvImg.compressToJpeg(Rect(0, 0, imgW, imgH), 82, rawBaos)
+                    val rawBaos = ByteArrayOutputStream(32768)
+                    yuvImg.compressToJpeg(Rect(0, 0, imgW, imgH), 84, rawBaos)
                     val rawJpeg = rawBaos.toByteArray()
 
-                    val finalJpeg = if (rotDeg != 0 || mirrorFront) {
-                        val decoded = BitmapFactory.decodeByteArray(rawJpeg, 0, rawJpeg.size)
-                        if (decoded != null) {
+                    val decoded = BitmapFactory.decodeByteArray(rawJpeg, 0, rawJpeg.size)
+                    if (decoded != null) {
+                        val finalBmp = if (rotDeg != 0 || mirrorFront) {
                             val matrix = Matrix().apply {
                                 if (rotDeg != 0) {
                                     postRotate(rotDeg.toFloat())
@@ -3887,24 +3969,34 @@ class BackgroundVideoRecordService : Service() {
                             if (rotated != decoded) {
                                 decoded.recycle()
                             }
-                            val rotBaos = ByteArrayOutputStream(24576)
-                            rotated.compress(Bitmap.CompressFormat.JPEG, 76, rotBaos)
-                            rotated.recycle()
+                            rotated
+                        } else {
+                            decoded
+                        }
+
+                        // Actualizar vista nativa BgCameraPreviewView en GPU sin reciclado prematuro ni parpadeo
+                        dispatchPreviewBitmap(finalBmp)
+
+                        val outJpeg = if (rotDeg != 0 || mirrorFront) {
+                            val rotBaos = ByteArrayOutputStream(32768)
+                            finalBmp.compress(Bitmap.CompressFormat.JPEG, 78, rotBaos)
                             rotBaos.toByteArray()
                         } else {
                             rawJpeg
                         }
-                    } else {
-                        rawJpeg
-                    }
 
-                    if (finalJpeg.isNotEmpty()) {
-                        lastCapturedJpegBytes = finalJpeg
-                        val b64 = Base64.encodeToString(finalJpeg, Base64.NO_WRAP)
-                        val map = Arguments.createMap().apply {
-                            putString("frame", "data:image/jpeg;base64," + b64)
+                        if (outJpeg.isNotEmpty()) {
+                            lastCapturedJpegBytes = outJpeg
+                            val emitNow = System.currentTimeMillis()
+                            if (emitNow - lastJsBridgeEmitTimeMs >= 160L) {
+                                lastJsBridgeEmitTimeMs = emitNow
+                                val b64 = Base64.encodeToString(outJpeg, Base64.NO_WRAP)
+                                val map = Arguments.createMap().apply {
+                                    putString("frame", "data:image/jpeg;base64," + b64)
+                                }
+                                VideoEngineModule.emitBgRecordEvent("BackgroundRecordingPreviewFrame", map)
+                            }
                         }
-                        VideoEngineModule.emitBgRecordEvent("BackgroundRecordingPreviewFrame", map)
                     }
                 } catch (_: Exception) {
                 } finally {
@@ -3929,35 +4021,45 @@ class BackgroundVideoRecordService : Service() {
         val yBuffer = yPlane.buffer
         val uBuffer = uPlane.buffer
         val vBuffer = vPlane.buffer
+        yBuffer.rewind()
+        uBuffer.rewind()
+        vBuffer.rewind()
 
         val yRowStride = yPlane.rowStride
         val yPixelStride = yPlane.pixelStride
+        val yLimit = yBuffer.limit()
 
         var pos = 0
-        if (yRowStride == width && yPixelStride == 1) {
-            yBuffer.position(0)
+        if (yRowStride == width && yPixelStride == 1 && yLimit >= ySize) {
             yBuffer.get(nv21, 0, ySize)
             pos = ySize
         } else {
             for (row in 0 until height) {
                 val rowStart = row * yRowStride
                 for (col in 0 until width) {
-                    nv21[pos++] = yBuffer.get(rowStart + col * yPixelStride)
+                    val yIdx = rowStart + col * yPixelStride
+                    nv21[pos++] = if (yIdx < yLimit) yBuffer.get(yIdx) else 0
                 }
             }
         }
 
-        val uvRowStride = uPlane.rowStride
-        val uvPixelStride = uPlane.pixelStride
+        val uRowStride = uPlane.rowStride
+        val vRowStride = vPlane.rowStride
+        val uPixelStride = uPlane.pixelStride
+        val vPixelStride = vPlane.pixelStride
+        val uLimit = uBuffer.limit()
+        val vLimit = vBuffer.limit()
         val uvHeight = height / 2
         val uvWidth = width / 2
 
         for (row in 0 until uvHeight) {
-            val rowStart = row * uvRowStride
+            val uRowStart = row * uRowStride
+            val vRowStart = row * vRowStride
             for (col in 0 until uvWidth) {
-                val uvIndex = rowStart + col * uvPixelStride
-                nv21[pos++] = vBuffer.get(uvIndex)
-                nv21[pos++] = uBuffer.get(uvIndex)
+                val uIdx = uRowStart + col * uPixelStride
+                val vIdx = vRowStart + col * vPixelStride
+                nv21[pos++] = if (vIdx < vLimit) vBuffer.get(vIdx) else 128.toByte()
+                nv21[pos++] = if (uIdx < uLimit) uBuffer.get(uIdx) else 128.toByte()
             }
         }
         return nv21
@@ -4099,6 +4201,13 @@ class BackgroundVideoRecordService : Service() {
     private fun updateOverlayPreviewSize(visible: Boolean) {
         showFloatingPreview = visible
         floatingPreviewState = visible
+        if (visible && isServiceActive && isPreviewOnly && cameraDevice == null) {
+            sessionStarted = false
+            cameraHandler?.post {
+                ensurePreviewImageReader(forceRecreate = true)
+                startCameraAndRecorderSession(previewImageReader?.surface)
+            }
+        }
         mainHandler.post {
             emitStatusToJs()
         }
@@ -4431,12 +4540,33 @@ class BackgroundVideoRecordService : Service() {
         return recorder
     }
 
+    private fun chooseOptimalAeFpsRange(camId: String, isRecordingVideo: Boolean): Range<Int>? {
+        return try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val chars = cm.getCameraCharacteristics(camId)
+            val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return null
+            if (ranges.isEmpty()) return null
+            val rangesWith30 = ranges.filter { it.upper == 30 }
+            if (rangesWith30.isNotEmpty()) {
+                return rangesWith30.minByOrNull { it.lower }
+            }
+            val rangesAround30 = ranges.filter { it.upper in 24..30 }
+            if (rangesAround30.isNotEmpty()) {
+                return rangesAround30.maxByOrNull { it.upper - it.lower }
+            }
+            ranges.maxByOrNull { it.upper }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun buildRecordCaptureRequest(
         device: CameraDevice,
         previewSurface: Surface?,
         recordSurface: Surface?
     ): CaptureRequest {
-        val template = if (recordSurface != null && recordSurface.isValid) {
+        val isRec = recordSurface != null && recordSurface.isValid
+        val template = if (isRec) {
             CameraDevice.TEMPLATE_RECORD
         } else {
             CameraDevice.TEMPLATE_PREVIEW
@@ -4445,11 +4575,17 @@ class BackgroundVideoRecordService : Service() {
             if (previewSurface != null && previewSurface.isValid) {
                 addTarget(previewSurface)
             }
-            if (recordSurface != null && recordSurface.isValid) {
+            if (isRec && recordSurface != null) {
                 addTarget(recordSurface)
             }
+            set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+            set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
-            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(videoFps, videoFps))
+            val bestFpsRange = chooseOptimalAeFpsRange(cameraId, isRec)
+            if (bestFpsRange != null) {
+                set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, bestFpsRange)
+            }
             if (enableTorch && !useFrontCamera) {
                 set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH)
             } else {
@@ -4483,6 +4619,13 @@ class BackgroundVideoRecordService : Service() {
     }
 
     private fun stopRecordingAndSelf() {
+        mainHandler.removeCallbacks(delayedIdleStopRunnable)
+        mainHandler.removeCallbacks(timerRunnable)
+        if (!isRunning) {
+            isServiceActive = false
+            isPreviewOnly = false
+            sessionStarted = false
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -4593,11 +4736,15 @@ class BackgroundVideoRecordService : Service() {
         val finalDuration = elapsedSecondsState
         val savedFile = outputFile
 
+        if (activeServiceInstance === this) {
+            activeServiceInstance = null
+        }
         isRunning = false
         isServiceActive = false
         isPreviewOnly = false
         isPausedState = false
         sessionStarted = false
+        mainHandler.removeCallbacks(delayedIdleStopRunnable)
         mainHandler.removeCallbacks(timerRunnable)
 
         try { unregisterReceiver(controlReceiver) } catch (_: Exception) {}
@@ -4716,10 +4863,21 @@ class BackgroundVideoRecordService : Service() {
             val chars = cm.getCameraCharacteristics(camId)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
             val sizes: Array<Size> = map.getOutputSizes(ImageFormat.YUV_420_888) ?: return
-            val exact320 = sizes.firstOrNull { it.width == 320 && it.height == 240 }
-            if (exact320 != null) {
-                previewWidth = 320
-                previewHeight = 240
+            val targetRatio = if (videoHeight > 0) videoWidth.toDouble() / videoHeight.toDouble() else (16.0 / 9.0)
+
+            // Preferir relación 16:9 igual que el video (640x360, 800x450, 960x540, 1280x720) para compatibilidad total en Samsung Camera2
+            val exact640x360 = sizes.firstOrNull { it.width == 640 && it.height == 360 }
+            if (exact640x360 != null) {
+                previewWidth = 640
+                previewHeight = 360
+                return
+            }
+            val matchingRatio = sizes
+                .filter { it.width in 320..1280 && it.height in 180..720 && abs((it.width.toDouble() / it.height.toDouble()) - targetRatio) < 0.08 }
+                .minByOrNull { abs(it.width - 640) }
+            if (matchingRatio != null) {
+                previewWidth = matchingRatio.width
+                previewHeight = matchingRatio.height
                 return
             }
             val exact640 = sizes.firstOrNull { it.width == 640 && it.height == 480 }
@@ -4728,9 +4886,15 @@ class BackgroundVideoRecordService : Service() {
                 previewHeight = 480
                 return
             }
+            val exact320 = sizes.firstOrNull { it.width == 320 && it.height == 240 }
+            if (exact320 != null) {
+                previewWidth = 320
+                previewHeight = 240
+                return
+            }
             val candidate = sizes
-                .filter { it.width in 240..640 && it.height in 180..480 }
-                .minByOrNull { it.width * it.height }
+                .filter { it.width in 240..960 && it.height in 180..720 }
+                .minByOrNull { abs(it.width - 640) }
                 ?: sizes.minByOrNull { it.width * it.height }
             if (candidate != null) {
                 previewWidth = candidate.width
@@ -4852,6 +5016,45 @@ class BackgroundVideoRecordService : Service() {
         const val EXTRA_ENABLE_TORCH = "EXTRA_ENABLE_TORCH"
         const val EXTRA_SHOW_PREVIEW = "EXTRA_SHOW_PREVIEW"
         const val EXTRA_MAX_DURATION_SEC = "EXTRA_MAX_DURATION_SEC"
+
+        @Volatile
+        var activeServiceInstance: BackgroundVideoRecordService? = null
+
+        private val previewViews = CopyOnWriteArraySet<android.widget.ImageView>()
+        private val uiHandler = Handler(Looper.getMainLooper())
+
+        @Volatile
+        var latestPreviewBitmap: Bitmap? = null
+
+        fun registerPreviewView(view: android.widget.ImageView) {
+            previewViews.add(view)
+            val bmp = latestPreviewBitmap
+            if (bmp != null && !bmp.isRecycled) {
+                uiHandler.post {
+                    try {
+                        view.setImageBitmap(bmp)
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+
+        fun unregisterPreviewView(view: android.widget.ImageView) {
+            previewViews.remove(view)
+        }
+
+        fun dispatchPreviewBitmap(bmp: Bitmap) {
+            latestPreviewBitmap = bmp
+            if (previewViews.isEmpty()) return
+            uiHandler.post {
+                for (iv in previewViews) {
+                    try {
+                        if (!bmp.isRecycled) {
+                            iv.setImageBitmap(bmp)
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
 
         @Volatile
         var isRunning: Boolean = false

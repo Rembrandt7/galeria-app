@@ -17,6 +17,8 @@ import {
   Linking,
   ScrollView,
   Image,
+  requireNativeComponent,
+  UIManager,
 } from 'react-native';
 import { CameraView, useCameraPermissions, useMicrophonePermissions } from 'expo-camera';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -28,6 +30,13 @@ const { VideoEngineModule } = NativeModules;
 const HAS_NATIVE_BG_RECORDER =
   Platform.OS === 'android' &&
   Boolean(VideoEngineModule?.startBackgroundVideoRecordNative);
+
+const NativeBgCameraPreviewView =
+  Platform.OS === 'android' &&
+  UIManager.getViewManagerConfig &&
+  UIManager.getViewManagerConfig('BgCameraPreviewView')
+    ? requireNativeComponent('BgCameraPreviewView')
+    : null;
 
 const MAX_DURATION_SECONDS = 600; // 10 minutos exactos
 const TARGET_DIR_URI = SEGUNDO_PLANO_FOLDER_URI || 'file:///storage/emulated/0/Movies/2do plano';
@@ -195,29 +204,36 @@ export default function CameraScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Al abrir el panel de cámara, descolapsar el icono, pedir permisos y encender vista previa nativa
+  // Al abrir el panel de cámara, descolapsar el icono
   useEffect(() => {
     if (visible) {
       setIsIconCollapsed(false);
-      setPreviewEnabled(true);
+    }
+  }, [visible]);
+
+  // Encender vista previa nativa cuando el panel modal está visible y la vista previa está activa
+  useEffect(() => {
+    const panelOpen = Boolean(visible && !isIconCollapsed);
+    if (panelOpen) {
       loadAvailableCameras();
       syncNativeRecorderState();
       FileSystem.makeDirectoryAsync(TARGET_DIR_URI, { intermediates: true }).catch(() => {});
       ensureCameraAndMicPermissions(false).then((camOk) => {
-        if (camOk && HAS_NATIVE_BG_RECORDER && VideoEngineModule?.startCameraPreviewNative) {
+        if (!camOk || !HAS_NATIVE_BG_RECORDER) return;
+        if (previewEnabled) {
           VideoEngineModule.getBackgroundVideoRecordStatusNative?.()
             .then((st) => {
               if (st && st.isRecording) {
                 VideoEngineModule.setBackgroundFloatingPreviewNative?.(true).catch(() => {});
               } else {
-                VideoEngineModule.startCameraPreviewNative(
+                VideoEngineModule.startCameraPreviewNative?.(
                   cameraSpec || facing,
                   torchOn
                 ).catch(() => {});
               }
             })
             .catch(() => {
-              VideoEngineModule.startCameraPreviewNative(
+              VideoEngineModule.startCameraPreviewNative?.(
                 cameraSpec || facing,
                 torchOn
               ).catch(() => {});
@@ -230,9 +246,8 @@ export default function CameraScreen({
         VideoEngineModule.stopCameraPreviewNative().catch(() => {});
       }
     }
-    // Importante: solo depender de [visible] para nunca ciclar los diálogos de permisos en Android
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  }, [visible, isIconCollapsed]);
 
   // Sincronizar al volver del segundo plano
   useEffect(() => {
@@ -840,25 +855,36 @@ export default function CameraScreen({
                     </TouchableOpacity>
                   ) : (
                     <>
-                      {/* RECUADRO DE VISTA EN VIVO DE CÁMARA (VISIBLE 100% DENTRO DEL MODAL) */}
+                      {/* RECUADRO DE VISTA EN VIVO DE CÁMARA (SOLO SALE SI ESTÁ PRENDIDO, NUNCA CUANDO ESTÁ APAGADO) */}
                       {previewEnabled ? (
                         <View style={styles.livePreviewBox}>
                           {HAS_NATIVE_BG_RECORDER ? (
-                            previewFrameUri ? (
-                              <Image
-                                source={{ uri: previewFrameUri }}
-                                style={StyleSheet.absoluteFillObject}
-                                resizeMode="cover"
-                                fadeDuration={0}
-                              />
-                            ) : (
-                              <View style={styles.previewLoadingCenter}>
-                                <ActivityIndicator size="small" color="#34d399" />
-                                <Text style={styles.previewLoadingText}>
-                                  Abriendo lente {facing === 'front' ? 'Frontal' : 'Trasera'}...
-                                </Text>
-                              </View>
-                            )
+                            <>
+                              {NativeBgCameraPreviewView ? (
+                                <NativeBgCameraPreviewView style={StyleSheet.absoluteFillObject} />
+                              ) : previewFrameUri ? (
+                                <Image
+                                  source={{ uri: previewFrameUri }}
+                                  style={StyleSheet.absoluteFillObject}
+                                  resizeMode="cover"
+                                  fadeDuration={0}
+                                />
+                              ) : null}
+                              {!previewFrameUri && (
+                                <View
+                                  style={[
+                                    StyleSheet.absoluteFillObject,
+                                    styles.previewLoadingCenter,
+                                  ]}
+                                  pointerEvents="none"
+                                >
+                                  <ActivityIndicator size="small" color="#34d399" />
+                                  <Text style={styles.previewLoadingText}>
+                                    Abriendo lente {facing === 'front' ? 'Frontal' : 'Trasera'}...
+                                  </Text>
+                                </View>
+                              )}
+                            </>
                           ) : (
                             <CameraView
                               ref={cameraRef}
@@ -885,21 +911,7 @@ export default function CameraScreen({
                             </Text>
                           </View>
                         </View>
-                      ) : (
-                        <TouchableOpacity
-                          style={styles.previewOffBox}
-                          onPress={handleTogglePreview}
-                          activeOpacity={0.82}
-                        >
-                          <Ionicons name="eye-off-outline" size={24} color="#38bdf8" />
-                          <Text style={styles.previewOffTitle}>
-                            Vista Apagada (Modo Discreto)
-                          </Text>
-                          <Text style={styles.previewOffSub}>
-                            Toca aquí para Prender la Vista de cámara
-                          </Text>
-                        </TouchableOpacity>
-                      )}
+                      ) : null}
 
                       {/* BOTÓN PRENDER / APAGAR LA VISTA */}
                       <TouchableOpacity

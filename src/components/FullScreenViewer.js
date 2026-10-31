@@ -327,7 +327,11 @@ export default function FullScreenViewer({
     };
   }, [visible, currentAsset?.id, currentAsset?.uri]);
 
-  const sizeInfo = compressionService.getSizeLevel(assetSize, currentAsset?.mediaType || 'photo');
+  const sizeInfo = compressionService.getSizeLevel(
+    assetSize,
+    currentAsset?.mediaType || 'photo',
+    currentAsset?.duration || 0
+  );
   const isGreenSize = sizeInfo.level === 'light';
 
   // Si no está visible o no hay archivos, no mostrar nada (TODOS los hooks ya se ejecutaron)

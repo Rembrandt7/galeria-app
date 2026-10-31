@@ -1114,7 +1114,7 @@ export default function VideoPlayerScreen({
     : currentFileSize;
   const estimatedCompressedBytes = Math.round(baseSizeForEstimate * activePreset.estRatio);
   const estimatedSavedBytes = Math.max(0, currentFileSize - estimatedCompressedBytes);
-  const sizeLevel = compressionService.getSizeLevel(currentFileSize);
+  const sizeLevel = compressionService.getSizeLevel(currentFileSize, 'video', duration || asset?.duration || 0);
 
   return (
     <View style={styles.fullscreenOverlay}>

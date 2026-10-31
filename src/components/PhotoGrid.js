@@ -29,6 +29,7 @@ export default function PhotoGrid({
   favorites = {},
   onSelectPhoto,
   onOpenModoGuardar,
+  onFindDuplicates,
   trashCount = 0,
   defaultColumns = 0,
   onSetFolderCover,
@@ -533,7 +534,26 @@ export default function PhotoGrid({
                 </TouchableOpacity>
               )}
             </View>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              {onFindDuplicates && (
+                <TouchableOpacity
+                  style={[
+                    styles.compressBatchBtn,
+                    {
+                      backgroundColor: 'rgba(245, 158, 11, 0.18)',
+                      borderColor: '#f59e0b',
+                    },
+                  ]}
+                  onPress={onFindDuplicates}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="copy-outline" size={14} color="#fbbf24" />
+                  <Text style={[styles.compressBatchBtnText, { color: '#fde68a' }]}>
+                    Duplicados
+                  </Text>
+                </TouchableOpacity>
+              )}
+
               {onOpenModoGuardar && (
                 <TouchableOpacity
                   style={[

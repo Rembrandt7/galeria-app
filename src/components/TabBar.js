@@ -55,6 +55,14 @@ export default function TabBar({
       hasDot: trashCount > 0,
     },
     {
+      key: 'duplicates',
+      label: 'Duplicados',
+      icon: 'copy-outline',
+      iconActive: 'copy',
+      onPress: onFindDuplicates,
+      accentColor: '#fbbf24',
+    },
+    {
       key: 'browser',
       label: 'Navegador',
       icon: 'globe-outline',
@@ -94,13 +102,6 @@ export default function TabBar({
       icon: 'camera-outline',
       iconActive: 'camera',
       onPress: onOpenCamera,
-    },
-    {
-      key: 'duplicates',
-      label: 'Limpiar',
-      icon: 'sparkles-outline',
-      iconActive: 'sparkles',
-      onPress: onFindDuplicates,
     },
   ];
 

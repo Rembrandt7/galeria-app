@@ -1210,6 +1210,7 @@ export default function App() {
               : null
           }
           onPickFolder={handlePickFolder}
+          onFindDuplicates={() => setDupVisible(true)}
           onToggleSearch={
             activeTab === 'albums' && !selectedAlbum
               ? () => setAlbumSearchVisible((prev) => !prev)
@@ -1241,10 +1242,7 @@ export default function App() {
               activeSegment={activeSegment}
               activeTab={activeTab}
               onSelectSegment={handleSelectSegment}
-              onOpenCamera={() => {
-                setCameraVisible(false);
-                setTimeout(() => setCameraVisible(true), 10);
-              }}
+              onOpenCamera={() => setCameraVisible(true)}
               onOpenExplorer={() => handleSelectTab('folder')}
               photosCount={activeTab === 'albums' || activeTab === 'folder' ? photosAlbumsCount : photosAssetsCount}
               filesCount={activeTab === 'albums' || activeTab === 'folder' ? filesAlbumsCount : filesAssetsCount}
@@ -1396,6 +1394,7 @@ export default function App() {
               onToggleShowAllFolders={handleToggleShowAllFolders}
               onExitFolder={handleBackFromAlbum}
               onOpenModoGuardar={handleOpenModoGuardar}
+              onFindDuplicates={() => setDupVisible(true)}
               trashCount={Object.keys(trashBin).length}
               trashBin={trashBin}
               onAssignFolderToSegment={handleSetFolderSegment}
@@ -1449,6 +1448,7 @@ export default function App() {
               hasMore={activeTab !== 'favorites' && hasNextPage}
               isLoadingMore={isLoadingMore}
               onOpenModoGuardar={handleOpenModoGuardar}
+              onFindDuplicates={() => setDupVisible(true)}
               trashCount={Object.keys(trashBin).length}
               emptyMessage={
                 activeTab === 'favorites'
@@ -1470,10 +1470,7 @@ export default function App() {
             onOpenBrowser={() => setBrowserVisible(true)}
             onOpenStore={() => setStoreVisible(true)}
             onOpenSettings={() => setSettingsVisible(true)}
-            onOpenCamera={() => {
-              setCameraVisible(false);
-              setTimeout(() => setCameraVisible(true), 10);
-            }}
+            onOpenCamera={() => setCameraVisible(true)}
             onFindDuplicates={() => setDupVisible(true)}
             onOpenModoGuardar={() => handleOpenModoGuardar(displayedAssets, 0, 'swipe')}
             trashCount={Object.keys(trashBin).length}
@@ -1485,10 +1482,7 @@ export default function App() {
           <CameraScreen
             visible={cameraVisible}
             onClose={() => setCameraVisible(false)}
-            onOpen={() => {
-              setCameraVisible(false);
-              setTimeout(() => setCameraVisible(true), 10);
-            }}
+            onOpen={() => setCameraVisible(true)}
             onVideoSaved={() => handleRefresh()}
             onOpenSegundoPlano={async () => {
               await handleRefresh();
@@ -1548,7 +1542,13 @@ export default function App() {
         {/* Buscador de fotos duplicadas */}
         <DuplicatesScreen
           visible={dupVisible}
-          sourceAssets={activeTab === 'folder' ? folderAssets : null}
+          sourceAssets={
+            activeTab === 'folder'
+              ? folderAssets
+              : selectedAlbum
+              ? displayedAssets
+              : null
+          }
           onClose={() => setDupVisible(false)}
           onChanged={() => handleRefresh()}
         />

@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '../constants/theme';
+import { compressionService } from '../services/compressionService';
 
 function formatDuration(seconds) {
   if (!seconds || seconds <= 0) return '';
@@ -22,6 +23,9 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
   isSelected = false,
 }) {
   const isVideo = asset.mediaType === 'video';
+  const videoSizeInfo = isVideo
+    ? compressionService.getSizeLevel(asset.fileSize || 0, 'video', asset.duration || 0)
+    : null;
 
   return (
     <TouchableOpacity
@@ -58,10 +62,26 @@ const PhotoThumbnail = React.memo(function PhotoThumbnail({
         </View>
       )}
 
-      {/* Video Badge */}
+      {/* Video Badge con Semáforo por Duración (Verde = no comprimible, Amarillo = poco, Rojo = mucho) */}
       {isVideo && (
-        <View style={styles.videoBadge}>
-          <Ionicons name="play" size={12} color="#ffffff" />
+        <View
+          style={[
+            styles.videoBadge,
+            videoSizeInfo && {
+              borderWidth: 1,
+              borderColor: videoSizeInfo.color,
+            },
+          ]}
+        >
+          {videoSizeInfo && (
+            <View
+              style={[
+                styles.videoLevelDot,
+                { backgroundColor: videoSizeInfo.color },
+              ]}
+            />
+          )}
+          <Ionicons name="play" size={11} color="#ffffff" />
           {asset.duration > 0 ? (
             <Text style={styles.videoDuration}>{formatDuration(asset.duration)}</Text>
           ) : null}
@@ -121,11 +141,16 @@ const styles = StyleSheet.create({
     left: 4,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 4,
-    gap: 3,
+    borderRadius: 5,
+    gap: 3.5,
+  },
+  videoLevelDot: {
+    width: 6.5,
+    height: 6.5,
+    borderRadius: 3.5,
   },
   videoDuration: {
     color: '#ffffff',
