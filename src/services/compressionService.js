@@ -643,6 +643,45 @@ export const compressionService = {
       }
     }
 
+    // 0. Motor nativo de compresión directa en 2do plano (Kotlin + ExifInterface + WakeLock-friendly)
+    // Funciona sin bloquear la interfaz ni detenerse cuando el usuario minimiza la app.
+    const { VideoEngineModule } = NativeModules;
+    if (!quality && VideoEngineModule?.compressPhotoInPlaceNative) {
+      const candidates = [
+        ...getCandidateFileUris(uri),
+        ...getCandidateFileUris(asset.uri),
+      ];
+      const physCandidate = candidates.find((c) => c && c.startsWith('file://'));
+      if (physCandidate) {
+        try {
+          const nativeRes = await VideoEngineModule.compressPhotoInPlaceNative(
+            physCandidate,
+            Boolean(skipIfGreen)
+          );
+          if (nativeRes && nativeRes.success) {
+            const finalNewSize = Number(nativeRes.newSize) || 0;
+            if (finalNewSize > 0) {
+              asset.fileSize = finalNewSize;
+            }
+            return {
+              success: true,
+              overwritten: Boolean(nativeRes.overwritten),
+              skippedGreen: Boolean(nativeRes.skippedGreen),
+              alreadyOptimized: Boolean(nativeRes.alreadyOptimized),
+              uri: asset.uri,
+              oldSize: Number(nativeRes.oldSize) || 0,
+              newSize: finalNewSize,
+              savedBytes: Math.max(0, Number(nativeRes.savedBytes) || 0),
+              width: nativeRes.width || 0,
+              height: nativeRes.height || 0,
+            };
+          }
+        } catch (_nativeErr) {
+          // Si falla la vía nativa (ej. ruta restringida o formato especial), continuar con fallback
+        }
+      }
+    }
+
     let oldSize = await compressionService.getFileSize(asset, { forceFresh: true });
 
     // Solo omitir por estar en Verde si se solicitó explícitamente (lotes mixtos) o si ya pesa menos de 150 KB
@@ -852,7 +891,7 @@ export const compressionService = {
    * Omite automáticamente las fotos que ya están en Verde (<= 2 MB) y solo comprime Naranja o Rojo.
    * Soporta pausa y cancelación mediante `control`.
    */
-  async compressFolderPhotos(assets = [], onProgress, control) {
+  async compressFolderPhotos(assets = [], onProgress, control, { manageKeepAlive = true } = {}) {
     const photoAssets = assets.filter((a) => a && a.mediaType === 'photo');
     const total = photoAssets.length;
     if (total === 0) {
@@ -880,75 +919,105 @@ export const compressionService = {
     let permissionRequired = false;
     let totalSavedBytes = 0;
 
-    for (const photo of photoAssets) {
-      if (control?.waitIfPaused) {
-        await control.waitIfPaused();
-      }
-      if (control?.isCancelled) {
-        return {
-          processed,
-          compressedCount,
-          skippedGreenCount,
-          totalSavedBytes,
-          errorsCount,
-          permissionRequired,
-          cancelled: true,
-        };
-      }
+    const { VideoEngineModule } = NativeModules;
+    if (manageKeepAlive && VideoEngineModule?.setCompressionKeepAliveNative) {
+      VideoEngineModule.setCompressionKeepAliveNative(
+        true,
+        `Comprimiendo fotos (0/${total})`,
+        'Optimizando al 100% de resolución en 2do plano...',
+        2
+      ).catch(() => {});
+    }
 
-      if (onProgress) {
-        onProgress({
-          current: processed + 1,
-          total,
-          currentFile: photo.filename || 'Fotografía',
-          compressedCount,
-          skippedGreenCount,
-          errorsCount,
-          percent: Math.max(0.02, processed / total),
-          savedBytes: totalSavedBytes,
-          savedFormatted: compressionService.formatBytes(totalSavedBytes),
-        });
-      }
+    const isCancelled = () => Boolean(control?.isCancelled || control?.cancelled);
 
-      try {
-        const currentSize = await compressionService.getFileSize(photo, { forceFresh: true });
-        const isLight =
-          currentSize > 0 && compressionService.getSizeLevel(currentSize).level === 'light';
+    try {
+      for (const photo of photoAssets) {
+        if (control?.waitIfPaused) {
+          await control.waitIfPaused();
+        }
+        if (isCancelled()) {
+          return {
+            processed,
+            compressedCount,
+            skippedGreenCount,
+            totalSavedBytes,
+            errorsCount,
+            permissionRequired,
+            cancelled: true,
+          };
+        }
 
-        // Solo saltar las Verdes si el lote tiene fotos > 2 MB y hay más de 1 foto en el lote
-        if (isLight && hasHeavyOrMediumInBatch && total > 1) {
-          skippedGreenCount++;
-        } else {
-          const res = await compressionService.compressPhoto(photo, {
-            skipIfGreen: false,
+        const startPct = Math.max(0.02, processed / total);
+        const startSavedFmt = compressionService.formatBytes(totalSavedBytes);
+        if (manageKeepAlive && VideoEngineModule?.setCompressionKeepAliveNative) {
+          VideoEngineModule.setCompressionKeepAliveNative(
+            true,
+            `Comprimiendo ${processed + 1} de ${total} (${Math.round(startPct * 100)}%)`,
+            `${photo.filename || 'Fotografía'} · Ahorrado: -${startSavedFmt}`,
+            Math.round(startPct * 100)
+          ).catch(() => {});
+        }
+
+        if (onProgress) {
+          onProgress({
+            current: processed + 1,
+            total,
+            currentFile: photo.filename || 'Fotografía',
+            compressedCount,
+            skippedGreenCount,
+            errorsCount,
+            percent: startPct,
+            savedBytes: totalSavedBytes,
+            savedFormatted: startSavedFmt,
           });
-          if (res?.skippedGreen) {
+        }
+
+        try {
+          const skipLightInMixedBatch = Boolean(hasHeavyOrMediumInBatch && total > 1);
+          const currentSize = await compressionService.getFileSize(photo, { forceFresh: true });
+          const isLight =
+            currentSize > 0 && compressionService.getSizeLevel(currentSize).level === 'light';
+
+          // Solo saltar las Verdes si el lote tiene fotos > 2 MB y hay más de 1 foto en el lote
+          if (isLight && skipLightInMixedBatch) {
             skippedGreenCount++;
-          } else if (res && res.success) {
-            compressedCount++;
-            totalSavedBytes += res.savedBytes || 0;
+          } else {
+            const res = await compressionService.compressPhoto(photo, {
+              skipIfGreen: skipLightInMixedBatch,
+            });
+            if (res?.skippedGreen) {
+              skippedGreenCount++;
+            } else if (res && res.success) {
+              compressedCount++;
+              totalSavedBytes += res.savedBytes || 0;
+            }
           }
+        } catch (e) {
+          errorsCount++;
+          if (e?.code === 'PERMISSION_REQUIRED') {
+            permissionRequired = true;
+          }
+          console.warn('Error al comprimir foto:', photo.filename, e);
         }
-      } catch (e) {
-        errorsCount++;
-        if (e?.code === 'PERMISSION_REQUIRED') {
-          permissionRequired = true;
+        processed++;
+        if (onProgress) {
+          onProgress({
+            current: processed,
+            total,
+            currentFile: photo.filename || 'Fotografía',
+            compressedCount,
+            skippedGreenCount,
+            errorsCount,
+            percent: processed / total,
+            savedBytes: totalSavedBytes,
+            savedFormatted: compressionService.formatBytes(totalSavedBytes),
+          });
         }
-        console.warn('Error al comprimir foto:', photo.filename, e);
       }
-      processed++;
-      if (onProgress) {
-        onProgress({
-          current: processed,
-          total,
-          currentFile: photo.filename || 'Fotografía',
-          compressedCount,
-          skippedGreenCount,
-          errorsCount,
-          percent: processed / total,
-          savedBytes: totalSavedBytes,
-          savedFormatted: compressionService.formatBytes(totalSavedBytes),
-        });
+    } finally {
+      if (manageKeepAlive && VideoEngineModule?.setCompressionKeepAliveNative) {
+        VideoEngineModule.setCompressionKeepAliveNative(false, '', '', 0).catch(() => {});
       }
     }
 
@@ -959,7 +1028,412 @@ export const compressionService = {
       totalSavedBytes,
       errorsCount,
       permissionRequired,
-      cancelled: Boolean(control?.isCancelled),
+      cancelled: isCancelled(),
     };
+  },
+
+  // ============================================================================
+  // GESTOR GLOBAL DE COMPRESIÓN EN SEGUNDO PLANO (Permite navegar por toda la app
+  // o minimizarla mientras sigue comprimiendo fotos y videos sin interrupción)
+  // ============================================================================
+  _jobState: {
+    isRunning: false,
+    isPaused: false,
+    current: 0,
+    total: 0,
+    percent: 0,
+    currentFile: '',
+    savedBytes: 0,
+    savedFormatted: '0 B',
+    compressedCount: 0,
+    skippedGreenCount: 0,
+    errorsCount: 0,
+    label: '',
+  },
+  _jobListeners: new Set(),
+  _completionListeners: new Set(),
+  _jobController: null,
+  _queuedPhotos: [],
+  _queuedVideos: [],
+
+  getJobState() {
+    return compressionService._jobState;
+  },
+
+  subscribe(listener) {
+    if (typeof listener !== 'function') return () => {};
+    compressionService._jobListeners.add(listener);
+    try {
+      listener(compressionService._jobState);
+    } catch (_e) {}
+    return () => {
+      compressionService._jobListeners.delete(listener);
+    };
+  },
+
+  onJobCompleted(listener) {
+    if (typeof listener !== 'function') return () => {};
+    compressionService._completionListeners.add(listener);
+    return () => {
+      compressionService._completionListeners.delete(listener);
+    };
+  },
+
+  _emitJobState(patch = {}) {
+    compressionService._jobState = {
+      ...compressionService._jobState,
+      ...patch,
+    };
+    for (const fn of compressionService._jobListeners) {
+      try {
+        fn(compressionService._jobState);
+      } catch (_e) {}
+    }
+  },
+
+  pauseJob() {
+    if (compressionService._jobController) {
+      compressionService._jobController.pause();
+    }
+  },
+
+  resumeJob() {
+    if (compressionService._jobController) {
+      compressionService._jobController.resume();
+    }
+  },
+
+  togglePauseJob() {
+    if (!compressionService._jobController) return;
+    if (compressionService._jobState.isPaused) {
+      compressionService._jobController.resume();
+    } else {
+      compressionService._jobController.pause();
+    }
+  },
+
+  cancelJob() {
+    if (compressionService._jobController) {
+      compressionService._jobController.cancel();
+    }
+  },
+
+  /**
+   * Inicia (o agrega a la cola activa) un trabajo de compresión en segundo plano.
+   * No bloquea la navegación entre carpetas/pestañas ni se detiene al minimizar la app.
+   */
+  async startBackgroundCompressionJob({
+    photos = [],
+    videos = [],
+    label = '',
+    presetId = 'balanced',
+    onComplete,
+  } = {}) {
+    const cleanPhotos = (photos || []).filter((a) => a && a.mediaType === 'photo');
+    const cleanVideos = (videos || []).filter((a) => a && a.mediaType === 'video');
+    const addedCount = cleanPhotos.length + cleanVideos.length;
+    if (addedCount === 0) return null;
+
+    // Si ya hay una compresión corriendo en 2do plano, encolar los nuevos archivos al lote activo
+    if (compressionService._jobState.isRunning && compressionService._jobController) {
+      compressionService._queuedPhotos.push(...cleanPhotos);
+      compressionService._queuedVideos.push(...cleanVideos);
+      const newTotal = compressionService._jobState.total + addedCount;
+      compressionService._emitJobState({
+        total: newTotal,
+        percent:
+          newTotal > 0 ? Math.min(0.99, compressionService._jobState.current / newTotal) : 0,
+      });
+      if (typeof onComplete === 'function') {
+        const unsub = compressionService.onJobCompleted((summary) => {
+          unsub();
+          onComplete(summary);
+        });
+      }
+      return compressionService._jobState;
+    }
+
+    compressionService._queuedPhotos = [...cleanPhotos];
+    compressionService._queuedVideos = [...cleanVideos];
+
+    let paused = false;
+    let cancelled = false;
+    let pauseResolvers = [];
+
+    const controller = {
+      get isPaused() {
+        return paused;
+      },
+      get isCancelled() {
+        return cancelled;
+      },
+      get cancelled() {
+        return cancelled;
+      },
+      pause() {
+        paused = true;
+        compressionService._emitJobState({ isPaused: true });
+      },
+      resume() {
+        paused = false;
+        compressionService._emitJobState({ isPaused: false });
+        const list = pauseResolvers;
+        pauseResolvers = [];
+        list.forEach((r) => r());
+      },
+      cancel() {
+        cancelled = true;
+        paused = false;
+        compressionService._emitJobState({ isPaused: false });
+        const list = pauseResolvers;
+        pauseResolvers = [];
+        list.forEach((r) => r());
+      },
+      async waitIfPaused() {
+        while (paused && !cancelled) {
+          await new Promise((resolve) => pauseResolvers.push(resolve));
+        }
+      },
+    };
+
+    compressionService._jobController = controller;
+
+    const initialTotal = cleanPhotos.length + cleanVideos.length;
+    compressionService._emitJobState({
+      isRunning: true,
+      isPaused: false,
+      current: 0,
+      total: initialTotal,
+      percent: 0.02,
+      currentFile: (cleanPhotos[0] || cleanVideos[0])?.filename || 'Preparando archivos...',
+      savedBytes: 0,
+      savedFormatted: '0 B',
+      compressedCount: 0,
+      skippedGreenCount: 0,
+      errorsCount: 0,
+      label: label || '2do plano',
+    });
+
+    const { VideoEngineModule } = NativeModules;
+    const updateNativeKeepAlive = (active, titleStr = '', subStr = '', pctInt = 0) => {
+      if (VideoEngineModule?.setCompressionKeepAliveNative) {
+        VideoEngineModule.setCompressionKeepAliveNative(
+          Boolean(active),
+          titleStr,
+          subStr,
+          Math.max(0, Math.min(100, Math.round(pctInt || 0)))
+        ).catch(() => {});
+      }
+    };
+
+    updateNativeKeepAlive(
+      true,
+      `Comprimiendo 1 de ${initialTotal}`,
+      'Optimizando al 100% de resolución en 2do plano...',
+      2
+    );
+
+    let processed = 0;
+    let compressedCount = 0;
+    let skippedGreenCount = 0;
+    let errorsCount = 0;
+    let permissionRequired = false;
+    let totalSavedBytes = 0;
+
+    try {
+      // 1. Procesar cola de fotos (incluyendo cualquier foto que se agregue mientras corre)
+      const hasHeavyOrMediumInBatch = compressionService._queuedPhotos.some(
+        (p) => Number(p?.fileSize || 0) > 2 * 1024 * 1024
+      );
+
+      while (compressionService._queuedPhotos.length > 0 && !cancelled) {
+        await controller.waitIfPaused();
+        if (cancelled) break;
+
+        const photo = compressionService._queuedPhotos.shift();
+        if (!photo) continue;
+
+        const dynamicTotal =
+          processed +
+          1 +
+          compressionService._queuedPhotos.length +
+          compressionService._queuedVideos.length;
+        const startPct = Math.max(0.02, processed / Math.max(1, dynamicTotal));
+        const startSavedFmt = compressionService.formatBytes(totalSavedBytes);
+
+        compressionService._emitJobState({
+          current: processed + 1,
+          total: dynamicTotal,
+          percent: startPct,
+          currentFile: photo.filename || 'Fotografía',
+          savedBytes: totalSavedBytes,
+          savedFormatted: startSavedFmt,
+          compressedCount,
+          skippedGreenCount,
+          errorsCount,
+        });
+
+        updateNativeKeepAlive(
+          true,
+          `Comprimiendo ${processed + 1} de ${dynamicTotal} (${Math.round(startPct * 100)}%)`,
+          `${photo.filename || 'Fotografía'} · Ahorrado: -${startSavedFmt}`,
+          Math.round(startPct * 100)
+        );
+
+        try {
+          const skipLight = Boolean(hasHeavyOrMediumInBatch && dynamicTotal > 1);
+          const currentSize = await compressionService.getFileSize(photo, { forceFresh: true });
+          const isLight =
+            currentSize > 0 && compressionService.getSizeLevel(currentSize).level === 'light';
+
+          if (isLight && skipLight) {
+            skippedGreenCount++;
+          } else {
+            const res = await compressionService.compressPhoto(photo, {
+              skipIfGreen: skipLight,
+            });
+            if (res?.skippedGreen) {
+              skippedGreenCount++;
+            } else if (res && res.success) {
+              compressedCount++;
+              totalSavedBytes += res.savedBytes || 0;
+            }
+          }
+        } catch (e) {
+          errorsCount++;
+          if (e?.code === 'PERMISSION_REQUIRED') {
+            permissionRequired = true;
+          }
+          console.warn('Error al comprimir foto en 2do plano:', photo?.filename, e);
+        }
+
+        processed++;
+        const afterTotal =
+          processed +
+          compressionService._queuedPhotos.length +
+          compressionService._queuedVideos.length;
+        const afterPct = processed / Math.max(1, afterTotal);
+        const afterSavedFmt = compressionService.formatBytes(totalSavedBytes);
+
+        compressionService._emitJobState({
+          current: processed,
+          total: afterTotal,
+          percent: afterPct,
+          currentFile: photo.filename || 'Fotografía',
+          savedBytes: totalSavedBytes,
+          savedFormatted: afterSavedFmt,
+          compressedCount,
+          skippedGreenCount,
+          errorsCount,
+        });
+      }
+
+      // 2. Procesar cola de videos
+      if (compressionService._queuedVideos.length > 0 && !cancelled) {
+        const { videoEngineService } = require('./videoEngineService');
+        while (compressionService._queuedVideos.length > 0 && !cancelled) {
+          await controller.waitIfPaused();
+          if (cancelled) break;
+
+          const video = compressionService._queuedVideos.shift();
+          if (!video) continue;
+
+          const dynamicTotal =
+            processed +
+            1 +
+            compressionService._queuedPhotos.length +
+            compressionService._queuedVideos.length;
+
+          try {
+            const res = await videoEngineService.compressVideo({
+              asset: video,
+              presetId,
+              replaceOriginal: true,
+              onProgress: (prog) => {
+                const overall = (processed + (prog.percent || 0)) / Math.max(1, dynamicTotal);
+                const savedFmt = compressionService.formatBytes(totalSavedBytes);
+                compressionService._emitJobState({
+                  current: processed + 1,
+                  total: dynamicTotal,
+                  percent: overall,
+                  currentFile: `${video.filename || 'Video'} (${Math.round((prog.percent || 0) * 100)}%)`,
+                  savedBytes: totalSavedBytes,
+                  savedFormatted: savedFmt,
+                  compressedCount,
+                  skippedGreenCount,
+                  errorsCount,
+                });
+                updateNativeKeepAlive(
+                  true,
+                  `Comprimiendo video ${processed + 1} de ${dynamicTotal} (${Math.round(overall * 100)}%)`,
+                  `${video.filename || 'Video'} · Ahorrado: -${savedFmt}`,
+                  Math.round(overall * 100)
+                );
+              },
+            });
+            if (res?.success && !res?.alreadyOptimized && (res?.savedBytes || 0) > 0) {
+              totalSavedBytes += res.savedBytes;
+              compressedCount++;
+            }
+          } catch (e) {
+            errorsCount++;
+            console.warn('Error al comprimir video en 2do plano:', video?.filename, e);
+          }
+
+          processed++;
+          const afterTotal =
+            processed +
+            compressionService._queuedPhotos.length +
+            compressionService._queuedVideos.length;
+          compressionService._emitJobState({
+            current: processed,
+            total: afterTotal,
+            percent: processed / Math.max(1, afterTotal),
+            currentFile: video.filename || 'Video',
+            savedBytes: totalSavedBytes,
+            savedFormatted: compressionService.formatBytes(totalSavedBytes),
+            compressedCount,
+            skippedGreenCount,
+            errorsCount,
+          });
+        }
+      }
+    } finally {
+      updateNativeKeepAlive(false, '', '', 0);
+      compressionService._jobController = null;
+      compressionService._queuedPhotos = [];
+      compressionService._queuedVideos = [];
+      compressionService._emitJobState({
+        isRunning: false,
+        isPaused: false,
+      });
+    }
+
+    const summary = {
+      processed,
+      total: processed,
+      compressedCount,
+      skippedGreenCount,
+      totalSavedBytes,
+      savedFormatted: compressionService.formatBytes(totalSavedBytes),
+      errorsCount,
+      permissionRequired,
+      cancelled,
+      label,
+    };
+
+    if (typeof onComplete === 'function') {
+      try {
+        onComplete(summary);
+      } catch (_e) {}
+    }
+
+    for (const fn of compressionService._completionListeners) {
+      try {
+        fn(summary);
+      } catch (_e) {}
+    }
+
+    return summary;
   },
 };

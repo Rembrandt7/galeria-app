@@ -28,6 +28,7 @@ import { theme } from './src/constants/theme';
 import { mediaService } from './src/services/mediaService';
 import { storageService } from './src/services/storageService';
 import { folderService } from './src/services/folderService';
+import { compressionService } from './src/services/compressionService';
 import { updateService, CURRENT_VERSION } from './src/services/updateService';
 
 import Header from './src/components/Header';
@@ -116,6 +117,44 @@ export default function App() {
     groupSmallInVarios: true,
     showFoldersInScreen: true,
   });
+
+  // Estado global de compresión en 2do plano (visible en cualquier pantalla o carpeta sin bloquear la app)
+  const [compressionJob, setCompressionJob] = useState(() => compressionService.getJobState());
+
+  useEffect(() => {
+    const unsub = compressionService.subscribe((job) => {
+      setCompressionJob({ ...job });
+    });
+    const unsubDone = compressionService.onJobCompleted((summary) => {
+      if (summary?.permissionRequired && (summary?.compressedCount || 0) === 0) {
+        Alert.alert(
+          'Permiso requerido para modificar originales',
+          'Android bloqueó la modificación directa del archivo original. Activa "Acceso a todos los archivos" para comprimir sin crear copias.',
+          [
+            { text: 'Cancelar', style: 'cancel' },
+            {
+              text: 'Activar permiso en Ajustes',
+              onPress: () => folderService.openAllFilesAccessSettings(),
+            },
+          ]
+        );
+      } else if (summary) {
+        const skippedMsg =
+          summary.skippedGreenCount > 0
+            ? `\nYa estaban ligeras: ${summary.skippedGreenCount}`
+            : '';
+        Alert.alert(
+          summary.cancelled ? 'Proceso detenido' : '¡Compresión en 2do plano finalizada!',
+          `Archivos optimizados (100% resolución): ${summary.compressedCount || 0} de ${summary.total || 0}${skippedMsg}\n\nEspacio total ahorrado: ${summary.savedFormatted || '0 B'}.`
+        );
+      }
+      setFolderRefreshKey((k) => k + 1);
+    });
+    return () => {
+      unsub();
+      unsubDone();
+    };
+  }, []);
 
   // Inicializar permisos y datos de arranque (ultra rápido y ligero)
   useEffect(() => {
@@ -1210,6 +1249,123 @@ export default function App() {
               photosCount={activeTab === 'albums' || activeTab === 'folder' ? photosAlbumsCount : photosAssetsCount}
               filesCount={activeTab === 'albums' || activeTab === 'folder' ? filesAlbumsCount : filesAssetsCount}
             />
+          )}
+
+          {/* Barra Global de Compresión en 2do Plano (Visible mientras navegas entre carpetas, pestañas o minimizas la app) */}
+          {compressionJob?.isRunning && (
+            <View
+              style={{
+                marginHorizontal: 10,
+                marginTop: 4,
+                marginBottom: 6,
+                paddingHorizontal: 12,
+                paddingVertical: 10,
+                borderRadius: 14,
+                backgroundColor: '#0f172a',
+                borderWidth: 1.5,
+                borderColor: '#38bdf8',
+                gap: 6,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                  {compressionJob.isPaused ? (
+                    <Ionicons name="pause-circle" size={20} color="#fbbf24" />
+                  ) : (
+                    <ActivityIndicator size="small" color="#38bdf8" />
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ color: '#ffffff', fontSize: 12.5, fontWeight: '800' }} numberOfLines={1}>
+                      {compressionJob.isPaused
+                        ? `En pausa (${compressionJob.current || 1}/${compressionJob.total || 1})`
+                        : `Comprimiendo en 2do plano ${compressionJob.current || 1}/${compressionJob.total || 1} (${Math.round((compressionJob.percent || 0) * 100)}%)`}
+                    </Text>
+                    <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '600' }} numberOfLines={1}>
+                      {compressionJob.currentFile
+                        ? `Procesando: ${compressionJob.currentFile}`
+                        : 'Puedes moverte por la app o minimizarla...'}
+                    </Text>
+                  </View>
+                </View>
+
+                <View
+                  style={{
+                    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                    borderWidth: 1,
+                    borderColor: '#10b981',
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 8,
+                  }}
+                >
+                  <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800' }}>
+                    -{compressionJob.savedFormatted || '0 B'}
+                  </Text>
+                </View>
+              </View>
+
+              <View
+                style={{
+                  height: 6,
+                  backgroundColor: 'rgba(255,255,255,0.12)',
+                  borderRadius: 3,
+                  overflow: 'hidden',
+                  width: '100%',
+                }}
+              >
+                <View
+                  style={{
+                    height: '100%',
+                    width: `${Math.max(4, Math.round((compressionJob.percent || 0) * 100))}%`,
+                    backgroundColor: '#38bdf8',
+                    borderRadius: 3,
+                  }}
+                />
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={{ color: '#94a3b8', fontSize: 10.5, fontWeight: '600' }} numberOfLines={1}>
+                  Optimizadas: {compressionJob.compressedCount || 0}
+                  {compressionJob.skippedGreenCount ? ` · Ligeras: ${compressionJob.skippedGreenCount}` : ''}
+                </Text>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <TouchableOpacity
+                    onPress={() => compressionService.togglePauseJob()}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 4,
+                      backgroundColor: 'rgba(251, 191, 36, 0.16)',
+                      paddingHorizontal: 9,
+                      paddingVertical: 4,
+                      borderRadius: 8,
+                    }}
+                  >
+                    <Ionicons name={compressionJob.isPaused ? 'play' : 'pause'} size={12} color="#fbbf24" />
+                    <Text style={{ color: '#fbbf24', fontSize: 11, fontWeight: '800' }}>
+                      {compressionJob.isPaused ? 'Reanudar' : 'Pausar'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={() => compressionService.cancelJob()}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 4,
+                      backgroundColor: 'rgba(239, 68, 68, 0.16)',
+                      paddingHorizontal: 9,
+                      paddingVertical: 4,
+                      borderRadius: 8,
+                    }}
+                  >
+                    <Ionicons name="close-circle" size={12} color="#f87171" />
+                    <Text style={{ color: '#f87171', fontSize: 11, fontWeight: '800' }}>Detener</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
           )}
 
           {activeTab === 'folder' ? (

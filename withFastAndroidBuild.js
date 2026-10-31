@@ -29,6 +29,9 @@ const VIDEO_ENGINE_MODULE_KT = `package com.rembrant.galeriaapp
 
 import android.app.Activity
 import android.app.Dialog
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
@@ -56,9 +59,11 @@ import android.opengl.EGLSurface
 import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.Matrix
+import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.PowerManager
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.Surface
@@ -76,6 +81,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.view.inputmethod.EditorInfo
+import androidx.core.app.NotificationCompat
 import com.facebook.react.bridge.ActivityEventListener
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -86,6 +92,7 @@ import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.UiThreadUtil
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -102,7 +109,9 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
     ReactContextBaseJavaModule(reactContext), ActivityEventListener {
 
     private val executor = Executors.newSingleThreadExecutor()
+    private val compressionExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var compressionWakeLock: PowerManager.WakeLock? = null
 
     init {
         reactContext.addActivityEventListener(this)
@@ -3003,6 +3012,281 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                 try { surfaceBridge?.release() } catch (_: Exception) {}
                 try { muxer?.stop() } catch (_: Exception) {}
                 try { muxer?.release() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    /**
+     * Mantiene despierta la CPU (PARTIAL_WAKE_LOCK) y muestra notificación en curso
+     * para que la compresión continúe sin interrupción al minimizar la app o apagar la pantalla.
+     */
+    @ReactMethod
+    fun setCompressionKeepAliveNative(
+        active: Boolean,
+        title: String,
+        subtitle: String,
+        percent: Int,
+        promise: Promise
+    ) {
+        try {
+            val nm = reactContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            val channelId = "galeria_compression_bg"
+            val notifId = 4409
+
+            if (active) {
+                try {
+                    if (compressionWakeLock == null) {
+                        val pm = reactContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                        compressionWakeLock = pm?.newWakeLock(
+                            PowerManager.PARTIAL_WAKE_LOCK,
+                            "GaleriaApp::CompressionKeepAlive"
+                        )?.apply {
+                            setReferenceCounted(false)
+                        }
+                    }
+                    if (compressionWakeLock?.isHeld == false) {
+                        compressionWakeLock?.acquire(60 * 60 * 1000L)
+                    }
+                } catch (_: Exception) {}
+
+                try {
+                    if (nm != null) {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val ch = NotificationChannel(
+                                channelId,
+                                "Compresión en segundo plano",
+                                NotificationManager.IMPORTANCE_LOW
+                            ).apply {
+                                description = "Progreso de compresión de fotos y videos"
+                                setShowBadge(false)
+                            }
+                            nm.createNotificationChannel(ch)
+                        }
+                        val launchIntent = reactContext.packageManager
+                            .getLaunchIntentForPackage(reactContext.packageName)
+                            ?.apply {
+                                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            }
+                        val piFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                        } else {
+                            PendingIntent.FLAG_UPDATE_CURRENT
+                        }
+                        val contentPi = if (launchIntent != null) {
+                            PendingIntent.getActivity(reactContext, 4409, launchIntent, piFlags)
+                        } else null
+
+                        val safePct = percent.coerceIn(0, 100)
+                        val builder = NotificationCompat.Builder(reactContext, channelId)
+                            .setSmallIcon(android.R.drawable.stat_sys_upload)
+                            .setContentTitle(title.ifBlank { "Comprimiendo en 2do plano..." })
+                            .setContentText(subtitle.ifBlank { "Optimizando al 100% de resolución..." })
+                            .setOngoing(true)
+                            .setOnlyAlertOnce(true)
+                            .setPriority(NotificationCompat.PRIORITY_LOW)
+                            .setProgress(100, safePct, safePct <= 0)
+                        if (contentPi != null) {
+                            builder.setContentIntent(contentPi)
+                        }
+                        nm.notify(notifId, builder.build())
+                    }
+                } catch (_: Exception) {}
+            } else {
+                try {
+                    if (compressionWakeLock?.isHeld == true) {
+                        compressionWakeLock?.release()
+                    }
+                } catch (_: Exception) {}
+                try {
+                    nm?.cancel(notifId)
+                } catch (_: Exception) {}
+            }
+            promise.resolve(true)
+        } catch (e: Exception) {
+            promise.resolve(false)
+        }
+    }
+
+    /**
+     * Comprime una fotografía directamente en un hilo nativo de fondo (compressionExecutor)
+     * manteniendo el 100% de su resolución original (width x height) y su orientación EXIF,
+     * para que nunca se detenga aunque el usuario cambie de pantalla o minimice la aplicación.
+     */
+    @ReactMethod
+    fun compressPhotoInPlaceNative(
+        sourceUriOrPath: String,
+        skipIfGreen: Boolean,
+        promise: Promise
+    ) {
+        compressionExecutor.execute {
+            try {
+                val inPath = cleanFilePath(sourceUriOrPath)
+                val inFile = File(inPath)
+                if (!inFile.exists() || !inFile.isFile) {
+                    promise.reject("FILE_NOT_FOUND", "Archivo físico no accesible directamente")
+                    return@execute
+                }
+
+                val oldSize = inFile.length()
+                val twoMbBytes = 2L * 1024L * 1024L
+                val targetGreenBytes = (1.92 * 1024.0 * 1024.0).toLong()
+
+                if (oldSize > 0L && (oldSize <= 150L * 1024L || (skipIfGreen && oldSize <= twoMbBytes))) {
+                    val skippedMap = Arguments.createMap().apply {
+                        putBoolean("success", true)
+                        putBoolean("skippedGreen", true)
+                        putBoolean("alreadyOptimized", true)
+                        putDouble("oldSize", oldSize.toDouble())
+                        putDouble("newSize", oldSize.toDouble())
+                        putDouble("savedBytes", 0.0)
+                    }
+                    promise.resolve(skippedMap)
+                    return@execute
+                }
+
+                val exifTagsToPreserve = arrayOf(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.TAG_DATETIME,
+                    ExifInterface.TAG_DATETIME_ORIGINAL,
+                    ExifInterface.TAG_DATETIME_DIGITIZED,
+                    ExifInterface.TAG_MAKE,
+                    ExifInterface.TAG_MODEL,
+                    ExifInterface.TAG_GPS_LATITUDE,
+                    ExifInterface.TAG_GPS_LATITUDE_REF,
+                    ExifInterface.TAG_GPS_LONGITUDE,
+                    ExifInterface.TAG_GPS_LONGITUDE_REF
+                )
+                val savedExif = mutableMapOf<String, String>()
+                try {
+                    val oldExif = ExifInterface(inFile.absolutePath)
+                    for (tag in exifTagsToPreserve) {
+                        val v = oldExif.getAttribute(tag)
+                        if (!v.isNullOrEmpty()) {
+                            savedExif[tag] = v
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                val opts = BitmapFactory.Options().apply {
+                    inScaled = false
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                val bmp = BitmapFactory.decodeFile(inFile.absolutePath, opts)
+                    ?: throw IllegalStateException("No se pudo decodificar la fotografía")
+
+                val origW = bmp.width
+                val origH = bmp.height
+
+                val qualitySteps = when {
+                    oldSize > 4L * 1024L * 1024L -> intArrayOf(70, 58, 48, 38, 30)
+                    oldSize > twoMbBytes -> intArrayOf(74, 62, 50, 40, 30)
+                    else -> intArrayOf(72, 58, 45, 34)
+                }
+
+                var bestBytes: ByteArray? = null
+                var bestSize = Long.MAX_VALUE
+
+                for (q in qualitySteps) {
+                    val baos = ByteArrayOutputStream(512 * 1024)
+                    bmp.compress(Bitmap.CompressFormat.JPEG, q, baos)
+                    val candidateBytes = baos.toByteArray()
+                    val candidateLen = candidateBytes.size.toLong()
+                    if (candidateLen in 1 until bestSize) {
+                        bestBytes = candidateBytes
+                        bestSize = candidateLen
+                    }
+                    if (oldSize > 0L) {
+                        val ratio = bestSize.toDouble() / oldSize.toDouble()
+                        if (oldSize > twoMbBytes) {
+                            if (bestSize <= targetGreenBytes && ratio <= 0.80) break
+                        } else {
+                            if (ratio <= 0.78) break
+                        }
+                    } else {
+                        break
+                    }
+                }
+
+                bmp.recycle()
+
+                val chosenBytes = bestBytes
+                if (chosenBytes == null || (oldSize > 0L && bestSize >= oldSize)) {
+                    val alreadyMap = Arguments.createMap().apply {
+                        putBoolean("success", true)
+                        putBoolean("alreadyOptimized", true)
+                        putDouble("oldSize", oldSize.toDouble())
+                        putDouble("newSize", oldSize.toDouble())
+                        putDouble("savedBytes", 0.0)
+                        putInt("width", origW)
+                        putInt("height", origH)
+                    }
+                    promise.resolve(alreadyMap)
+                    return@execute
+                }
+
+                val tempFile = File(reactContext.cacheDir, "native_comp_${System.nanoTime()}.jpg")
+                FileOutputStream(tempFile, false).use { fos ->
+                    fos.write(chosenBytes)
+                    fos.flush()
+                }
+
+                if (savedExif.isNotEmpty()) {
+                    try {
+                        val newExif = ExifInterface(tempFile.absolutePath)
+                        for ((tag, value) in savedExif) {
+                            newExif.setAttribute(tag, value)
+                        }
+                        newExif.saveAttributes()
+                    } catch (_: Exception) {}
+                }
+
+                val finalTempLen = tempFile.length()
+                if (oldSize > 0L && finalTempLen >= oldSize) {
+                    tempFile.delete()
+                    val alreadyMap = Arguments.createMap().apply {
+                        putBoolean("success", true)
+                        putBoolean("alreadyOptimized", true)
+                        putDouble("oldSize", oldSize.toDouble())
+                        putDouble("newSize", oldSize.toDouble())
+                        putDouble("savedBytes", 0.0)
+                        putInt("width", origW)
+                        putInt("height", origH)
+                    }
+                    promise.resolve(alreadyMap)
+                    return@execute
+                }
+
+                val prevLastMod = inFile.lastModified()
+                FileInputStream(tempFile).use { fis ->
+                    FileOutputStream(inFile, false).use { fos ->
+                        fis.channel.transferTo(0, finalTempLen, fos.channel)
+                        fos.channel.truncate(finalTempLen)
+                        fos.fd.sync()
+                    }
+                }
+                tempFile.delete()
+                if (prevLastMod > 0L) {
+                    try { inFile.setLastModified(prevLastMod) } catch (_: Exception) {}
+                }
+
+                val verifiedLen = inFile.length()
+                val savedBytes = (oldSize - verifiedLen).coerceAtLeast(0L)
+                try {
+                    MediaScannerConnection.scanFile(reactContext, arrayOf(inFile.absolutePath), null, null)
+                } catch (_: Exception) {}
+
+                val resMap = Arguments.createMap().apply {
+                    putBoolean("success", true)
+                    putBoolean("overwritten", true)
+                    putDouble("oldSize", oldSize.toDouble())
+                    putDouble("newSize", verifiedLen.toDouble())
+                    putDouble("savedBytes", savedBytes.toDouble())
+                    putInt("width", origW)
+                    putInt("height", origH)
+                }
+                promise.resolve(resMap)
+            } catch (e: Exception) {
+                promise.reject("NATIVE_PHOTO_COMP_ERR", e.message ?: "Error en compresión nativa", e)
             }
         }
     }

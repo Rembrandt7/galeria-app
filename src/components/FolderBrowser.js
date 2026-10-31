@@ -179,6 +179,22 @@ export default function FolderBrowser({
     setIsProcessPaused(false);
     return ctrl;
   };
+
+  // Sincronizar con el gestor global de compresión en 2do plano
+  useEffect(() => {
+    const unsub = compressionService.subscribe((job) => {
+      setIsCompressingFolder(Boolean(job?.isRunning));
+      setCompressProgress(job?.isRunning ? job : null);
+      setIsProcessPaused(Boolean(job?.isPaused));
+    });
+    const unsubDone = compressionService.onJobCompleted(() => {
+      handleRefresh();
+    });
+    return () => {
+      unsub();
+      unsubDone();
+    };
+  }, []);
   // Selección múltiple con toque prolongado
   const [selectedIds, setSelectedIds] = useState({});
   // Buscador instantáneo, filtro por peso y selector de columnas (2, 3 o 4)
@@ -643,7 +659,7 @@ export default function FolderBrowser({
     }
   };
 
-  // Comprimir fotos de la carpeta completa (incluyendo subcarpetas si el nivel actual solo tiene carpetas)
+  // Comprimir fotos de la carpeta completa en 2do plano (permite navegar por la app o minimizarla)
   const handleCompressFolder = async () => {
     let targetPhotos = folderPhotos;
 
@@ -656,8 +672,10 @@ export default function FolderBrowser({
       } catch (e) {
         targetPhotos = [];
       } finally {
-        setIsCompressingFolder(false);
-        setCompressProgress(null);
+        if (!compressionService.getJobState()?.isRunning) {
+          setIsCompressingFolder(false);
+          setCompressProgress(null);
+        }
       }
     }
 
@@ -667,60 +685,25 @@ export default function FolderBrowser({
     }
 
     Alert.alert(
-      'Comprimir fotos de la carpeta',
-      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas manteniendo el 100% de su resolución original y reemplazando el archivo original sin crear copias?`,
+      'Comprimir fotos en 2do plano',
+      `¿Deseas optimizar las ${targetPhotos.length} fotos encontradas manteniendo el 100% de su resolución original y reemplazando el original sin crear copias?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir fotos',
-          onPress: async () => {
-            const ctrl = createProcessController();
-            setIsCompressingFolder(true);
-            setCompressProgress({ current: 0, total: targetPhotos.length, percent: 0, skippedGreenCount: 0, savedFormatted: '0 B' });
-            try {
-              const res = await compressionService.compressFolderPhotos(
-                targetPhotos,
-                (prog) => setCompressProgress(prog),
-                ctrl
-              );
-              if (res.permissionRequired && (res.compressedCount || 0) === 0) {
-                Alert.alert(
-                  'Permiso requerido para modificar originales',
-                  'Android bloqueó la modificación directa del archivo original. Activa "Acceso a todos los archivos" para comprimir sin crear copias.',
-                  [
-                    { text: 'Cancelar', style: 'cancel' },
-                    {
-                      text: 'Activar permiso en Ajustes',
-                      onPress: () => folderService.openAllFilesAccessSettings(),
-                    },
-                  ]
-                );
-              } else {
-                const skippedMsg =
-                  res.skippedGreenCount > 0
-                    ? `\nYa estaban ligeras: ${res.skippedGreenCount}`
-                    : '';
-                Alert.alert(
-                  res.cancelled ? 'Proceso cancelado' : '¡Compresión finalizada!',
-                  `Fotos optimizadas (100% resolución): ${res.compressedCount || 0} de ${targetPhotos.length}${skippedMsg}\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
-                );
-              }
-              handleRefresh();
-            } catch (e) {
-              Alert.alert('Error', 'Ocurrió un problema durante la compresión: ' + (e?.message || String(e)));
-            } finally {
-              setIsCompressingFolder(false);
-              setCompressProgress(null);
-              processControlRef.current = null;
-              setIsProcessPaused(false);
-            }
+          onPress: () => {
+            compressionService.startBackgroundCompressionJob({
+              photos: targetPhotos,
+              videos: [],
+              label: currentFolderDisplayName || 'Carpeta',
+            });
           },
         },
       ]
     );
   };
 
-  // Comprimir videos de la carpeta manteniendo el 100% de la resolución original
+  // Comprimir videos de la carpeta en 2do plano manteniendo el 100% de la resolución original
   const handleCompressVideosFolder = async () => {
     let targetVideos = folderVideos;
 
@@ -733,8 +716,10 @@ export default function FolderBrowser({
       } catch (e) {
         targetVideos = [];
       } finally {
-        setIsCompressingFolder(false);
-        setCompressProgress(null);
+        if (!compressionService.getJobState()?.isRunning) {
+          setIsCompressingFolder(false);
+          setCompressProgress(null);
+        }
       }
     }
 
@@ -744,40 +729,18 @@ export default function FolderBrowser({
     }
 
     Alert.alert(
-      'Comprimir videos (100% Resolución)',
-      `¿Deseas comprimir los ${targetVideos.length} videos encontrados manteniendo el 100% de su resolución original y reemplazando cada original sin duplicados?`,
+      'Comprimir videos en 2do plano',
+      `¿Deseas comprimir los ${targetVideos.length} videos encontrados manteniendo el 100% de su resolución original y reemplazando cada original sin duplicados?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir videos',
-          onPress: async () => {
-            const ctrl = createProcessController();
-            setIsCompressingFolder(true);
-            setCompressProgress({
-              current: 0,
-              total: targetVideos.length,
-              percent: 0,
-              savedFormatted: '0 B',
+          onPress: () => {
+            compressionService.startBackgroundCompressionJob({
+              photos: [],
+              videos: targetVideos,
+              label: currentFolderDisplayName || 'Videos',
             });
-            try {
-              const res = await videoEngineService.compressVideosBatch(targetVideos, {
-                presetId: 'balanced',
-                onProgress: (prog) => setCompressProgress(prog),
-                control: ctrl,
-              });
-              Alert.alert(
-                res.cancelled ? 'Proceso cancelado' : '¡Videos comprimidos!',
-                `Se optimizaron ${res.compressedCount} de ${targetVideos.length} videos al 100% de su resolución original.\n\nEspacio total ahorrado: ${compressionService.formatBytes(res.totalSavedBytes)}.`
-              );
-              handleRefresh();
-            } catch (e) {
-              Alert.alert('Aviso', 'Ocurrió un problema al comprimir videos: ' + (e?.message || String(e)));
-            } finally {
-              processControlRef.current = null;
-              setIsProcessPaused(false);
-              setIsCompressingFolder(false);
-              setCompressProgress(null);
-            }
           },
         },
       ]
@@ -942,64 +905,20 @@ export default function FolderBrowser({
       Alert.alert('Sin archivos', 'Selecciona al menos una fotografía o un video para comprimir.');
       return;
     }
-    const totalSel = selectedPhotos.length + selectedVideos.length;
     Alert.alert(
-      'Comprimir seleccionados (100% Resolución)',
-      `¿Optimizar ${selectedPhotos.length} foto(s) y ${selectedVideos.length} video(s) manteniendo el 100% de su resolución?\n\nLas fotos en Verde se omitirán y solo se comprimirán las que estén en Naranja o Rojo.`,
+      'Comprimir seleccionados en 2do plano',
+      `¿Optimizar ${selectedPhotos.length} foto(s) y ${selectedVideos.length} video(s) manteniendo el 100% de su resolución?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir',
-          onPress: async () => {
-            const ctrl = createProcessController();
-            setIsCompressingFolder(true);
-            setCompressProgress({
-              current: 0,
-              total: totalSel,
-              percent: 0,
-              skippedGreenCount: 0,
-              savedFormatted: '0 B',
+          onPress: () => {
+            clearSelection();
+            compressionService.startBackgroundCompressionJob({
+              photos: selectedPhotos,
+              videos: selectedVideos,
+              label: currentFolderDisplayName || 'Seleccionados',
             });
-            try {
-              let totalSaved = 0;
-              let totalDone = 0;
-              let skippedGreen = 0;
-              if (selectedPhotos.length > 0) {
-                const res = await compressionService.compressFolderPhotos(
-                  selectedPhotos,
-                  (prog) => setCompressProgress(prog),
-                  ctrl
-                );
-                totalSaved += res.totalSavedBytes || 0;
-                totalDone += res.compressedCount || 0;
-                skippedGreen += res.skippedGreenCount || 0;
-              }
-              if (selectedVideos.length > 0 && !ctrl.cancelled) {
-                const resVid = await videoEngineService.compressVideosBatch(selectedVideos, {
-                  presetId: 'balanced',
-                  onProgress: (prog) => setCompressProgress(prog),
-                });
-                totalSaved += resVid.totalSavedBytes || 0;
-                totalDone += resVid.compressedCount || 0;
-              }
-              clearSelection();
-              const skippedMsg =
-                skippedGreen > 0
-                  ? `\nOmitidas por estar en Verde: ${skippedGreen}`
-                  : '';
-              Alert.alert(
-                ctrl.cancelled ? 'Proceso cancelado' : '¡Compresión finalizada!',
-                `Archivos comprimidos al 100% de resolución: ${totalDone} de ${totalSel}${skippedMsg}\n\nEspacio ahorrado: ${compressionService.formatBytes(totalSaved)}.`
-              );
-              handleRefresh();
-            } catch (e) {
-              Alert.alert('Error', e?.message || String(e));
-            } finally {
-              setIsCompressingFolder(false);
-              setCompressProgress(null);
-              processControlRef.current = null;
-              setIsProcessPaused(false);
-            }
           },
         },
       ]
@@ -2018,122 +1937,6 @@ export default function FolderBrowser({
           </TouchableOpacity>
         </ScrollView>
       </View>
-
-      {/* PANEL DE PROGRESO EN VIVO AL COMPRIMIR (Siempre visible para ver cómo avanza foto por foto) */}
-      {isCompressingFolder && (
-        <View
-          style={{
-            marginHorizontal: 12,
-            marginBottom: 8,
-            padding: 12,
-            borderRadius: 16,
-            backgroundColor: '#0f172a',
-            borderWidth: 1.5,
-            borderColor: '#38bdf8',
-            gap: 8,
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-              {isProcessPaused ? (
-                <Ionicons name="pause-circle" size={22} color="#fbbf24" />
-              ) : (
-                <ActivityIndicator size="small" color="#38bdf8" />
-              )}
-              <View style={{ flex: 1 }}>
-                <Text style={{ color: '#ffffff', fontSize: 13.5, fontWeight: '800' }} numberOfLines={1}>
-                  {isProcessPaused
-                    ? 'Compresión en pausa'
-                    : `Comprimiendo archivo ${compressProgress?.current || 1} de ${compressProgress?.total || 1} (${Math.round((compressProgress?.percent || 0) * 100)}%)`}
-                </Text>
-                <Text style={{ color: '#38bdf8', fontSize: 11.5, fontWeight: '600' }} numberOfLines={1}>
-                  {compressProgress?.currentFile
-                    ? `Procesando: ${compressProgress.currentFile}`
-                    : 'Optimizando al 100% de resolución...'}
-                </Text>
-              </View>
-            </View>
-
-            <View
-              style={{
-                backgroundColor: 'rgba(16, 185, 129, 0.2)',
-                borderWidth: 1,
-                borderColor: '#10b981',
-                paddingHorizontal: 9,
-                paddingVertical: 4,
-                borderRadius: 10,
-              }}
-            >
-              <Text style={{ color: '#34d399', fontSize: 11.5, fontWeight: '800' }}>
-                -{compressProgress?.savedFormatted || '0 B'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.progressBarBg}>
-            <View
-              style={[
-                styles.progressBarFill,
-                {
-                  width: `${Math.max(4, Math.round((compressProgress?.percent || 0) * 100))}%`,
-                  backgroundColor: '#38bdf8',
-                },
-              ]}
-            />
-          </View>
-
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '600' }}>
-              Optimizadas: {compressProgress?.compressedCount || 0}
-              {compressProgress?.skippedGreenCount
-                ? ` · Ligeras: ${compressProgress.skippedGreenCount}`
-                : ''}
-            </Text>
-
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <TouchableOpacity
-                onPress={() => {
-                  if (!processControlRef.current) return;
-                  if (isProcessPaused) processControlRef.current.resume();
-                  else processControlRef.current.pause();
-                }}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 4,
-                  backgroundColor: 'rgba(251, 191, 36, 0.16)',
-                  paddingHorizontal: 10,
-                  paddingVertical: 4,
-                  borderRadius: 10,
-                }}
-              >
-                <Ionicons name={isProcessPaused ? 'play' : 'pause'} size={13} color="#fbbf24" />
-                <Text style={{ color: '#fbbf24', fontSize: 11, fontWeight: '800' }}>
-                  {isProcessPaused ? 'Reanudar' : 'Pausar'}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  if (processControlRef.current) processControlRef.current.cancel();
-                }}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 4,
-                  backgroundColor: 'rgba(239, 68, 68, 0.16)',
-                  paddingHorizontal: 10,
-                  paddingVertical: 4,
-                  borderRadius: 10,
-                }}
-              >
-                <Ionicons name="close-circle" size={13} color="#f87171" />
-                <Text style={{ color: '#f87171', fontSize: 11, fontWeight: '800' }}>Detener</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      )}
 
       {/* 3. RENGLÓN ÚNICO EN CARRUSEL: Carpeta Seleccionada + Buscador + Filtros Condicionales */}
       <View style={styles.stickyHeaderBox}>

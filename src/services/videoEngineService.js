@@ -626,7 +626,7 @@ export const videoEngineService = {
   /**
    * Comprime un lote de videos manteniendo 100% su resolución original y reemplazando cada original en su sitio
    */
-  async compressVideosBatch(videos, { presetId = 'balanced', onProgress, control } = {}) {
+  async compressVideosBatch(videos, { presetId = 'balanced', onProgress, control, manageKeepAlive = true } = {}) {
     if (!videos || videos.length === 0) {
       return { processed: 0, compressedCount: 0, totalSavedBytes: 0, cancelled: false };
     }
@@ -636,52 +636,87 @@ export const videoEngineService = {
     let compressedCount = 0;
     const total = videos.length;
 
+    const isCancelled = () => Boolean(control?.isCancelled || control?.cancelled);
+
     const waitIfPaused = async () => {
-      while (control?.isPaused && !control?.isCancelled) {
+      if (control?.waitIfPaused) {
+        await control.waitIfPaused();
+        return;
+      }
+      while (control?.isPaused && !isCancelled()) {
         await new Promise((r) => setTimeout(r, 250));
       }
     };
 
-    for (const video of videos) {
-      if (control?.isCancelled) break;
-      await waitIfPaused();
-      if (control?.isCancelled) break;
+    if (manageKeepAlive && VideoEngineModule?.setCompressionKeepAliveNative) {
+      VideoEngineModule.setCompressionKeepAliveNative(
+        true,
+        `Comprimiendo videos (0/${total})`,
+        'Optimizando al 100% de resolución en 2do plano...',
+        2
+      ).catch(() => {});
+    }
 
-      try {
-        const res = await videoEngineService.compressVideo({
-          asset: video,
-          presetId,
-          replaceOriginal: true,
-          onProgress: (prog) => {
-            if (onProgress) {
+    try {
+      for (const video of videos) {
+        if (isCancelled()) break;
+        await waitIfPaused();
+        if (isCancelled()) break;
+
+        try {
+          const res = await videoEngineService.compressVideo({
+            asset: video,
+            presetId,
+            replaceOriginal: true,
+            onProgress: (prog) => {
               const overall = (processed + (prog.percent || 0)) / total;
-              onProgress({
-                current: processed + 1,
-                total,
-                percent: overall,
-                savedBytes: totalSavedBytes,
-                savedFormatted: compressionService.formatBytes(totalSavedBytes),
-                stage: `${video.filename || 'Video'}: ${prog.stage || 'Comprimiendo...'}`,
-              });
-            }
-          },
-        });
-        if (res.success && !res.alreadyOptimized && res.savedBytes > 0) {
-          totalSavedBytes += res.savedBytes;
-          compressedCount++;
+              const pctInt = Math.round(overall * 100);
+              const savedFmt = compressionService.formatBytes(totalSavedBytes);
+              if (manageKeepAlive && VideoEngineModule?.setCompressionKeepAliveNative) {
+                VideoEngineModule.setCompressionKeepAliveNative(
+                  true,
+                  `Comprimiendo video ${processed + 1} de ${total} (${pctInt}%)`,
+                  `${video.filename || 'Video'} · Ahorrado: -${savedFmt}`,
+                  pctInt
+                ).catch(() => {});
+              }
+              if (onProgress) {
+                onProgress({
+                  current: processed + 1,
+                  total,
+                  currentFile: video.filename || 'Video',
+                  compressedCount,
+                  percent: overall,
+                  savedBytes: totalSavedBytes,
+                  savedFormatted: savedFmt,
+                  stage: `${video.filename || 'Video'}: ${prog.stage || 'Comprimiendo...'}`,
+                });
+              }
+            },
+          });
+          if (res.success && !res.alreadyOptimized && res.savedBytes > 0) {
+            totalSavedBytes += res.savedBytes;
+            compressedCount++;
+          }
+        } catch (e) {
+          console.warn('Error comprimiendo video en lote:', video?.filename, e);
         }
-      } catch (e) {
-        console.warn('Error comprimiendo video en lote:', video?.filename, e);
+        processed++;
+        if (onProgress) {
+          onProgress({
+            current: processed,
+            total,
+            currentFile: video.filename || 'Video',
+            compressedCount,
+            percent: processed / total,
+            savedBytes: totalSavedBytes,
+            savedFormatted: compressionService.formatBytes(totalSavedBytes),
+          });
+        }
       }
-      processed++;
-      if (onProgress) {
-        onProgress({
-          current: processed,
-          total,
-          percent: processed / total,
-          savedBytes: totalSavedBytes,
-          savedFormatted: compressionService.formatBytes(totalSavedBytes),
-        });
+    } finally {
+      if (manageKeepAlive && VideoEngineModule?.setCompressionKeepAliveNative) {
+        VideoEngineModule.setCompressionKeepAliveNative(false, '', '', 0).catch(() => {});
       }
     }
 
@@ -689,7 +724,7 @@ export const videoEngineService = {
       processed,
       compressedCount,
       totalSavedBytes,
-      cancelled: !!control?.isCancelled,
+      cancelled: isCancelled(),
     };
   },
 };

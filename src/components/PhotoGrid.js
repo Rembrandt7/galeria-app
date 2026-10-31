@@ -265,75 +265,27 @@ export default function PhotoGrid({
   };
 
   const handleCompressSelected = () => {
-    const selectedPhotos = selectedAssets.filter((a) => a.mediaType === 'photo');
-    const selectedVideos = selectedAssets.filter((a) => a.mediaType === 'video');
+    const selectedPhotos = selectedAssets.filter((a) => !isVideoAsset(a));
+    const selectedVideos = selectedAssets.filter((a) => isVideoAsset(a));
     const totalSel = selectedPhotos.length + selectedVideos.length;
     if (totalSel === 0) {
       Alert.alert('Sin archivos', 'Selecciona al menos una fotografía o video para comprimir.');
       return;
     }
     Alert.alert(
-      'Comprimir seleccionados (100% Resolución)',
-      `¿Optimizar ${selectedPhotos.length} foto(s) y ${selectedVideos.length} video(s) manteniendo el 100% de su resolución original?`,
+      'Comprimir seleccionados en 2do plano',
+      `¿Optimizar ${selectedPhotos.length} foto(s) y ${selectedVideos.length} video(s) manteniendo el 100% de su resolución original?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir',
-          onPress: async () => {
-            setIsCompressingBatch(true);
-            setCompressProgress({
-              current: 0,
-              total: totalSel,
-              percent: 0,
-              savedFormatted: '0 B',
+          onPress: () => {
+            clearSelection();
+            compressionService.startBackgroundCompressionJob({
+              photos: selectedPhotos,
+              videos: selectedVideos,
+              label: 'Seleccionados',
             });
-            try {
-              let totalSaved = 0;
-              let totalDone = 0;
-              let permReq = false;
-              if (selectedPhotos.length > 0) {
-                const res = await compressionService.compressFolderPhotos(
-                  selectedPhotos,
-                  (prog) => setCompressProgress(prog)
-                );
-                totalSaved += res.totalSavedBytes || 0;
-                totalDone += res.compressedCount || 0;
-                if (res.permissionRequired) permReq = true;
-              }
-              if (selectedVideos.length > 0) {
-                const resVid = await videoEngineService.compressVideosBatch(selectedVideos, {
-                  presetId: 'balanced',
-                  onProgress: (prog) => setCompressProgress(prog),
-                });
-                totalSaved += resVid.totalSavedBytes || 0;
-                totalDone += resVid.compressedCount || 0;
-              }
-              clearSelection();
-              if (permReq && totalDone === 0) {
-                Alert.alert(
-                  'Permiso requerido para modificar originales',
-                  'Android bloqueó la modificación directa del archivo original. Activa "Acceso a todos los archivos" para comprimir sin crear copias.',
-                  [
-                    { text: 'Cancelar', style: 'cancel' },
-                    {
-                      text: 'Activar permiso en Ajustes',
-                      onPress: () => folderService.openAllFilesAccessSettings(),
-                    },
-                  ]
-                );
-              } else {
-                Alert.alert(
-                  '¡Compresión finalizada!',
-                  `Se optimizaron ${totalDone} de ${totalSel} archivos al 100% de su resolución.\n\nEspacio ahorrado: ${compressionService.formatBytes(totalSaved)}.`
-                );
-              }
-              if (onRefresh) onRefresh();
-            } catch (e) {
-              Alert.alert('Error', e?.message || String(e));
-            } finally {
-              setIsCompressingBatch(false);
-              setCompressProgress(null);
-            }
           },
         },
       ]
@@ -345,6 +297,20 @@ export default function PhotoGrid({
     await mediaService.shareAsset(selectedAssets[0]);
   };
 
+  useEffect(() => {
+    const unsub = compressionService.subscribe((job) => {
+      setIsCompressingBatch(Boolean(job?.isRunning));
+      setCompressProgress(job?.isRunning ? job : null);
+    });
+    const unsubDone = compressionService.onJobCompleted(() => {
+      if (onRefresh) onRefresh();
+    });
+    return () => {
+      unsub();
+      unsubDone();
+    };
+  }, [onRefresh]);
+
   const handleCompressAll = () => {
     const totalCount = photoAssets.length + videoAssets.length;
     if (totalCount === 0) {
@@ -353,69 +319,18 @@ export default function PhotoGrid({
     }
 
     Alert.alert(
-      'Comprimir sin perder resolución (100%)',
-      `¿Deseas optimizar ${photoAssets.length} foto(s) y ${videoAssets.length} video(s) visibles manteniendo el 100% de su resolución original?`,
+      'Comprimir en 2do plano (100% Resolución)',
+      `¿Deseas optimizar ${photoAssets.length} foto(s) y ${videoAssets.length} video(s) visibles manteniendo el 100% de su resolución original?\n\nPuedes seguir navegando por la app o minimizarla mientras termina.`,
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Comprimir todo',
-          onPress: async () => {
-            setIsCompressingBatch(true);
-            setCompressProgress({
-              current: 0,
-              total: totalCount,
-              percent: 0,
-              savedFormatted: '0 B',
+          onPress: () => {
+            compressionService.startBackgroundCompressionJob({
+              photos: photoAssets,
+              videos: videoAssets,
+              label: 'Álbum',
             });
-            try {
-              let totalSaved = 0;
-              let totalDone = 0;
-              let permReq = false;
-              if (photoAssets.length > 0) {
-                const res = await compressionService.compressFolderPhotos(
-                  photoAssets,
-                  (prog) => setCompressProgress(prog)
-                );
-                totalSaved += res.totalSavedBytes || 0;
-                totalDone += res.compressedCount || 0;
-                if (res.permissionRequired) permReq = true;
-              }
-              if (videoAssets.length > 0) {
-                const resVid = await videoEngineService.compressVideosBatch(videoAssets, {
-                  presetId: 'balanced',
-                  onProgress: (prog) => setCompressProgress(prog),
-                });
-                totalSaved += resVid.totalSavedBytes || 0;
-                totalDone += resVid.compressedCount || 0;
-              }
-              if (permReq && totalDone === 0) {
-                Alert.alert(
-                  'Permiso requerido para modificar originales',
-                  'Android bloqueó la modificación directa del archivo original. Activa "Acceso a todos los archivos" para comprimir sin crear copias.',
-                  [
-                    { text: 'Cancelar', style: 'cancel' },
-                    {
-                      text: 'Activar permiso en Ajustes',
-                      onPress: () => folderService.openAllFilesAccessSettings(),
-                    },
-                  ]
-                );
-              } else {
-                Alert.alert(
-                  '¡Compresión finalizada!',
-                  `Se optimizaron ${totalDone} de ${totalCount} archivos manteniendo el 100% de su resolución.\n\nEspacio total ahorrado: ${compressionService.formatBytes(totalSaved)}.`
-                );
-              }
-              if (onRefresh) onRefresh();
-            } catch (e) {
-              Alert.alert(
-                'Error',
-                'Ocurrió un problema durante la compresión: ' + (e?.message || String(e))
-              );
-            } finally {
-              setIsCompressingBatch(false);
-              setCompressProgress(null);
-            }
           },
         },
       ]
@@ -691,57 +606,6 @@ export default function PhotoGrid({
         )
       )}
 
-      {/* Barra superior de progreso en vivo cuando se está comprimiendo */}
-      {isCompressingBatch && (
-        <View
-          style={{
-            marginHorizontal: 10,
-            marginVertical: 6,
-            padding: 11,
-            borderRadius: 14,
-            backgroundColor: '#0f172a',
-            borderWidth: 1.5,
-            borderColor: '#38bdf8',
-            gap: 6,
-          }}
-        >
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <ActivityIndicator size="small" color="#38bdf8" />
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: '#fff', fontSize: 13, fontWeight: '800' }} numberOfLines={1}>
-                Comprimiendo archivo {compressProgress?.current || 1} de {compressProgress?.total || 1} ({Math.round((compressProgress?.percent || 0) * 100)}%)
-              </Text>
-              <Text style={{ color: '#38bdf8', fontSize: 11.5, fontWeight: '600' }} numberOfLines={1}>
-                {compressProgress?.currentFile
-                  ? `Procesando: ${compressProgress.currentFile}`
-                  : 'Optimizando al 100% de resolución...'}
-              </Text>
-            </View>
-            <View
-              style={{
-                backgroundColor: 'rgba(16, 185, 129, 0.2)',
-                borderWidth: 1,
-                borderColor: '#10b981',
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-                borderRadius: 8,
-              }}
-            >
-              <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800' }}>
-                -{compressProgress?.savedFormatted || '0 B'}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.progressBarBg}>
-            <View
-              style={[
-                styles.progressBarFill,
-                { width: `${Math.max(4, Math.round((compressProgress?.percent || 0) * 100))}%` },
-              ]}
-            />
-          </View>
-        </View>
-      )}
       <View
         style={{ flex: 1 }}
         onTouchStart={handleGridTouchStart}
@@ -782,30 +646,6 @@ export default function PhotoGrid({
           }
         />
       </View>
-
-      {isCompressingBatch && (
-        <View style={styles.bgFloatingCard}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <ActivityIndicator size="small" color="#38bdf8" />
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }} numberOfLines={1}>
-                Comprimiendo en 2do plano ({compressProgress?.current || 0}/{compressProgress?.total || 0})
-              </Text>
-              <Text style={{ color: '#10b981', fontSize: 11, fontWeight: '700' }}>
-                Espacio ahorrado: {compressProgress?.savedFormatted || '0 B'}
-              </Text>
-            </View>
-          </View>
-          <View style={styles.progressBarBg}>
-            <View
-              style={[
-                styles.progressBarFill,
-                { width: `${Math.round((compressProgress?.percent || 0) * 100)}%` },
-              ]}
-            />
-          </View>
-        </View>
-      )}
     </View>
   );
 }
