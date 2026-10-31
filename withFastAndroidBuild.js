@@ -89,6 +89,7 @@ import android.os.PowerManager
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.Surface
+import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.webkit.CookieManager
