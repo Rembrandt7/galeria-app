@@ -1902,15 +1902,6 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     rootDir.absolutePath.endsWith("/2do plano", ignoreCase = true) ||
                     rootDir.absolutePath.endsWith("/Grabaciones", ignoreCase = true)
 
-                if ((!rootDir.exists() || !rootDir.isDirectory) && !isTelegramRoot && !isSegundoPlanoRoot) {
-                    val emptyRes = Arguments.createMap().apply {
-                        putArray("assets", Arguments.createArray())
-                        putArray("subfolders", Arguments.createArray())
-                    }
-                    promise.resolve(emptyRes)
-                    return@execute
-                }
-
                 val imgExts = hashSetOf("jpg", "jpeg", "png", "webp", "heic", "heif", "gif", "bmp", "avif")
                 val vidExts = hashSetOf("mp4", "mov", "m4v", "mkv", "webm", "3gp", "avi")
 
@@ -1930,8 +1921,17 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                     val length: Long
                 )
 
+                val rootPath = rootDir.absolutePath.trimEnd('/')
                 val assetList = ArrayList<FastAsset>(128)
-                val subDirs = ArrayList<File>(16)
+                val seenAssetPaths = HashSet<String>()
+                val subDirsMap = LinkedHashMap<String, File>()
+
+                data class SubMediaStat(
+                    var mediaCount: Int = 0,
+                    var newestMod: Long = -1L,
+                    var coverPath: String = ""
+                )
+                val mediaStoreSubStats = HashMap<String, SubMediaStat>()
 
                 val children = if (rootDir.exists() && rootDir.isDirectory) (rootDir.listFiles() ?: emptyArray()) else emptyArray()
                 for (child in children) {
@@ -1944,24 +1944,100 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                             for (sf in subFiles) {
                                 if (sf.isFile && !sf.name.startsWith(".")) {
                                     val mt = getMediaType(sf.name)
-                                    if (mt != null) {
+                                    if (mt != null && seenAssetPaths.add(sf.absolutePath)) {
                                         assetList.add(FastAsset(sf, mt, sf.lastModified(), sf.length()))
                                     }
                                 }
                             }
                             if (isTelegramRoot) {
-                                subDirs.add(child)
+                                subDirsMap[child.absolutePath.lowercase()] = child
                             }
                         } else {
-                            subDirs.add(child)
+                            subDirsMap[child.absolutePath.lowercase()] = child
                         }
                     } else if (child.isFile) {
                         val mt = getMediaType(name)
-                        if (mt != null) {
+                        if (mt != null && seenAssetPaths.add(child.absolutePath)) {
                             assetList.add(FastAsset(child, mt, child.lastModified(), child.length()))
                         }
                     }
                 }
+
+                // Complementar SIEMPRE con MediaStore.Files para que funcione al 100% en Android 11/12/13/14 incluso sin MANAGE_EXTERNAL_STORAGE
+                try {
+                    val queryUri = android.provider.MediaStore.Files.getContentUri("external")
+                    val proj = arrayOf(
+                        android.provider.MediaStore.Files.FileColumns.DATA,
+                        android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED,
+                        android.provider.MediaStore.Files.FileColumns.SIZE,
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE
+                    )
+                    val sel = "(" +
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=? OR " +
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE + "=?" +
+                        ") AND " + android.provider.MediaStore.Files.FileColumns.DATA + " LIKE ?"
+                    val selArgs = arrayOf(
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_IMAGE.toString(),
+                        android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO.toString(),
+                        "$rootPath/%"
+                    )
+                    val prefix = "$rootPath/"
+                    reactContext.contentResolver.query(queryUri, proj, sel, selArgs, null)?.use { cursor ->
+                        val dataCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DATA)
+                        val modCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.DATE_MODIFIED)
+                        val sizeCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.SIZE)
+                        val typeCol = cursor.getColumnIndex(android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE)
+
+                        while (cursor.moveToNext()) {
+                            val fPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                            if (fPath.isNullOrBlank()) continue
+                            if (!fPath.startsWith(prefix, ignoreCase = true)) continue
+                            val rel = fPath.substring(prefix.length)
+                            if (rel.isEmpty()) continue
+                            val fObj = File(fPath)
+                            val mTypeInt = if (typeCol >= 0) cursor.getInt(typeCol) else 0
+                            val mt = if (mTypeInt == android.provider.MediaStore.Files.FileColumns.MEDIA_TYPE_VIDEO) {
+                                "video"
+                            } else {
+                                getMediaType(fObj.name) ?: "photo"
+                            }
+                            val modSec = if (modCol >= 0) cursor.getLong(modCol) else 0L
+                            val modMs = if (modSec > 0L) modSec * 1000L else fObj.lastModified()
+                            val fSize = if (sizeCol >= 0) cursor.getLong(sizeCol) else fObj.length()
+
+                            val slashIdx = rel.indexOf('/')
+                            if (slashIdx < 0) {
+                                if (seenAssetPaths.add(fObj.absolutePath)) {
+                                    assetList.add(FastAsset(fObj, mt, modMs, fSize))
+                                }
+                            } else {
+                                val firstSeg = rel.substring(0, slashIdx)
+                                val rest = rel.substring(slashIdx + 1)
+                                val lowSeg = firstSeg.lowercase()
+                                if ((lowSeg == "fotos" || lowSeg == "videos" || (isTelegramRoot && lowSeg.startsWith("telegram "))) && !rest.contains('/')) {
+                                    if (seenAssetPaths.add(fObj.absolutePath)) {
+                                        assetList.add(FastAsset(fObj, mt, modMs, fSize))
+                                    }
+                                }
+                                if (!lowSeg.startsWith(".") && lowSeg != "fotos" && lowSeg != "videos") {
+                                    val subDirFile = File(rootDir, firstSeg)
+                                    val subKey = subDirFile.absolutePath.lowercase()
+                                    if (!subDirsMap.containsKey(subKey)) {
+                                        subDirsMap[subKey] = subDirFile
+                                    }
+                                    val st = mediaStoreSubStats.getOrPut(subKey) { SubMediaStat() }
+                                    st.mediaCount += 1
+                                    if (modMs >= st.newestMod) {
+                                        st.newestMod = modMs
+                                        st.coverPath = fObj.absolutePath
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } catch (_: Exception) {}
+
+                val subDirs = ArrayList<File>(subDirsMap.values)
 
                 if (isSegundoPlanoRoot) {
                     val extraSpDirs = mutableListOf(
@@ -2083,6 +2159,16 @@ class VideoEngineModule(private val reactContext: ReactApplicationContext) :
                                 newestMod = lm
                                 coverFile = entry
                             }
+                        }
+                    }
+
+                    val msStat = mediaStoreSubStats[sd.absolutePath.lowercase()]
+                    if (msStat != null) {
+                        if (msStat.mediaCount > mediaCount) {
+                            mediaCount = msStat.mediaCount
+                        }
+                        if (coverFile == null && msStat.coverPath.isNotEmpty()) {
+                            coverFile = File(msStat.coverPath)
                         }
                     }
 

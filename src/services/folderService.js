@@ -4,6 +4,8 @@ import { Platform, Linking, Alert, NativeModules } from 'react-native';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as LegacyFS from 'expo-file-system/legacy';
 
+const { VideoEngineModule } = NativeModules;
+
 const FOLDER_KEY = '@galeria_selected_folder';
 const FOLDERS_LIST_KEY = '@galeria_saved_folders_list';
 const MAX_DEPTH = 4;
@@ -615,19 +617,21 @@ export const folderService = {
               name: folderService.formatFolderDisplayName(s.name, s.uri),
               isDirectory: true,
             }));
-            folderService._dirMemCache.set(uri, {
-              subfolders: fastSubs,
-              assets: fastAssets,
-              time: Date.now(),
-            });
-            if (onBatch) {
-              onBatch({
+            if (fastAssets.length > 0 || fastSubs.length > 0) {
+              folderService._dirMemCache.set(uri, {
                 subfolders: fastSubs,
                 assets: fastAssets,
-                isPartial: false,
+                time: Date.now(),
               });
+              if (onBatch) {
+                onBatch({
+                  subfolders: fastSubs,
+                  assets: fastAssets,
+                  isPartial: false,
+                });
+              }
+              return { subfolders: fastSubs, assets: fastAssets };
             }
-            return { subfolders: fastSubs, assets: fastAssets };
           }
         } catch (_nativeDirErr) {}
       }
@@ -711,18 +715,26 @@ export const folderService = {
    */
   async loadFolderAssets(uri, onBatch) {
     const out = [];
+    const seenUris = new Set();
     const walk = async (dirUri, depth) => {
       let level;
       try {
-        level = await folderService._listLevel(dirUri);
+        level = await folderService.readDirectory(dirUri);
       } catch (e) {
         return;
       }
-      if (level.assets.length > 0) {
-        for (const a of level.assets) out.push(a);
-        if (onBatch) onBatch(level.assets);
+      if (level.assets && level.assets.length > 0) {
+        const chunk = [];
+        for (const a of level.assets) {
+          if (a?.uri && !seenUris.has(a.uri)) {
+            seenUris.add(a.uri);
+            out.push(a);
+            chunk.push(a);
+          }
+        }
+        if (onBatch && chunk.length > 0) onBatch(chunk);
       }
-      if (depth < MAX_DEPTH) {
+      if (depth < MAX_DEPTH && Array.isArray(level.subfolders)) {
         for (const sub of level.subfolders) {
           if (sub.name && sub.name.startsWith('.')) continue; // omitir .thumbnails, .trash...
           await walk(sub.uri, depth + 1);

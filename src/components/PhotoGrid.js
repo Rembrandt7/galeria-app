@@ -52,7 +52,7 @@ export default function PhotoGrid({
   const [compressProgress, setCompressProgress] = useState(null);
   const [selectedIds, setSelectedIds] = useState({});
   const [showPhotosFilter, setShowPhotosFilter] = useState(true);
-  const [showVideosFilter, setShowVideosFilter] = useState(true);
+  const [showVideosFilter, setShowVideosFilter] = useState(false);
   const [numColumns, setNumColumns] = useState(() =>
     defaultColumns > 0 ? defaultColumns : isFoldExpanded ? 6 : NUM_COLUMNS
   );
@@ -138,14 +138,24 @@ export default function PhotoGrid({
     [assets, selectedIds]
   );
 
+  const isVideoAsset = useCallback(
+    (a) =>
+      Boolean(
+        a &&
+          (a.mediaType === 'video' ||
+            /\.(mp4|mov|m4v|mkv|webm|avi|3gp)$/i.test(a.filename || a.uri || ''))
+      ),
+    []
+  );
+
   const photoAssets = useMemo(
-    () => (assets || []).filter((a) => a && a.mediaType === 'photo'),
-    [assets]
+    () => (assets || []).filter((a) => a && !isVideoAsset(a)),
+    [assets, isVideoAsset]
   );
 
   const videoAssets = useMemo(
-    () => (assets || []).filter((a) => a && a.mediaType === 'video'),
-    [assets]
+    () => (assets || []).filter((a) => isVideoAsset(a)),
+    [assets, isVideoAsset]
   );
 
   const hasPhotos = photoAssets.length > 0;

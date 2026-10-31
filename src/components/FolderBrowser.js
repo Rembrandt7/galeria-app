@@ -107,9 +107,9 @@ export default function FolderBrowser({
   // Modal de carpetas del sistema y permisos especiales
   const [showSystemModal, setShowSystemModal] = useState(false);
 
-  // Filtro múltiple de Fotos y Videos (por defecto ambos activos para ver videos y fotos al instante)
+  // Filtro múltiple de Fotos y Videos (por defecto Fotos activo; si solo hay videos, muestra videos automáticamente)
   const [showPhotosFilter, setShowPhotosFilter] = useState(true);
-  const [showVideosFilter, setShowVideosFilter] = useState(true);
+  const [showVideosFilter, setShowVideosFilter] = useState(false);
   const [folderCategory, setFolderCategory] = useState('photos');
   // Compresión de carpeta completa (con soporte en segundo plano no bloqueante)
   const [isCompressingFolder, setIsCompressingFolder] = useState(false);
@@ -363,10 +363,10 @@ export default function FolderBrowser({
     }
   }, [rootUri]);
 
-  // Ejecutar carga cuando cambia la carpeta activa o el modo y mantener Fotos y Videos visibles
+  // Ejecutar carga cuando cambia la carpeta activa o el modo (por defecto filtro en Fotos, o Videos automático si no hay fotos)
   useEffect(() => {
     setShowPhotosFilter(true);
-    setShowVideosFilter(true);
+    setShowVideosFilter(false);
     if (currentFolder?.uri) {
       if (viewMode === 'folders') {
         loadCurrentLevel(currentFolder.uri);
@@ -425,13 +425,22 @@ export default function FolderBrowser({
     if (!trashBin || Object.keys(trashBin).length === 0) return base;
     return (base || []).filter((a) => a && !trashBin[a.id]);
   }, [viewMode, currentFolderAssets, allAssets, trashBin]);
+  const isVideoAsset = useCallback(
+    (a) =>
+      Boolean(
+        a &&
+          (a.mediaType === 'video' ||
+            /\.(mp4|mov|m4v|mkv|webm|avi|3gp)$/i.test(a.filename || a.uri || ''))
+      ),
+    []
+  );
   const folderPhotos = useMemo(
-    () => rawFolderList.filter((a) => a.mediaType === 'photo'),
-    [rawFolderList]
+    () => (rawFolderList || []).filter((a) => a && !isVideoAsset(a)),
+    [rawFolderList, isVideoAsset]
   );
   const folderVideos = useMemo(
-    () => rawFolderList.filter((a) => a.mediaType === 'video'),
-    [rawFolderList]
+    () => (rawFolderList || []).filter((a) => isVideoAsset(a)),
+    [rawFolderList, isVideoAsset]
   );
 
   const hasPhotos = folderPhotos.length > 0;
